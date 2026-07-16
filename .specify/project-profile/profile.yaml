@@ -1,0 +1,63 @@
+schema_version: 1
+profile_version: 1
+status: pending_analysis
+last_analyzed_at: null
+analysis_scope: project
+
+project:
+  name: "AIZZZWatch"
+  application_roots:
+    - "."
+  declared_stack: "Electron + React + TypeScript"
+  detected_languages: []
+  package_managers: []
+  frameworks: []
+  runtimes: []
+
+architecture:
+  styles: []
+  modules: []
+  entry_points: []
+  request_or_event_flows: []
+  ownership_boundaries: []
+  data_stores: []
+  caches_indexes: []
+  messaging_jobs: []
+  external_integrations: []
+
+source_of_truth:
+  business_rules: []
+  api_contracts: []
+  data_schema_migrations: []
+  configuration: []
+  generated_outputs:
+    - "(none)"
+
+commands:
+  install: []
+  build: []
+  typecheck: []
+  lint: []
+  test:
+    - "npm run verify"
+  integration: []
+  run: []
+
+engineering_conventions:
+  naming: []
+  layering: []
+  state_or_transaction_ownership: []
+  errors_logging_observability: []
+  security_privacy: []
+  testing_delivery: []
+  review_red_lines: []
+
+evidence:
+  source_paths: []
+  unknowns: []
+  confidence: low
+
+freshness:
+  evidence_state: missing
+  last_checked_at: null
+  changed_evidence: []

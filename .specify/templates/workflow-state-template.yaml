@@ -1,0 +1,116 @@
+feature:
+  slug: "[FEATURE SLUG]"
+  name: "[FEATURE NAME]"
+  created_at: "[DATE]"
+  original_request: "[ORIGINAL REQUEST]"
+
+requirement_status: draft
+scope_status: unlocked
+active_milestone: null
+task_lane: null
+# clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
+confirmation_state: clarification
+task_lane_history: []
+
+project_profile:
+  status: missing
+  profile_version: null
+  last_checked_at: null
+  evidence_state: missing
+  changed_evidence: []
+  loaded_sections: []
+  refreshed_sections: []
+  reused_decisions: []
+  invalidation_reason: null
+
+artifact_versions:
+  requirement: null
+  impact: null
+  plan: null
+  verification: null
+
+confirmation_gates:
+  requirement_impact:
+    required: false
+    status: pending
+    approved_version: null
+  child_task_plan:
+    required: false
+    status: pending
+    approved_version: null
+  user_acceptance:
+    required: true
+    status: pending
+    approved_version: null
+
+confirmation_history: []
+work_items: []
+child_tasks: []
+impact_assessment:
+  level: null
+  direct: []
+  indirect: []
+  user: []
+  data_migration: []
+  interfaces_config: []
+  security_permissions: []
+  compatibility: []
+  performance_resources: []
+  tests: []
+  release_rollback: []
+  workflow_skills: []
+  explicitly_unaffected: []
+  unknowns: []
+
+scope_deltas: []
+
+milestones: []
+
+capability_routes: []
+
+branch_flow:
+  feature_branch: "feature/[FEATURE SLUG]"
+  source_branch: null
+  release_branch: null
+  release_version: null
+  tag_name: null
+  merge_target: main
+  status: pending
+
+role_reviews: []
+
+session_reflections:
+  - status: pending
+    summary: ""
+    user_choices: []
+    choice_rationale: []
+    worked_well: []
+    should_change: []
+    user_feedback: []
+    acceptance_status: pending
+    dissatisfaction_categories: []
+
+reflection_artifacts: []
+delivery_artifacts: []
+release_artifacts: []
+
+memory_candidates: []
+
+rule_change_candidates: []
+
+memory_updates:
+  approved: []
+  rejected: []
+  archived: []
+
+evolution_updates:
+  drafted: []
+  approved: []
+  validated: []
+  rejected: []
+  rolled_back: []
+
+validation_status: pending
+verification_evidence: []
+handoff_notes: []
+residual_risks: []
