@@ -25,8 +25,8 @@
 ## 发布动作
 
 - [x] 创建 `release/0.1.0`
-- [ ] 运行 `bash .specify/scripts/bash/release-doctor.sh 0.1.0`
-- [ ] 复核版本号与发布说明
+- [x] 运行 `bash .specify/scripts/bash/release-doctor.sh 0.1.0`
+- [x] 复核版本号与发布说明
 - [ ] 创建标签 `v0.1.0`
 - [ ] 合并到 `main`
 - [ ] 推送主干与 tag
