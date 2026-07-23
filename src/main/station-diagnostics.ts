@@ -1,4 +1,4 @@
-import { applyLcodexApiPathDefaults, defaultStationApiPaths, isLcodexLegacyPublicApiUrl, normalizeApiBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiPath, resolveStationApiRequestUrl, resolveStationProfilePath } from '../shared/sub2api'
+import { applyLcodexApiPathDefaults, defaultNewApiPaths, defaultStationApiPaths, isLcodexLegacyPublicApiUrl, normalizeApiBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiPath, resolveStationApiRequestUrl, resolveStationProfilePath } from '../shared/sub2api'
 import type { FetchLike } from './sub2api-client'
 import type { ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationApiProbe, StationApiProbeResult, StationDiagnostics } from '../shared/types'
 
@@ -66,9 +66,10 @@ function sub2ApiProbeSpecs(input: StationDiagnosticsInput, paths: StationApiPath
 
 function newApiProbeSpecs(paths: StationApiPaths): StationApiProbe[] {
   return [
-    { name: 'NewAPI 用户信息', path: resolveStationApiPath('/api/user/self', paths.profile), method: 'GET' },
-    { name: 'NewAPI 令牌列表', path: resolveStationApiPath('/api/token/?p=0&size=1', paths.keys), method: 'GET' },
-    { name: 'NewAPI 模型列表', path: resolveStationApiPath('/api/models', paths.channels), method: 'GET' }
+    { name: 'NewAPI 用户信息', path: resolveStationApiPath(defaultNewApiPaths.profile, paths.profile), method: 'GET' },
+    { name: 'NewAPI 可用分组', path: resolveStationApiPath(defaultNewApiPaths.groups, paths.groups), method: 'GET' },
+    { name: 'NewAPI 价格列表', path: resolveStationApiPath(defaultNewApiPaths.channels, paths.channels), method: 'GET' },
+    { name: 'NewAPI 令牌列表', path: resolveStationApiPath(defaultNewApiPaths.keys, paths.keys), method: 'GET' }
   ]
 }
 
@@ -178,13 +179,13 @@ export async function diagnoseStation(input: StationDiagnosticsInput): Promise<S
   const needsCookie = probes.some((probe) => /cookie|session|fingerprint/i.test(probe.hint))
   const needsUserAgent = probes.some((probe) => /user agent|ua|fingerprint/i.test(probe.hint))
   const suggestedPaths: StationApiPaths = {
-    profile: detectedAdapterType === 'newapi' ? apiPaths.profile ?? '/api/user/self' : apiPaths.profile ?? defaultStationApiPaths.profile,
+    profile: detectedAdapterType === 'newapi' ? apiPaths.profile ?? defaultNewApiPaths.profile : apiPaths.profile ?? defaultStationApiPaths.profile,
     balance: apiPaths.balance,
-    groups: apiPaths.groups ?? defaultStationApiPaths.groups,
+    groups: detectedAdapterType === 'newapi' ? apiPaths.groups ?? defaultNewApiPaths.groups : apiPaths.groups ?? defaultStationApiPaths.groups,
     rates: apiPaths.rates ?? defaultStationApiPaths.rates,
-    channels: detectedAdapterType === 'newapi' ? apiPaths.channels ?? '/api/models' : apiPaths.channels ?? defaultStationApiPaths.channels,
-    keys: detectedAdapterType === 'newapi' ? apiPaths.keys ?? '/api/token/?p=0&size=100' : apiPaths.keys,
-    authRefresh: apiPaths.authRefresh ?? defaultStationApiPaths.authRefresh,
+    channels: detectedAdapterType === 'newapi' ? apiPaths.channels ?? defaultNewApiPaths.channels : apiPaths.channels ?? defaultStationApiPaths.channels,
+    keys: detectedAdapterType === 'newapi' ? apiPaths.keys ?? defaultNewApiPaths.keys : apiPaths.keys,
+    authRefresh: detectedAdapterType === 'newapi' ? apiPaths.authRefresh ?? defaultNewApiPaths.authRefresh : apiPaths.authRefresh ?? defaultStationApiPaths.authRefresh,
     adminGroups: apiPaths.adminGroups ?? defaultStationApiPaths.adminGroups,
     adminAccounts: apiPaths.adminAccounts ?? defaultStationApiPaths.adminAccounts,
     adminDashboard: apiPaths.adminDashboard ?? defaultStationApiPaths.adminDashboard,

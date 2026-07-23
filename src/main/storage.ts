@@ -2,7 +2,7 @@ import { app, safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import { join } from 'node:path'
-import { applyLcodexApiPathDefaults, defaultStationApiPaths, defaultSub2ApiKeyListPath, isLcodexLegacyPublicApiUrl, normalizeStationBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiRequestUrl, Sub2ApiError } from '../shared/sub2api'
+import { applyLcodexApiPathDefaults, applyNewApiPathDefaults, defaultStationApiPaths, defaultSub2ApiKeyListPath, isLcodexLegacyPublicApiUrl, normalizeStationBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiRequestUrl, Sub2ApiError } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { appendAccountUpstreamMappingEvents, appendObservedGroupRateChanges, appendProfitUsageArchiveDay, appendTimeCostSnapshot, emptyTimeCostLedger } from '../shared/time-cost-ledger'
 import type { AccountCostKind, AccountCostProfile, AccountUpstreamMapping, AdminCredentialType, DataCenterSummary, DataFileSummary, GroupCapabilityTagId, GroupChangeEvent, GroupChangeKind, InternalUserProfile, ProfitArchiveDayCoverage, ProfitUsageRecord, ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationAutoReauthStatus, StationInput, StationPublic, StationReadMapping, StationRole, StationSnapshot, TimeCostLedger, UiPreferences, UsageLedgerCoverage, UsageLedgerEntry } from '../shared/types'
@@ -162,10 +162,10 @@ async function readStored(): Promise<StoredStation[]> {
         const adapterType = sanitizeAdapterType(value.adapterType) ?? 'sub2api'
         const detectedAdapterType = sanitizeDetectedAdapterType(value.detectedAdapterType)
         const baseUrl = normalizeStationBaseUrl(value.baseUrl, adapterType === 'auto' ? detectedAdapterType : adapterType)
-        const apiPaths = applySub2ApiKeyPathDefault(applyLcodexApiPathDefaults(baseUrl, {
+        const apiPaths = applyNewApiPathDefaults(applySub2ApiKeyPathDefault(applyLcodexApiPathDefaults(baseUrl, {
           ...defaultStationApiPaths,
           ...normalizeStationApiPaths(value.apiPaths)
-        }), adapterType, detectedAdapterType)
+        }), adapterType, detectedAdapterType), adapterType, detectedAdapterType)
         return {
           ...value,
           stationRole: sanitizeStationRole(value.stationRole),
@@ -725,10 +725,10 @@ export async function saveStation(input: StationInput): Promise<StoredStation[]>
   const detectedAdapterType = sanitizeDetectedAdapterType(input.detectedAdapterType) ?? existing?.detectedAdapterType
   const baseUrl = normalizeStationBaseUrl(input.baseUrl, adapterType === 'auto' ? detectedAdapterType : adapterType)
   const hasApiPathsInput = Object.prototype.hasOwnProperty.call(input, 'apiPaths')
-  const apiPaths = applySub2ApiKeyPathDefault(applyLcodexApiPathDefaults(baseUrl, {
+  const apiPaths = applyNewApiPathDefaults(applySub2ApiKeyPathDefault(applyLcodexApiPathDefaults(baseUrl, {
     ...defaultStationApiPaths,
     ...normalizeStationApiPaths(hasApiPathsInput ? input.apiPaths : existing?.apiPaths)
-  }), adapterType, detectedAdapterType)
+  }), adapterType, detectedAdapterType), adapterType, detectedAdapterType)
   const hasApiBaseUrlInput = Object.prototype.hasOwnProperty.call(input, 'apiBaseUrl')
   const lcodexCompatibility = resolveLcodexStationCompatibility(baseUrl)
   const requestedApiBaseUrl = sanitizeApiBaseUrl(input.apiBaseUrl, true)

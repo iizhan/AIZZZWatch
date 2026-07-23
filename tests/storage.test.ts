@@ -154,7 +154,7 @@ describe('station storage', () => {
     expect(updated.apiPaths.keys).toBe('/keys?page=1&page_size=20&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai')
   })
 
-  it('uses the standard Key path only for Sub2API-compatible stations', async () => {
+  it('uses adapter-specific default paths for Sub2API and NewAPI stations', async () => {
     const { saveStation } = await importStorage()
     const [sub2api] = await saveStation({
       name: 'Sub2API', baseUrl: 'https://relay.example.com/api/v1', adapterType: 'sub2api',
@@ -167,7 +167,30 @@ describe('station storage', () => {
     const newapi = stored.find((station) => station.name === 'NewAPI')
 
     expect(sub2api.apiPaths.keys).toBe('/keys?page=1&page_size=20&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai')
-    expect(newapi?.apiPaths.keys).toBe('')
+    expect(newapi?.apiPaths).toMatchObject({
+      profile: '/api/user/self',
+      groups: '/api/user/self/groups',
+      channels: '/api/pricing',
+      keys: '/api/token/?p=0&size=100',
+      authRefresh: '/api/user/auth/refresh'
+    })
+  })
+
+  it('upgrades a legacy NewAPI model probe path without replacing manual paths', async () => {
+    const { saveStation } = await importStorage()
+    const [created] = await saveStation({
+      name: 'Legacy NewAPI', baseUrl: 'https://newapi.example.com', adapterType: 'newapi',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10,
+      apiPaths: { channels: '/api/models' }
+    })
+    const [updated] = await saveStation({
+      id: created.id, name: 'Legacy NewAPI', baseUrl: 'https://newapi.example.com', adapterType: 'newapi',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10,
+      apiPaths: { channels: '/custom/pricing' }
+    })
+
+    expect(created.apiPaths.channels).toBe('/api/pricing')
+    expect(updated.apiPaths.channels).toBe('/custom/pricing')
   })
 
   it('encrypts saved web login credentials without exposing them in public station data', async () => {

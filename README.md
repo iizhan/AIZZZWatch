@@ -42,7 +42,7 @@ AIZZZWatch 是一个 macOS 优先的 Sub2API / NewAPI 中转站桌面监控工�
 
 - 自动检测：优先探测站点公开接口和已知二开兼容规则。
 - Sub2API：默认使用 `/api/v1` 体系，Key 列表默认路径为 `/keys?page=1&page_size=20&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai`。
-- NewAPI：读取 NewAPI 风格的用户、账号、渠道和用量接口。
+- NewAPI：读取当前用户余额、可用分组、固定模型定价与令牌所属分组，可作为三方来源进入价格榜；不复用 NewAPI 管理员控制台、收益归档或远程写入接口。
 - 自定义：手工配置资料、余额、分组、倍率、价格、Key 列表等读取路径和字段映射。
 
 ## 本地数据与安全

@@ -869,7 +869,7 @@
 
 - [2026-07-21] 站点类型适配器 正式实施包 v1
   - 确认版本：用户确认“确认执行”；验收状态 `awaiting_user_acceptance`。
-  - 结论：站点新增 `auto/sub2api/newapi/custom` 类型，与 `source/own` 角色独立。NewAPI 只读取用户、令牌记录和模型能力；不把令牌/模型误解为分组，不进入价格榜或 Sub2API 管理功能。自定义兼容仍要求选择已知数据结构，不解析任意 JSON。
+  - 结论：站点新增 `auto/sub2api/newapi/custom` 类型，与 `source/own` 角色独立。此阶段 NewAPI 只读取用户、令牌记录和模型能力；不把令牌/模型误解为分组，不进入价格榜或 Sub2API 管理功能。后续 `NewAPI 兼容正式实施包 v1` 已确认用户分组/定价契约并开放来源价格榜，管理员能力仍不复用。自定义兼容仍要求选择已知数据结构，不解析任意 JSON。
   - 影响文件：共享类型/URL 规范化、storage、main adapter/diagnostics/IPC、React 设置表单与来源详情、预览 API、适配器与回归测试、Profile 和 feature 工件。
   - 验证：`npm run verify` 通过（11 个测试文件、137 条测试），生产构建通过；浏览器预览确认 NewAPI 动态字段、能力说明和 900px 无横向溢出；`npm run package:mac`、严格 codesign 与 `git diff --check` 通过。
   - 不满意分类与证据：`requirement_miss`；用户指出“不同站点配置和读取接口不同”，现有手工路径无法表达不同数据契约。
@@ -981,3 +981,11 @@
 - 验证：`npm run verify` 通过 12 个测试文件 / 168 条；`git diff --check` 通过；真实 token 片段复扫为 0；敏感扫描仅命中测试假数据。
 - 安全结论：未复制正式 userData，未新增真实站点、账号、余额、用量、token、Cookie 或邮箱；README 截图均为演示数据。
 - 剩余风险：当前暂存区仍包含大量前序功能与 workflow 改动，公开发布前需按 `docs/OPEN_SOURCE_CHECKLIST.md` 逐项复核并决定哪些 specs / memory 资料适合公开。
+
+# 2026-07-23 NewAPI 兼容正式实施包 v1
+
+- 确认版本：用户确认“确认执行 NewAPI 兼容正式实施包 v1”；验收状态 `awaiting_user_acceptance`。
+- 结论：NewAPI 可作为三方来源站读取当前用户余额、可用分组倍率、固定模型定价与令牌所属分组，并进入价格榜；当前用户无权限的全局分组被过滤。
+- 安全：原始令牌、JWT、Cookie、UA 和密码不进入 renderer；网页登录恢复及后续刷新均在主进程加密保存轮换后的 `new_api_refresh` Cookie。
+- 验证：`npm run verify` 通过（12 个测试文件、177 条测试），`git diff --check` 通过，浏览器预览确认 NewAPI 五路径和能力边界。
+- 剩余风险：不同 NewAPI 二开可能变更路径或字段，需要脱敏响应样本后用明确的同源路径配置联调；管理员功能、收益归档和远程写入不在本轮范围。

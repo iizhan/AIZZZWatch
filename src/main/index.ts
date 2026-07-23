@@ -4,8 +4,9 @@ import { join } from 'node:path'
 import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, updateStationAutoReauthStatus, saveDismissedGroupChangeEventIds, type StoredStation } from './storage'
 import { diagnoseStation } from './station-diagnostics'
 import { hasUsableAdminCredential, isJwtExpiringSoon, resolveWebAuthTokens, Sub2ApiClient } from './sub2api-client'
+import { NewApiClient } from './newapi-client'
 import { createStationReadClient, usesSub2ApiContract } from './station-adapter'
-import { collectWebAuthApiBaseUrls, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthLaunchTarget, tryRestoreWebAuthSession } from './web-auth'
+import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from './web-auth'
 import { classifySub2ApiError, createEmptySnapshot, normalizeStationApiPaths, normalizeStationBaseUrl, resolveStationApiRequestUrl, sameNumberSet } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { buildProfitIntervalReport } from '../shared/time-cost-ledger'
@@ -228,8 +229,9 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
   let tokens = stationTokens(station)
   let client = createStationReadClient({ ...station, ...tokens, fetchImpl: electronFetch })
   const rotateStationTokens = async (): Promise<boolean> => {
-    if (!(client instanceof Sub2ApiClient)) return false
-    if (!station.refreshToken) return false
+    if (!(client instanceof Sub2ApiClient) && !(client instanceof NewApiClient)) return false
+    if (client instanceof Sub2ApiClient && !tokens.refreshToken) return false
+    if (client instanceof NewApiClient && !tokens.sessionCookie) return false
     try {
       const tokenPair = await client.refreshAccessToken()
       await saveStation({
@@ -238,6 +240,7 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
         baseUrl: station.baseUrl,
         accessToken: tokenPair.accessToken,
         refreshToken: tokenPair.refreshToken,
+        sessionCookie: 'sessionCookie' in tokenPair ? tokenPair.sessionCookie : undefined,
         pollingIntervalMs: station.pollingIntervalMs
       })
       const refreshedStations = await listStations()
@@ -251,11 +254,13 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
     }
   }
 
-  if (client instanceof Sub2ApiClient && allowTokenRefresh && tokens.refreshToken && isJwtExpiringSoon(tokens.accessToken)) {
+  const canRefreshSession = (client instanceof Sub2ApiClient && Boolean(tokens.refreshToken))
+    || (client instanceof NewApiClient && Boolean(tokens.sessionCookie))
+  if (allowTokenRefresh && canRefreshSession && isJwtExpiringSoon(tokens.accessToken)) {
     await rotateStationTokens()
   }
   let next = await client.fetchSnapshot(snapshots.get(id))
-  if (client instanceof Sub2ApiClient && allowTokenRefresh && next.errorCode === 'UNAUTHORIZED' && station.refreshToken) {
+  if (allowTokenRefresh && canRefreshSession && next.errorCode === 'UNAUTHORIZED') {
     const refreshed = await rotateStationTokens()
     if (refreshed) {
       next = await client.fetchSnapshot(snapshots.get(id))
@@ -626,28 +631,43 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
           inputApiBaseUrl: explicitApiBaseUrl,
           pageApiBaseUrl: probe.pageApiBaseUrl
         })
+        const newApiAuth = isNewApiWebAuthContract(input)
+        const newApiAuthRefreshPath = newApiAuth ? input.apiPaths?.authRefresh : undefined
         const cookieSets = await Promise.all(apiBaseUrls.map(async (apiBaseUrl) => {
-          const cookies = await session.fromPartition(partition).cookies.get({ url: apiBaseUrl }).catch(() => [])
+          const cookieUrl = resolveWebAuthCookieUrl(apiBaseUrl, newApiAuth, newApiAuthRefreshPath)
+          const cookies = await session.fromPartition(partition).cookies.get({ url: cookieUrl }).catch(() => [])
           return { apiBaseUrl, cookies }
         }))
         const resolvedTokens = resolveWebAuthTokens(probe as Record<string, string | undefined>, cookieSets.flatMap((item) => item.cookies))
-        let resolvedApiBaseUrl = resolveWebAuthApiBaseUrl({
-          normalizedBaseUrl,
-          inputApiBaseUrl: explicitApiBaseUrl,
-          pageApiBaseUrl: probe.pageApiBaseUrl
-        })
+        let resolvedApiBaseUrl = newApiAuth
+          ? (explicitApiBaseUrl ?? normalizedBaseUrl).replace(/\/api\/v1\/?$/i, '')
+          : resolveWebAuthApiBaseUrl({
+              normalizedBaseUrl,
+              inputApiBaseUrl: explicitApiBaseUrl,
+              pageApiBaseUrl: probe.pageApiBaseUrl
+            })
+        let restoredSessionCookie: string | undefined
         if (!resolvedTokens.accessToken) {
           for (const { apiBaseUrl, cookies } of cookieSets) {
-            const restored = await tryRestoreWebAuthSession({
-              fetchImpl: electronFetch,
-              apiBaseUrl,
-              authClientId: probe.authClientId,
-              cookies,
-              userAgent: loginWindow.webContents.getUserAgent()
-            })
+            const restored = newApiAuth
+              ? await tryRestoreNewApiSession({
+                  fetchImpl: electronFetch,
+                  apiBaseUrl,
+                  authRefreshPath: newApiAuthRefreshPath,
+                  cookies,
+                  userAgent: loginWindow.webContents.getUserAgent()
+                })
+              : await tryRestoreWebAuthSession({
+                  fetchImpl: electronFetch,
+                  apiBaseUrl,
+                  authClientId: probe.authClientId,
+                  cookies,
+                  userAgent: loginWindow.webContents.getUserAgent()
+                })
             if (!restored?.accessToken) continue
             resolvedTokens.accessToken = restored.accessToken
             resolvedTokens.refreshToken = resolvedTokens.refreshToken || restored.refreshToken
+            restoredSessionCookie = restored.sessionCookie
             resolvedApiBaseUrl = resolvedApiBaseUrl || apiBaseUrl
             break
           }
@@ -656,7 +676,8 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
         const saveApiBaseUrl = resolvedApiBaseUrl
         const cookieSource = cookieSets.find((item) => item.apiBaseUrl === (saveApiBaseUrl || normalizedBaseUrl))
           ?? cookieSets.find((item) => item.cookies.length > 0)
-        const sessionCookie = cookieSource?.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+        const sessionCookie = restoredSessionCookie
+          ?? cookieSource?.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
         const userAgent = loginWindow.webContents.getUserAgent()
         const stations = await saveStation({
           id: input.id,

@@ -191,7 +191,7 @@
 ## Follow-up 站点类型适配器 正式实施包 v1
 
 - status: awaiting_user_acceptance
-- summary: 设置站点类型新增自动检测、Sub2API、NewAPI 与自定义兼容。NewAPI 是独立的能力受限只读适配器，余额、令牌记录和模型探测可用；没有可靠的分组倍率或管理员契约时不进入价格榜、切组、成本和收益。
+- summary: 设置站点类型新增自动检测、Sub2API、NewAPI 与自定义兼容。此阶段 NewAPI 是能力受限只读适配器，余额、令牌记录和模型探测可用；该阶段因没有可靠分组倍率而不进入价格榜。后续 `NewAPI 兼容正式实施包 v1` 已按已验证的当前用户分组/定价契约开放来源价格榜，仍不支持切组、成本和收益。
 - verification: `npm run verify`（11 files / 137 tests）、生产构建、浏览器预览 NewAPI 类型切换与 900px 宽度检查、`npm run package:mac`、`codesign --verify --deep --strict --verbose=2`、`git diff --check`。
 - security: 仅 GET；NewAPI token 返回被压缩为 ID、名称、状态，原始 token、JWT、Cookie 和 UA 不进入 renderer、偏好文件或日志。
 - residual risk: NewAPI 生态的二开路径/返回结构差异大，自动检测受 WAF 和实际授权会话影响；完整 NewAPI 管理台复刻不在本次范围。
@@ -262,3 +262,12 @@
 - 结论：公开范围限定为源码、MIT、演示素材、发布说明和用户明确授权的赞助收款码。发布前已移除历史资料中的自有站名、账号编号、本机文件计数、余额、用量记录和会话状态；测试夹具保留语义但避免连续的凭据形态字符串。
 - 验证：`npm run verify` 通过 12 个测试文件 / 168 条用例；macOS `arm64` `.app` 通过严格签名，Release zip 通过完整性检查；README 三张截图已人工确认均为演示数据，二维码无 EXIF/GPS 元数据。
 - 剩余风险：在线 `npm audit` 因当前环境无法完成网络审批而未执行成功；首发应用为 ad-hoc 签名、未公证，仅支持 macOS Apple Silicon，Windows 版仍在开发。
+
+## 2026-07-23 NewAPI 兼容正式实施包 v1
+
+- 确认版本：`NewAPI 兼容正式实施包 v1`；验收状态 `awaiting_user_acceptance`。
+- Task Outcome：NewAPI 独立只读适配器改为读取当前用户余额、可用分组、用户权限过滤后的固定定价与令牌所属分组，并可作为三方来源参与价格榜。
+- Security Review：无阻断问题。令牌原文在主进程归一化时丢弃；JWT、Cookie、UA 和网页登录凭据不跨 IPC。网页登录恢复与轮询续期均仅保存加密的 NewAPI refresh Cookie。
+- Verification Summary：`npm run verify` 通过 12 个测试文件 / 177 条；`git diff --check` 与 Profile capture 通过；浏览器预览实际切换 NewAPI 设置，确认五条路径和能力边界。
+- What Should Change：真实二开 NewAPI 如调整路径或返回字段，应提供脱敏响应样本；通过站点设置的五个同源路径覆盖，不开放任意字段映射或管理台写入。
+- Memory Candidates：无。仅记录会话级契约结论：`quota` 是当前余额，刷新响应的 `new_api_refresh` Cookie 必须持久化轮换值。

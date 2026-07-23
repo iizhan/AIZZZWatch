@@ -18,8 +18,8 @@ Last analyzed: `2026-07-23`
 | desktop shell | window lifecycle, always-on-top, bubble, menu bar | `src/main/index.ts` | renderer via preload | native BrowserWindow/Tray APIs | source + visible smoke |
 | renderer dashboard | category-driven token buying board, source wallet tabs, model price ranking with exact upstream-usage indicators and compact usage-switch filtering, own-station account workspaces, upstream Key mapping, internal-use user marking, persisted multiplier history, settings, data-integration mapping workspace and state feedback | `src/renderer/src/App.tsx` | preload IPC | visible UI state and persisted UI preferences | source + screenshots |
 | station compatibility diagnostics | auto-probe Sub2API/NewAPI signatures or manual compatibility paths; reuse saved browser Cookie/UA for read-only diagnostics | `src/main/station-diagnostics.ts` | Chromium `net.fetch`, shared URL/path helpers | read-only probe requests and suggestion payload | source + unit test |
-| station adapters | select Sub2API or NewAPI read contract; NewAPI exposes only confirmed user/token/model capability and no admin mutation | `src/main/station-adapter.ts`, `src/main/newapi-client.ts`, `src/main/sub2api-client.ts` | station HTTP endpoints | remote reads and explicit capability degradation | source + contract tests |
-| secure storage | encrypted station credentials, explicit source/own role, adapter type, API base/path and recharge metadata; validated local preferences including internal-use station/user ID pairs | `src/main/storage.ts` | Electron safeStorage | local userData file | source review |
+| station adapters | select Sub2API or NewAPI read contract; NewAPI normalizes user balance, available group ratios, fixed pricing and token group assignments without admin mutation | `src/main/station-adapter.ts`, `src/main/newapi-client.ts`, `src/main/sub2api-client.ts` | station HTTP endpoints | remote reads and explicit capability degradation | source + contract tests |
+| secure storage | encrypted station credentials, optional password keepalive credentials, explicit source/own role, adapter type, API base/path and recharge metadata; validated local preferences including internal-use station/user ID pairs | `src/main/storage.ts` | Electron safeStorage | local userData file | source review |
 | fork response mapping | validates dot-path-only standard-field mappings and applies them to selected read payloads without storing raw responses | `src/shared/station-read-mapping.ts`, `src/main/sub2api-client.ts` | shared DTOs and Sub2API client | main-process read normalization only | mapping/unit tests |
 
 ## Critical Flows
@@ -64,10 +64,19 @@ Last analyzed: `2026-07-23`
 
 `settings adapter type -> encrypted station metadata -> main adapter factory -> capability-limited snapshot -> renderer station type/degraded UI`
 
-- Contract: `sub2api` and `custom` use the established Sub2API-compatible read contract. `newapi` uses only `/api/user/self`, token-list and model-list paths, with same-origin manual path overrides. It never calls Sub2API group, rate or administrator routes and therefore contributes no price-ranking or administrator-management data. `auto` is resolved only by an explicit read-only diagnostic result.
-- Security: credentials, Cookie and UA remain in the main process. NewAPI token rows are reduced to record ID/name/status; a callable token field is discarded before a snapshot crosses IPC.
+- Contract: `sub2api` and `custom` use the established Sub2API-compatible read contract. `newapi` reads `/api/user/self`, `/api/user/self/groups`, `/api/pricing`, and `/api/token`; the price response's user-adjusted `group_ratio` is normalized into source groups and fixed model prices. It never calls Sub2API group/rate/administrator routes, and never exposes a NewAPI administrator-management view. `auto` is resolved only by an explicit read-only diagnostic result.
+- Security: credentials, Cookie and UA remain in the main process. NewAPI token rows are reduced to record ID/name/group; a callable token field is discarded before a snapshot crosses IPC. The browser session restore and subsequent refresh use the HttpOnly `new_api_refresh` cookie only in the main process, retaining a rotated cookie when supplied.
 - Verification path: adapter, storage, diagnostic and renderer classification tests plus the browser-preview type switch at a constrained desktop width.
 - Evidence: `src/main/newapi-client.ts`, `src/main/station-adapter.ts`, `src/main/station-diagnostics.ts`, `src/renderer/src/App.tsx`, `tests/newapi-client.test.ts`.
+
+### Flow 12: Encrypted password keepalive
+
+`station snapshot failure -> token refresh when supported -> encrypted credential re-login when enabled -> main-only token rotation -> one snapshot retry`
+
+- Contract: the saved account/password never crosses the preload bridge or renderer boundary. Automatic recovery is serialized per station, rate-limited, limited to the station's HTTPS origin, and stops for CAPTCHA, 2FA, WAF, or other manual-interaction requirements.
+- Failure boundaries: unavailable Electron encryption, absent saved credentials, non-password login flows, changed login contract, session fingerprint checks, and concurrent recovery attempts all surface a local status rather than repeatedly submitting credentials.
+- Verification path: unit tests for storage redaction and recovery classification, plus a visible station reauthorization path.
+- Evidence: `src/main/index.ts`, `src/main/storage.ts`, `src/main/web-auth.ts`, `src/preload/index.ts`, `src/renderer/src/App.tsx`, `tests/storage.test.ts`.
 
 ### Flow 9: Exact upstream Key usage indicator
 
