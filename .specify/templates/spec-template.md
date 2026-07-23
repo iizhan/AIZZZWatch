@@ -8,6 +8,7 @@
 **任务通道**: fast / standard / controlled
 **需求版本**: v1
 **确认状态**: fast: recorded_without_preapproval / standard|controlled: pending_confirmation
+**业务语义确认**: not_required / pending / confirmed
 
 ## 1. 业务背景与目标
 
@@ -50,6 +51,14 @@
 - 边界 1：
 - 边界 2：
 
+### 4.1 业务语义门禁
+
+- 是否涉及 UI 文案/动作/状态/指标的业务含义：是 / 否
+- 涉及术语：
+- `语义确认 vN` / `思考确认 vN`：
+- 用户确认记录：
+- 说明：涉及账号、分组、来源站点、成本、倍率、充值比例、利润、隐藏/删除/停用等领域词时，不允许按 fast 直接修改。
+
 ## 5. 异常与边界场景
 
 - 当 [边界条件] 时：
@@ -86,5 +95,6 @@
 
 - v1：待确认
 - fast：recorded_without_preapproval；无需执行前确认
+- 业务语义变更：必须有 `语义确认 vN` / `思考确认 vN`，不适用 fast 免确认
 - standard / controlled 用户选择：确认执行 / 修改事项 / 缩小范围 / 补充需求
 - 变更摘要：

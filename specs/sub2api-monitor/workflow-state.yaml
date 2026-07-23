@@ -1,0 +1,379 @@
+feature:
+  slug: "sub2api-monitor"
+  name: "Sub2API 实时分组监控"
+  created_at: "2026-07-16"
+  original_request: "开发基于 sub2api API 的 macOS 桌面实时分组监控工具，支持置顶窗口、气泡、菜单栏展示，以及聚合账号分组切换。"
+
+requirement_status: confirmed
+scope_status: locked
+active_milestone: open_source_release_v1
+task_lane: controlled
+confirmation_state: awaiting_user_acceptance
+task_lane_history:
+  - lane: controlled
+    reason: "跨 Electron 主进程/renderer、外部 API、凭证和远程管理员写入。"
+
+project_profile:
+  status: fresh
+  profile_version: 1
+  last_checked_at: "2026-07-22"
+  evidence_state: implemented_mvp
+  changed_evidence: []
+  loaded_sections: [stack, architecture, commands, security, testing]
+  refreshed_sections: [stack, modules, entry_points, commands, evidence, profit_archive, internal_user_exclusion]
+  reused_decisions: []
+  invalidation_reason: null
+
+artifact_versions:
+  requirement: v2
+  impact: v2
+  plan: v2
+  verification: v50
+
+latest_increment:
+  version: v1
+  name: "开源发布正式实施包"
+  status: awaiting_user_acceptance
+
+confirmation_gates:
+  requirement_impact: { required: true, status: approved, approved_version: v2 }
+  semantic_confirmation: { required: true, status: approved, approved_version: "语义流程规则 v1" }
+  child_task_plan: { required: true, status: approved, approved_version: v2 }
+  user_acceptance: { required: true, status: pending, approved_version: null }
+
+confirmation_history:
+  - { gate: requirement_impact, version: v1, choice: confirmed, date: "2026-07-16" }
+  - { gate: child_task_plan, version: v1, choice: confirmed, date: "2026-07-16" }
+  - { gate: requirement_impact, version: v2, choice: confirmed, date: "2026-07-16" }
+  - { gate: child_task_plan, version: v2, choice: confirmed, date: "2026-07-16" }
+  - { gate: design_plan, version: "站点角色与兼容修复 正式实施包 v1", choice: confirmed, date: "2026-07-21" }
+  - { gate: design_plan, version: "站点类型适配器 正式实施包 v1", choice: confirmed, date: "2026-07-21" }
+  - { gate: design_plan, version: "费用归档正式实施包 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: semantic_confirmation, version: "价格榜使用中标记 语义确认 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: design_plan, version: "上游使用状态 v2", choice: confirmed, date: "2026-07-22" }
+  - { gate: semantic_confirmation, version: "价格榜最近涨降时间 思考确认 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: semantic_confirmation, version: "价格榜最近涨降时间 思考确认 v2", choice: confirmed, date: "2026-07-22" }
+  - { gate: design_plan, version: "自有账号免计费 正式实施包 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: requirement_impact, version: "lcodex 需求与影响 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: design_plan, version: "lcodex 兼容正式实施包 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: design_plan, version: "用户自用排除经营核算 正式实施包 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: design_plan, version: "接口适配中心 正式实施包 v1", choice: confirmed, date: "2026-07-22" }
+  - { gate: semantic_confirmation, version: "上游关联诊断与自动配对 思考确认 v1", choice: confirmed, date: "2026-07-23" }
+  - { gate: design_plan, version: "上游关联诊断与自动配对 正式实施包 v1", choice: confirmed, date: "2026-07-23" }
+  - { gate: requirement_impact, version: "语义与影响确认 v2", choice: confirmed, date: "2026-07-23" }
+  - { gate: design_plan, version: "正式实施包 v1", choice: confirmed, date: "2026-07-23" }
+  - { gate: design_plan, version: "保存登录凭据与 Sub2API 密钥路径 正式实施包 v1", choice: confirmed, date: "2026-07-23" }
+  - { gate: design_plan, version: "开源发布正式实施包 v1", choice: confirmed, date: "2026-07-23" }
+
+work_items:
+  - { id: ITEM-001, title: "多站连接与安全配置", status: verifying }
+  - { id: ITEM-002, title: "实时余额、分组倍率与价格监控", status: verifying }
+  - { id: ITEM-003, title: "窗口、气泡和菜单栏形态", status: verifying }
+  - { id: ITEM-004, title: "管理员账号分组切换", status: verifying }
+  - { id: ITEM-005, title: "状态反馈、测试与交付闭环", status: verifying }
+  - { id: ITEM-OPEN-001, title: "公开文档、MIT 与赞助素材", status: completed }
+  - { id: ITEM-OPEN-002, title: "脱敏与公开素材审计", status: completed }
+  - { id: ITEM-OPEN-003, title: "arm64 打包、签名与发布压缩包", status: completed }
+  - { id: ITEM-OPEN-004, title: "GitHub 分支、标签与 Release 发布", status: verifying }
+
+child_tasks:
+  - { id: TASK-001, status: completed }
+  - { id: TASK-002, status: completed }
+  - { id: TASK-003, status: completed }
+  - { id: TASK-004, status: completed }
+  - { id: TASK-005, status: completed }
+  - { id: TASK-006, status: completed }
+  - { id: TASK-007, status: completed }
+  - { id: TASK-008, status: completed }
+  - { id: TASK-009, status: completed }
+  - { id: TASK-010, status: completed }
+  - { id: TASK-011, status: completed }
+  - { id: TASK-012, status: completed }
+  - { id: TASK-013, status: completed }
+  - { id: TASK-014, status: completed }
+  - { id: TASK-015, status: completed }
+  - { id: TASK-016, status: completed }
+
+impact_assessment:
+  level: high
+  direct: ["Electron 应用代码", "Sub2API adapter", "DESIGN.md", "feature specs"]
+  indirect: ["macOS 窗口生命周期", "Tray", "网络和计时器"]
+  user: ["多站监控", "显式管理员切组"]
+  data_migration: ["无服务端迁移", "新增加密本地配置"]
+  interfaces_config: ["Sub2API HTTP", "preload IPC", "npm/Electron config"]
+  security_permissions: ["safeStorage", "网页登录临时 partition", "refresh token", "管理员 JWT/API Key", "远程写入确认"]
+  compatibility: ["不同 Sub2API feature flag 可降级"]
+  performance_resources: ["每站默认 30 秒轮询", "销毁时清理 timer"]
+  tests: ["typecheck", "13 unit/contract tests", "production build", "desktop package launch", "single-instance smoke", "browser preview add-station smoke"]
+  release_rollback: ["feature 分支回退", "未创建发布包"]
+  workflow_skills: ["Profile", "DESIGN.md", "spec/plan/tasks/report/reflection"]
+  explicitly_unaffected: ["Sub2API 服务端", "数据库", "支付", "自动更新"]
+  unknowns: ["生产站点版本差异", "签名/公证发布链路"]
+
+scope_deltas:
+  - version: v2
+    reason: "用户确认网页登录授权，并明确普通账号分组取 /groups/available 的全部可用分组。"
+    impact: high
+  - version: "语义流程规则 v1"
+    reason: "用户指出业务语义调整前未确认思考，选择方案 3：保留改动并补进项目流程规则。"
+    impact: high
+  - version: "站点角色与兼容修复 正式实施包 v1"
+    reason: "用户确认处理 aihub 分组 404、聪明哥会话诊断，以及来源钱包三方站点/我的站点角色分离。"
+    impact: high
+  - version: "站点类型适配器 正式实施包 v1"
+    reason: "用户确认按自动检测、Sub2API、NewAPI、自定义兼容分流读取契约，并保留角色独立语义。"
+    impact: high
+  - version: "费用归档正式实施包 v1"
+    reason: "用户确认按上海自然日归档管理员用量，收益报告改读本地最小化账本，并明确显示分页上限覆盖状态。"
+    impact: high
+  - version: "价格榜使用中标记 语义确认 v1"
+    reason: "用户确认按已精确关联的上游分组标记我的站点使用中状态，并排除多分组待确认关系。"
+    impact: medium
+  - version: "上游使用状态 v2"
+    reason: "用户确认将价格榜使用状态切换为明确的使用中/未使用文案，并以主进程临时 Key 指纹唯一匹配补足安全自动关联。"
+    impact: high
+  - version: "价格榜最近涨降时间 思考确认 v1"
+    reason: "用户确认在每条价格榜行的最终倍率下紧凑展示最近本地观察到的涨价和降价时间。"
+    impact: medium
+  - version: "价格榜最近涨降时间 思考确认 v2"
+    reason: "用户纠正为只展示当前最新一次涨价或降价，并要求完整年月日时分秒，不显示另一方向的历史时间。"
+    impact: medium
+  - version: "用户自用排除经营核算 正式实施包 v1"
+    reason: "用户澄清免计费对象是我的站点里的使用用户，不是上游账号；需要扩展本地最小化账本并改变经营收益口径。"
+    impact: high
+  - version: "接口适配中心 正式实施包 v1"
+    reason: "用户确认将二开站路径与返回字段映射迁移至独立数据接入工作区，并限定为同源 HTTPS 只读映射。"
+    impact: high
+  - version: "上游关联诊断与自动配对 正式实施包 v1"
+    reason: "用户确认将上游使用状态扩展为可诊断、候选预览确认和短暂读取失败保留，避免多站点同倍率误归因。"
+    impact: high
+  - version: "开源发布正式实施包 v1"
+    reason: "用户确认公开 GitHub 仓库、MIT 协议、赞助收款码、macOS arm64 下载包与 GitHub Release；发布前必须完成本机数据脱敏和公开素材审计。"
+    impact: high
+semantic_confirmations:
+  - version: "语义流程规则 v1"
+    status: approved
+    date: "2026-07-19"
+    scope: "涉及账号、分组、来源站点、成本、倍率、充值比例、利润、隐藏/删除/停用等业务语义的 UI 文案/动作/状态/指标调整，必须先给语义确认或思考确认。"
+    user_choice: "3"
+milestones:
+  - { id: requirements, status: completed }
+  - { id: implementation, status: completed }
+  - { id: verification, status: completed }
+  - { id: user_acceptance, status: pending }
+
+capability_routes:
+  - { skill: project-profile-router, reason: "项目 Profile 初始化和刷新" }
+  - { skill: design-md-ui, reason: "桌面 UI 设计系统" }
+  - { skill: project-frontend-standards, reason: "可见状态、响应式与交互验证" }
+  - { skill: project-backend-standards, reason: "Sub2API 外部契约和运行时安全" }
+  - { skill: project-security-review, reason: "凭证与管理员写入" }
+  - { skill: computer-use, reason: "真实 Electron 可见验证" }
+
+branch_flow:
+  feature_branch: "feature/sub2api-monitor"
+  source_branch: main
+  release_branch: null
+  release_version: null
+  tag_name: null
+  merge_target: main
+  status: feature_verified
+
+role_reviews:
+  - { role: frontend, status: passed_with_residual_risk }
+  - { role: backend_integration, status: passed_with_residual_risk }
+  - { role: security, status: passed }
+
+session_reflections:
+  - status: completed_pending_acceptance
+    summary: "lcodex 新版兼容已完成：根页内登录、sessionStorage 凭据、根域管理接口与版本化价格路径均已适配。"
+    user_choices: ["确认需求与影响 v1", "确认执行 lcodex 兼容正式实施包 v1"]
+    choice_rationale: ["站点二开改版影响授权入口、会话和读取接口，需要受控兼容。"]
+    worked_well: ["公开只读探查先确认 SPA 与 API 根", "凭据始终不跨主进程边界"]
+    should_change: ["真实网页登录仍需用户在桌面端完成一次验收"]
+    user_feedback: ["lcodex 他们网站自己二开改版了，然后我们看看怎么兼容来添加进来"]
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: [implementation_defect, verification_gap]
+  - status: completed_pending_acceptance
+    summary: "价格榜最近涨降时间语义已修正：只显示当前最新涨价或降价的完整本地观察时间。"
+    user_choices: ["是的，必须显示完整哦"]
+    choice_rationale: ["只保留当前方向，避免同一行并列两种历史时间；完整时间必须包含年月日时分秒。"]
+    worked_well: ["复用既有最新变化判定，删除双方向派生逻辑", "窄列允许日期与时间换行，不使用省略号"]
+    should_change: ["在用户实际窗口宽度下补充一次真机验收"]
+    user_feedback: ["不用一个显示涨价时间还显示降价时间", "年月日时分秒要显示清楚"]
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: [requirement_miss]
+  - status: completed_pending_acceptance
+    summary: "价格榜最近涨降时间已完成：最终倍率下分别展示最近涨价与最近降价的本地观察时间，悬停可见完整时间和前后倍率。"
+    user_choices: ["确认执行 思考确认 v1"]
+    choice_rationale: ["保留紧凑价格榜结构，不新增浪费空间的列，并明确时间是应用本地同步观察而非站点审计时间。"]
+    worked_well: ["涨价和降价分开取各自最新记录，避免一条方向覆盖另一方向", "异常观察时间在读取历史时被过滤，避免误选最新记录"]
+    should_change: ["真实站点持续同步后，由用户确认不同密度下的时间可读性"]
+    user_feedback: ["还有列表是不是要显示当前最新涨价时间和降价时间！"]
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: []
+  - status: completed_pending_acceptance
+    summary: "站点类型适配器已完成：NewAPI 只读能力、自动探测、同源路径覆盖和 UI 类型分流。"
+    user_choices: ["确认执行"]
+    choice_rationale: ["确认站点类型应决定配置、读取接口和能力降级，而非只靠手工路径。"]
+    worked_well: ["Sub2API 客户端保持原有契约，NewAPI 适配器独立并默认拒绝管理员写入", "真实可见表单验证了类型切换和约束宽度"]
+    should_change: ["获取真实 NewAPI 脱敏响应后补充二开路径和账户/模型字段适配"]
+    user_feedback: ["不同站点类型的配置和读取接口不同"]
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: [requirement_miss]
+  - status: completed_pending_acceptance
+    summary: "站点角色与兼容修复已完成：显式 source/own 路由、aihub 嵌套 API 根恢复、聪明哥保存会话诊断和 403 恢复提示。"
+    user_choices: ["确认执行"]
+    choice_rationale: ["确认正式实施包 v1 的兼容修复、站点角色分离和只读诊断边界。"]
+    worked_well: ["角色成为显式元数据，避免管理员能力推断混淆来源和聚合站", "诊断复用主进程受保护会话，不暴露凭据", "aihub 根地址修复有持久化回归测试"]
+    should_change: ["收集聪明哥、aihub 的脱敏响应后继续收窄二开站专用路径适配"]
+    user_feedback: ["aihub 分组 404", "聪明哥 403", "来源钱包需分开三方站点和我的站点"]
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: [implementation_defect, ui_interaction]
+  - status: completed_pending_acceptance
+    summary: "收益区间核算正式实施包已完成：管理员用量仅在主进程受限读取，按请求时点映射上游成本，并在“我的站点 → 收益”呈现日/小时/区间汇总。"
+    user_choices: ["确认执行 收益区间核算 正式实施包 v1"]
+    choice_rationale: ["确认收入、账号成本、时点上游成本、待归因收入以及页数覆盖边界进入受控实施。"]
+    worked_well: ["复用既有时间成本账本，避免使用当前倍率倒算历史", "严格 DTO 使原始管理员日志不跨主进程边界", "构建产物验证了窄窗口下的收益筛选布局"]
+    should_change: ["拿到真实管理员站点的脱敏 usage 响应后补充 fork 字段适配和完整覆盖验收"]
+    user_feedback: []
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: []
+  - status: completed_pending_acceptance
+    summary: "时间分段成本核算已按本地观察边界实现，冻结倍率、充值比例、Key 分组和账号来源；不完整用量不进入精确账本。"
+    user_choices: ["确认"]
+    choice_rationale: ["确认按左闭右开时间区间、观察时间边界和严格精确性规则实施。"]
+    worked_well: ["纯领域模块覆盖变化边界和未知状态", "存储写入串行化避免轮询与 renderer 偏好保存丢字段", "最终包可见启动检查发现并排除了被运行实例覆盖的产物问题"]
+    should_change: ["取得真实管理员 usage 响应的脱敏字段样本后补充适配与可见账本验收"]
+    user_feedback: []
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: []
+  - status: completed_pending_acceptance
+    summary: "价格榜涨跌筛选、未提醒变动通知与成本利润口径已实现并完成桌面应用验证。"
+    user_choices: ["确认执行 v1"]
+    choice_rationale: ["确认价格榜涨/降价筛选、启动提醒和赚钱/亏钱口径说明进入实现。"]
+    worked_well: ["历史方向按时间戳恢复，避免重启后因数组顺序丢失最新状态", "桌面应用真实点击验证筛选控件"]
+    should_change: ["等待真实站点同步出价格行后补一次通知实机验收"]
+    user_feedback: []
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: [verification_gap]
+  - status: completed_pending_acceptance
+    summary: "交付 Electron Sub2API 多站监控 MVP，并完成自动与可见验证。"
+    user_choices: ["确认需求与影响 v1", "确认计划 v1", "确认认证修订 v2"]
+    choice_rationale: ["锁定权限与外部影响", "授权按计划实施", "网页登录授权，普通分组取 /groups/available 全部可用分组"]
+    worked_well: ["上游源码契约调查", "可见验证发现气泡状态问题"]
+    should_change: ["后续尽早接入真实脱敏响应样本"]
+    user_feedback: []
+    acceptance_status: accepted
+    dissatisfaction_categories: [requirement_miss, implementation_defect]
+    user_feedback:
+      - "连接模型应支持站点 token 或授权登录，并按登录账号权限查询全部分组。"
+
+reflection_artifacts: ["specs/sub2api-monitor/task-reflection.md"]
+delivery_artifacts: ["specs/sub2api-monitor/delivery-summary.md", "specs/sub2api-monitor/ui-verification.md"]
+release_artifacts: []
+memory_candidates: []
+rule_change_candidates:
+  - id: "RULE-2026-07-19-business-semantics-gate"
+    target_level: ["workflow_rule", "skill_rule", "template_rule"]
+    status: approved_for_application
+    evidence: "用户追问“你做调整之前不和我确认你的思考吗？你的skills没生效吗？”并选择方案 3。"
+    affected_files:
+      - "AGENTS.md"
+      - ".agents/skills/project-requirement-gate/SKILL.md"
+      - ".specify/memory/constitution.md"
+      - ".specify/templates/spec-template.md"
+      - ".specify/templates/plan-template.md"
+      - ".specify/templates/checklist-template.md"
+      - ".specify/templates/workflow-state-template.yaml"
+      - "docs/Codex团队开发说明.md"
+    rollback: "回退对应文档/skill/template 字段，不影响业务代码。"
+memory_updates: { approved: [], rejected: [], archived: [] }
+evolution_updates:
+  drafted: ["RULE-2026-07-19-business-semantics-gate"]
+  approved: ["RULE-2026-07-19-business-semantics-gate"]
+  validated: ["RULE-2026-07-19-business-semantics-gate"]
+  rejected: []
+  rolled_back: []
+
+validation_status: awaiting_user_acceptance
+verification_evidence:
+  - "接口适配中心 v1: npm run verify 通过 12 个测试文件 / 161 条；macOS arm64 package、严格签名、git diff --check 和 Profile fresh 通过；本地构建文件可见自动化被浏览器安全策略阻断"
+  - "价格榜最近涨降时间 v2: typecheck、定向 51 项测试、完整 145 项测试、生产构建、macOS 打包与严格签名通过；本地文件预览被浏览器安全策略拦截，保留真机可见验收风险"
+  - "价格榜最近涨降时间 v1: typecheck、定向 51 项测试、完整 145 项测试、生产构建、macOS 打包与严格签名通过；Electron 可见路径确认真实历史行和无历史行的紧凑呈现"
+  - "npm run verify: passed"
+  - "51 unit/contract tests: passed"
+  - "macOS arm64 package + ad-hoc signature: passed"
+  - "station diagnostics v3-1: passed; auto probe standard/fork/custom API roots and manual apiBaseUrl/apiPaths persistence"
+  - "package script strict verify: passed; codesign --verify --deep --strict"
+  - "launch restore fix: passed; app activation and second-instance now bring main window forward from bubble state"
+  - "lazy secure-storage startup: passed; launch no longer decrypts tokens or opens keychain prompt, manual refresh resumes polling"
+  - "desktop shortcut launch + single-instance: passed"
+  - "browser preview add-station smoke: passed; web login disabled"
+  - "packaged desktop bridge check: window.aizzz present and isBrowserPreview=false"
+  - "redirected auth smoke: passed; /login 302 -> /auth resolves and persists station"
+  - "cookie-required auth smoke: passed; login session cookie and UA carried into polling requests"
+  - "retry button semantics: passed; unauthorized becomes re-login, other errors stay retry current station"
+  - "v7 build/package: passed; tabs, recharge ratio default and cheapest aggregation compiled into the packaged app"
+  - "v8 build/package: passed; category-driven buying board compiled into the packaged app"
+  - "v3-2 browser preview sort verification: passed; rateMultiplier / rechargeRatio / effectiveCost headers clickable and direction toggles visible"
+  - "v3-2 compact sort toolbar verification: passed; ?mode=compact and 600px narrow preview show toolbar and recharge sort remains reachable"
+  - "workflow doctor: passed"
+  - "npm audit official registry: 0 vulnerabilities"
+  - "secret scan: no matches"
+  - "desktop shortcut smoke: passed; web login click path: not executed in current environment"
+  - "browser preview manually-added station now persists in page memory and replaces demo list"
+  - "v4-5 account focus panel: passed; Electron CDP with isolated demo userData confirmed 我的站点 view, station-account-focus, current account details and selected account row"
+  - "v4-6 account candidate pool: passed; Electron CDP with isolated demo userData confirmed 更优候选 list with 3 clickable groups and final-multiplier labels"
+  - "v4-7 account candidate budget line: passed; isolated CDP DOM confirmed budget line 0.068 expands to 3 candidates and 0.024 narrows to 1 candidate"
+  - "v4-9 group history data safety: passed; real change history no longer has one-click clear, removed-group cleanup only dismisses the deletion notice, retained events capped at 500"
+  - "v4-9 data path audit: formal userData was inspected through count-only reads; a stale temporary verification process was closed without exposing application data"
+  - "v4-10 data center readonly: passed; main process returns count-only userData summary, renderer adds 数据中心 view, no raw station config/token/cookie/account detail exposed"
+  - "v4-11 smart-bro network compatibility: passed; Electron net.fetch succeeds on normal user APIs while Node fetch returns Cloudflare 403 HTML; 52 tests passed"
+  - "Profile capture: fresh at 2026-07-18T14:13:19.789Z"
+  - "v4-13 current baseline hover and cost color distinction: passed; browser preview confirmed account baseline title/recommendation comparison title and green group vs blue account cost colors; npm run verify passed with 74 tests; package/sign/release asar checks passed"
+  - "v5 account workbench density: passed; focus card removed wallet balance, source/cost icon tags and group chip remove confirmation verified in browser preview; npm run verify passed with 77 tests"
+  - "cost-protection safe recommendation v1: passed; exclusive/subscription/peak group metadata, account apiBaseUrl extraction, conservative auto upstream mapping, safe group recommendations, and clickable cost risk cards verified by typecheck, targeted tests, npm run verify, package:mac, codesign strict verify, and git diff --check"
+  - "v6 account workbench screenshot alignment: passed; focus card has no station balance, source/cost are 24px pill tags, group chips span full focus width and remove opens confirmation; npm run verify/package:mac/codesign passed"
+  - "lcodex web auth v1: passed; auth window captures window.__APP_CONFIG__.api_base_url and sub2api_auth_client_id, falls back to /auth/session/restore with partition cookies/UA, preserves JWT alias preference, and saves the discovered API base url; typecheck, 23 targeted tests, npm run verify with 86 tests, package:mac, codesign strict verify, and git diff --check passed"
+  - "time cost ledger v1: passed; 11:50 left-closed/right-open boundary, frozen recharge ratio, Key group changes, mapping changes, strict usage record extraction, backward-compatible preferences, package signature, and visible packaged-app launch verified; npm run verify passed with 118 tests"
+  - "费用归档正式实施包 v1: typecheck + test suite + production build + package + strict codesign + diff check passed; read-only archive coverage states were validated without publishing local usage records"
+  - "价格榜使用中标记 语义确认 v1: 11 test files / 142 tests, production build, package and strict codesign passed; packaged UI shows usage filter and link marker"
+  - "价格榜使用中筛选紧凑化 v1: 11 test files / 142 tests, production build, package and strict codesign passed; packaged UI confirms the usage switch is in the multiplier-change row and toggles without station operations"
+  - "用户自用排除经营核算 v1: typecheck、11 test files / 153 tests、生产构建、macOS 打包、严格签名和差异检查通过；本地构建文件 URL 被浏览器策略阻断，保留用户桌面端可见验收"
+  - "精确上游关联与公益核算 v1: npm run verify 通过 12 文件 / 165 tests；macOS package、严格签名和 diff 检查通过；新包单实例启动后因 macOS 锁屏未完成可见点击验证"
+handoff_notes:
+  - "需求修订 v2 已确认：网页登录授权、refresh token、管理员 API Key x-api-key；普通账号分组严格取 /groups/available。"
+  - "下一步使用真实 Sub2API 站点做只读联调。"
+  - "浏览器预览不执行网页登录授权；真实授权请使用桌面快捷入口。"
+  - "桌面端 preload 已改为 CommonJS index.cjs，避免 sandbox 下 ESM preload 加载失败。"
+  - "网页登录授权加载失败码 -3 被忽略为重定向中断，避免误报失败。"
+  - "站点 session fingerprint 校验需要同步携带 cookie 与 UA。"
+  - "错误态按钮应区分重试当前站点与重新登录。"
+  - "v7 已加入每秒倒计时 tick、Sub2API 分类 tabs、站点级充值比例和低价聚合比较。"
+  - "v8 已将首页改为分类驱动 token 比价榜，站点信息降级为来源钱包。"
+  - "v3-2 已把价格榜表头做成可点击排序按钮，支持倍率、充值比例和有效成本切换升降序；排序状态仅保留在 renderer 本地 UI。"
+  - "v3-2 补充完成紧凑视图排序胶囊条；compact 和窄屏下排序控件独立显示，表头退回静态标签。"
+  - "v4-1 新增最终倍率列，按倍率 ÷ 充值比例计算，支持排序并在窄屏保留为高优先级列。"
+  - "v4-5 已新增账号聚焦组合详情卡；点击账号行可切换详情，队列切换会同步焦点。"
+  - "v4-6 已在聚焦卡下补充更优候选池，可直接点选前 3 个候选分组。"
+  - "v4-7 已在更优候选池下补充预算线输入，可按最终倍率阈值放宽/收紧候选显示。"
+  - "v4-9 已修复历史记录误删风险；删除分组清理只隐藏提示并保留历史，真实历史不再提供一键清空。"
+  - "v4-9 补充确认正式 userData 里仍有历史计数，并关闭了一个旧临时 userData 测试实例，避免误看临时数据。"
+  - "v4-10 已新增只读数据中心视角，用于查看正式数据目录、站点/偏好计数和文件状态；不包含导入/恢复写入能力。"
+  - "v4-11 已将桌面端 Sub2API 请求和站点诊断切到 Electron/Chromium net.fetch 注入，解决聪明哥这类 WAF 站点普通接口被 Node fetch 拦截的问题。"
+  - "2026-07-19 已补充业务语义确认门禁：用户质疑账号/分组/成本/倍率等 UI 语义时，必须先给语义确认或思考确认，不能按 fast 直接改。"
+  - "v4-13 已为账号当前组合最低补充 hover 明细，并在成本页用绿色区分售卖/所在分组、蓝色区分我的账号；推荐算法仍按当前组合最低与候选最终倍率比较，未变更成单分组基准。"
+  - "v5 已移除聚焦账号卡里的站点余额，来源/成本状态改为 icon tag，分组 chip 单行滚动且 X 移除仍走组合确认；等待用户实机验收。"
+  - "v6 已按用户截图复修账号聚焦卡，状态详情不再可见渲染，分组 chip 使用整行宽度，并重新打包 release/AIZZZWatch-darwin-arm64/AIZZZWatch.app。"
+  - "lcodex 授权修复 v1 已完成：网页登录后若没有直接 localStorage/cookie JWT，会通过 session restore 自动拿 access token 并保存公开 api_base_url；用户需用桌面快捷入口实测真实账号登录自动关闭弹窗。"
+  - "生产写入、签名、公证和自动更新未覆盖。"
+  - "时间账本的精确成本依赖站点返回稳定使用记录 ID、账号 ID、发生时间和数值用量；缺少 provider 审计时间时使用应用观察时间。"
+  - "费用归档按上海自然日替换同站点旧记录；单日 2,000 行上限会保留为部分覆盖，不作为完整收益口径。"
+  - "内部自用用户仅按站点 ID + 顶层数字 user_id 本地标记；收益归档未返回 user_id 的记录不猜测归属，需重新归档含该字段的日期后才能精确排除。"
+  - "自动上游关联只允许唯一 Key 指纹匹配；API 地址、子域名和倍率仅作诊断，不能推断成本来源。公益分组仅影响本机经营核算，原始账本与远端配置不变。"
+residual_risks:
+  - "不同 Sub2API 版本和 feature flag 可能需要适配。"
+  - "最终发布包中的 Tray 行为仍需复测。"
+  - "真实站点管理员 usage 字段和桌面端内部自用用户交互尚待用户验收。"
+  - "macOS 锁屏阻断本轮公益开关、批量成本弹窗和首次观察中性状态的可见点击验证。"

@@ -45,3 +45,11 @@ Use this skill when the task is complex enough that coding without a plan would 
 - `风险与回退`
 - `待确认项`
 - `计划版本与确认选项`
+
+## v0.7 Design and Task Confirmation
+
+Publish 设计方案 vN, 任务拆解 vN, and linked 影响范围 vN before editing. Formal `standard` and `controlled` implementation requires explicit confirmation of the aligned package. Include acceptance/self-test and rollback; a material delta must be published as vN+1.
+
+## v0.7 Doctor Contract Alignment
+
+Publish 设计方案 vN, 任务拆解 vN, and linked 影响范围 vN before editing; formal `standard` and `controlled` implementation requires explicit confirmation of the aligned package. Include acceptance/self-test and rollback; a material delta must be published as vN+1.

@@ -34,3 +34,7 @@ Use this skill after initial project inspection and before approving standard or
 - `发布与回滚影响` · `Workflow/Skill 影响`
 - `明确不影响`
 - `未知项与置信度` · `影响版本` · `确认结论`
+
+## v0.7 Confirmation Boundary
+
+影响范围 vN is part of the formal confirmation package and must be reviewed with 设计方案 vN, 任务拆解 vN, and the acceptance/self-test plan. A new data path, permission, migration, shared module, performance assumption, release action, or user-visible behavior requires 影响范围 vN+1 before implementation continues.

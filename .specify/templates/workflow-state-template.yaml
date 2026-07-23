@@ -25,12 +25,22 @@ project_profile:
 
 artifact_versions:
   requirement: null
+  design: null
   impact: null
   plan: null
+  task_breakdown: null
   verification: null
 
 confirmation_gates:
   requirement_impact:
+    required: false
+    status: pending
+    approved_version: null
+  semantic_confirmation:
+    required: false
+    status: pending
+    approved_version: null
+  design_plan:
     required: false
     status: pending
     approved_version: null
@@ -63,6 +73,8 @@ impact_assessment:
   unknowns: []
 
 scope_deltas: []
+
+semantic_confirmations: []
 
 milestones: []
 

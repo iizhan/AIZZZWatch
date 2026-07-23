@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist/
+release/
+coverage/
+
+# Local OS/editor files
+.DS_Store
+*.log
+*.tmp
+tmp/
+temp/
+
+# Environment and local runtime config
+.env
+.env.*
+!.env.example
+
+# AIZZZWatch local data and credential exports
+stations.json
+ui-preferences.json
+aizzzwatch-user-data/
+.aizzzwatch-user-data/
+*AIZZZWatch-userData*/
+*aizzzwatch-userData*/
+*.har
+*.cookie
+*.cookies
+*.jwt
+*.token
+*.secret
+*.pem
+*.p12
+*.key
+
+# Private screenshots or ad-hoc captures; keep curated demo screenshots tracked.
+docs/images/private/
+specs/**/screenshots/private/
+codex-clipboard-*.png
+
+# Durable memory data that should stay local unless explicitly sanitized.
+.specify/memory-store/users/*
+!.specify/memory-store/users/.gitkeep
+.specify/memory-store/archive/*
+!.specify/memory-store/archive/.gitkeep
+*.local.jsonl

@@ -1,0 +1,36 @@
+{
+  "name": "aizzzwatch",
+  "productName": "AIZZZWatch",
+  "version": "0.1.0",
+  "description": "macOS desktop monitor for Sub2API relay stations",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "build:icon": "bash scripts/build-icon.sh",
+    "package:mac": "npm run build && npm run build:icon && node scripts/package-mac.mjs",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "verify": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.0.2",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "electron-vite": "^2.3.0",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "vite": "^5.4.11"
+  }
+}

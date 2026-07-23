@@ -44,3 +44,11 @@ Self-review gathers evidence; it is not proof. Preserve uncertainty and offer ac
 - `事项与影响证据矩阵`
 - `执行命令` · `通过项` · `失败项` · `未执行项`
 - `差异审查` · `最终状态` · `用户验收选项`
+
+## v0.7 Impact Scope Self-Check
+
+After checks, perform an impact-scope self-check against the confirmed design, task breakdown, and impact scope. Compare the actual diff, runtime behavior, Workflow/Skill assets, permissions, data paths, and user-visible states. Any unconfirmed material impact blocks delivery until the scope delta is confirmed.
+
+## v0.7 Doctor Contract Alignment
+
+After checks, perform an impact-scope self-check and 影响范围自查 against the confirmed design, task breakdown, and impact scope. Compare the actual diff, runtime behavior, Workflow/Skill assets, permissions, data paths, and user-visible states. Any unconfirmed material impact blocks delivery until the scope delta is confirmed.

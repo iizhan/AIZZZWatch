@@ -1,49 +1,144 @@
 # AIZZZWatch Project Architecture
 
-Status: `pending_analysis`
-Last analyzed: `not_yet`
+Status: `implemented_mvp`
+Last analyzed: `2026-07-23`
 
 ## System Shape
 
-- Architecture style:
-- Application roots:
-- Deployable units:
-- Main languages/frameworks:
+- Architecture style: Electron desktop utility with privileged main process, narrow preload bridge, and React renderer.
+- Application roots: `.`
+- Deployable units: local ad-hoc signed macOS arm64 `.app`, compressed for GitHub Release; Developer ID signing, notarization, automatic updates and Windows packaging remain future work.
+- Main languages/frameworks: TypeScript, Electron, React.
 
 ## Module Map
 
 | Module | Responsibility | Entry | Depends On | Data/Side Effects | Evidence |
 | --- | --- | --- | --- | --- | --- |
-| pending | pending initial project analysis |  |  |  |  |
+| workflow assets | AGENTS, local Skills, specs and verification contracts | repository root | none | process governance | `AGENTS.md`, `.agents/`, `.specify/` |
+| desktop shell | window lifecycle, always-on-top, bubble, menu bar | `src/main/index.ts` | renderer via preload | native BrowserWindow/Tray APIs | source + visible smoke |
+| renderer dashboard | category-driven token buying board, source wallet tabs, model price ranking with exact upstream-usage indicators and compact usage-switch filtering, own-station account workspaces, upstream Key mapping, internal-use user marking, persisted multiplier history, settings, data-integration mapping workspace and state feedback | `src/renderer/src/App.tsx` | preload IPC | visible UI state and persisted UI preferences | source + screenshots |
+| station compatibility diagnostics | auto-probe Sub2API/NewAPI signatures or manual compatibility paths; reuse saved browser Cookie/UA for read-only diagnostics | `src/main/station-diagnostics.ts` | Chromium `net.fetch`, shared URL/path helpers | read-only probe requests and suggestion payload | source + unit test |
+| station adapters | select Sub2API or NewAPI read contract; NewAPI exposes only confirmed user/token/model capability and no admin mutation | `src/main/station-adapter.ts`, `src/main/newapi-client.ts`, `src/main/sub2api-client.ts` | station HTTP endpoints | remote reads and explicit capability degradation | source + contract tests |
+| secure storage | encrypted station credentials, explicit source/own role, adapter type, API base/path and recharge metadata; validated local preferences including internal-use station/user ID pairs | `src/main/storage.ts` | Electron safeStorage | local userData file | source review |
+| fork response mapping | validates dot-path-only standard-field mappings and applies them to selected read payloads without storing raw responses | `src/shared/station-read-mapping.ts`, `src/main/sub2api-client.ts` | shared DTOs and Sub2API client | main-process read normalization only | mapping/unit tests |
 
 ## Critical Flows
 
-### Flow 1
+### Flow 1: Station snapshot polling
 
 `trigger/transport -> application -> domain -> data -> side effect -> response/event`
 
-- Contract:
-- Failure boundaries:
-- Verification path:
-- Evidence:
+- Contract: station base URL plus a user access context; normalize profile, groups/rates, and channel pricing into one snapshot. Profile balance compatibility accepts standard aliases plus forked `credit_balance`, including lcodex's root `/user/profile` response.
+- Failure boundaries: timeout, network failure, 401/403, incompatible response shape, disabled `/channels/available`.
+- Verification path: adapter unit tests, mocked polling, visible dashboard retry path.
+- Evidence: upstream Sub2API routes `/user/profile`, `/groups/available`, `/groups/rates`, `/channels/available`.
+
+### Flow 2: Confirmed admin group mutation
+
+`renderer selection -> preload IPC -> main authorization check -> PUT /admin/accounts/:id -> refreshed account snapshot`
+
+- Contract: admin station context and explicit `group_ids` payload.
+- Failure boundaries: missing admin privilege, validation failure, remote conflict, network timeout.
+- Verification path: mutation contract test, confirmation/undo UI path, no-credential log review.
+- Evidence: upstream admin routes `/admin/groups`, `/admin/accounts`, and account update `group_ids` field.
+
+### Flow 3: Compatibility probe and manual path capture
+
+`renderer settings form -> diagnostics IPC -> main probe requests -> suggested apiBaseUrl/apiPaths -> persisted station config`
+
+- Contract: probe standard `/api/v1` routes first, then keep the user-provided base URL and manual paths when a fork or custom deployment differs. An existing station's encrypted Cookie/UA may be temporarily used in the main process so diagnostics represent the saved login session.
+- Failure boundaries: probe timeout, 404 on forked API roots, 401/403 auth hints, expired browser session, incomplete or missing response bodies.
+- Verification path: `station-diagnostics` unit test, settings modal smoke, manual path save and re-open.
+- Evidence: `src/main/station-diagnostics.ts`, `src/renderer/src/App.tsx`, `tests/station-diagnostics.test.ts`.
+
+### Flow 7: Explicit station role routing
+
+`settings role selection -> encrypted station metadata -> renderer source/own routing -> price ranking or administrator workspace`
+
+- Contract: `source` stations participate in the source wallet and public price ranking; `own` stations participate in the administrator account, cost and profit workspaces and are excluded from the price ranking. Legacy records without a role retain the previous capability-based inference until saved.
+- Failure boundaries: a legacy station can remain in its old inferred view until the user saves the explicit role; the role changes local presentation only and never changes remote permissions.
+- Verification path: storage persistence test, renderer role-routing test and browser-preview tab inspection.
+- Evidence: `src/shared/types.ts`, `src/main/storage.ts`, `src/renderer/src/App.tsx`, `tests/storage.test.ts`, `tests/ranking-sort.test.ts`.
+
+### Flow 8: Station-type adapter selection
+
+`settings adapter type -> encrypted station metadata -> main adapter factory -> capability-limited snapshot -> renderer station type/degraded UI`
+
+- Contract: `sub2api` and `custom` use the established Sub2API-compatible read contract. `newapi` uses only `/api/user/self`, token-list and model-list paths, with same-origin manual path overrides. It never calls Sub2API group, rate or administrator routes and therefore contributes no price-ranking or administrator-management data. `auto` is resolved only by an explicit read-only diagnostic result.
+- Security: credentials, Cookie and UA remain in the main process. NewAPI token rows are reduced to record ID/name/status; a callable token field is discarded before a snapshot crosses IPC.
+- Verification path: adapter, storage, diagnostic and renderer classification tests plus the browser-preview type switch at a constrained desktop width.
+- Evidence: `src/main/newapi-client.ts`, `src/main/station-adapter.ts`, `src/main/station-diagnostics.ts`, `src/renderer/src/App.tsx`, `tests/newapi-client.test.ts`.
+
+### Flow 9: Exact upstream Key usage indicator
+
+`source/admin read DTO -> main-only temporary credential hash -> unique source Key record match -> safe station/key ID on account snapshot -> renderer usage filter`
+
+- Contract: direct upstream credentials in a source Key response and an administrator account response are retained only for the current main-process refresh. Their SHA-256 base64url hashes may establish a link only when exactly one non-own source station and one live Key record match. The renderer receives only `upstreamSourceStationId` and `upstreamSourceKeyId`, never a credential or hash.
+- Failure boundaries: a missing Key read, failed administrator-account read, expired own-station snapshot, a deleted Key, a multi-source duplicate, or a multi-group Key clears or withholds the automatic link. The price ranking therefore cannot label an unproven relationship as “使用中”.
+- Verification path: Sub2API client DTO redaction tests, ranking exact-match test, IPC boundary source review, and compact usage-filter UI path.
+- Evidence: `src/main/index.ts`, `src/main/sub2api-client.ts`, `src/shared/types.ts`, `src/shared/sub2api.ts`, `src/renderer/src/App.tsx`, `tests/sub2api-client.test.ts`, `tests/ranking-sort.test.ts`.
+
+### Flow 4: Persisted multiplier change history
+
+`main snapshot update -> persisted rate baseline comparison -> local UI preference history -> renderer ranking/history presentation`
+
+- Contract: the main process establishes the first successful observation as baseline, then persists rate-up/rate-down events with group identity and previous/next multiplier in the same serialized write as the time ledger. The price ranking exposes only each group’s current latest local rate change below its final multiplier, including the full observed date and time. It establishes a local observed-change boundary, not a provider-issued audit timestamp.
+- Failure boundaries: the app is closed between remote changes, polling is delayed, or a provider returns no group key; exact historical accounting cannot be inferred for an unobserved interval.
+- Verification path: group change-log unit tests and visible ranking/history states.
+- Evidence: `src/shared/time-cost-ledger.ts`, `src/main/storage.ts`, `src/renderer/src/App.tsx`, `tests/time-cost-ledger.test.ts`.
+
+### Flow 5: Administrator usage detail ledger
+
+`administrator GET /admin/usage -> main-only record reduction -> strict time ledger + coverage summary -> renderer presentation`
+
+- Contract: `/admin/usage/stats` remains aggregate-only. The detailed endpoint is paged with fixed bounds and only records with stable ID, account ID, timestamp and numeric amount enter the ledger. Profit records may retain only an explicit top-level numeric `user_id` / `userId`; nested user fields, names, email, API keys and raw row payloads are discarded. Full log payloads, keys and credentials never enter renderer or local preferences.
+- Failure boundaries: missing endpoint, rejected authorization, malformed fields and page-limit coverage are represented as coverage state; no inferred exact profit is claimed.
+- Evidence: `src/main/sub2api-client.ts`, `src/main/storage.ts`, `src/shared/time-cost-ledger.ts`, `tests/sub2api-client.test.ts`, `tests/storage.test.ts`.
+
+### Flow 6: Administrator interval profit archive and report
+
+`renderer archive intent -> preload profit IPC -> main-only daily bounded GET /admin/usage -> strict accounting reduction -> sanitized local archive -> time-aware ledger resolution -> aggregate-only report -> renderer`
+
+- Contract: an archive operation partitions a selected date range into Shanghai calendar days, reads at most 20 pages of 100 rows per day, and replaces that station-day's local archive atomically. Re-archive can explicitly replace an already complete local day. Reports read only this local archive and re-apply `[start, end)`. Revenue is `actual_cost`; upstream cost is only reported when the stored mapping/Key/rate observation is exact at request time.
+- Failure boundaries: administrator access failure, malformed rows, endpoint incompatibility and page limit yield an explicit per-day coverage state. A busy day at its 2,000-row bound is marked partial, never complete. Unmapped/ambiguous records are reported as unattributed revenue rather than inferred profit.
+- Security: raw administrator request rows, API keys, JWTs and cookies stay in main process memory. The local archive contains only stable record ID, station/account/group/user IDs, timestamp, revenue, base cost and account multiplier; it is not sent to the renderer. A user ID is retained only as a numeric matching key, never as personal profile data.
+- Evidence: `src/main/index.ts`, `src/main/sub2api-client.ts`, `src/shared/time-cost-ledger.ts`, `src/renderer/src/App.tsx`, `tests/time-cost-ledger.test.ts`, `tests/sub2api-client.test.ts`.
+
+### Flow 10: Internal-use user exclusion from operating reports
+
+`renderer user toggle -> preload preferences IPC -> validated local station/user profile -> local interval report -> separate internal-consumption summary`
+
+- Contract: an administrator can mark only a stable numeric user ID from their own station as internal use. Matching requests are excluded from operating revenue, account and upstream cost, gross profit, loss count and cost-protection results. The report keeps only aggregate internal request count, station-charge reference, exact upstream cost and unresolved upstream count. Records without a stable user ID stay in operating totals and are explicitly counted as unidentified rather than guessed.
+- Failure boundaries: a missing/invalid user ID cannot be saved as internal use; stale profit archives require an explicit re-archive to change past report output; missing upstream history stays unresolved rather than being inferred.
+- Verification path: strict record-reduction and internal-exclusion unit tests, storage validation/deduplication test, plus the packaged-app manual path under `我的站点 → 用户 → 收益`.
+- Evidence: `src/shared/types.ts`, `src/shared/time-cost-ledger.ts`, `src/main/storage.ts`, `src/main/index.ts`, `src/preload/index.ts`, `src/renderer/src/App.tsx`, `tests/time-cost-ledger.test.ts`, `tests/storage.test.ts`.
+
+### Flow 11: Fork response-field mapping
+
+`renderer integration draft -> preload preview IPC -> saved station context in main -> same-origin HTTPS GET -> bounded dot-path normalization -> sanitized preview/snapshot`
+
+- Contract: mappings can cover only profile, groups, rates, channels and source Key record fields. They accept dot paths up to 12 segments and no scripts, filters, cross-origin paths or remote writes. A mapping preview returns paths, field names, record counts and a short result only.
+- Security: credentials and raw response payloads stay in the main process. Mapping preview operates only against a persisted station ID; supplied name/base URL/tokens are ignored. Custom mapping capability reads require HTTPS and all full paths must remain same-origin.
+- Failure boundaries: invalid paths are stripped on save, missing required fields return `partial`, an unavailable endpoint is reported per capability, and clearing an explicit mapping restores default compatibility behavior.
+- Evidence: `src/shared/station-read-mapping.ts`, `src/main/index.ts`, `src/main/storage.ts`, `src/main/sub2api-client.ts`, `tests/station-read-mapping.test.ts`, `tests/storage.test.ts`, `tests/sub2api-client.test.ts`.
 
 ## Source Of Truth
 
-- Business rules:
-- API/message contracts:
-- Data schema and migrations:
-- Configuration:
-- Generated outputs:
+- Business rules: `specs/sub2api-monitor/spec.md`
+- API/message contracts: upstream Sub2API HTTP contracts; local preload IPC contract plus diagnostics IPC for compatibility probe and manual path persistence.
+- Data schema and migrations: no server-side migration; encrypted local station settings only.
+- Configuration: `package.json`, `electron.vite.config.ts`, `tsconfig.json`, `DESIGN.md`; development port is strictly `5187`.
+- Generated outputs: `(none)`
 
 ## Engineering And Delivery
 
-- Build/test commands:
-- Error/logging/observability conventions:
-- Security/privacy boundaries:
-- Release/rollback path:
+- Build/test commands: `npm run verify`; visible Electron smoke evidence in `specs/sub2api-monitor/ui-verification.md`.
+- Error/logging/observability conventions: redact secrets, surface per-station health and last-success timestamp.
+- Security/privacy boundaries: main process only for secrets, privileged remote writes, and diagnostics probes; dedicated `AIZZZWatch` userData directory, unique app identity, and single-instance lock prevent cross-app state/process collisions.
+- Release/rollback path: `npm run package:mac` creates an ignored local `.app`; the verified arm64 app is compressed as a GitHub Release asset. Developer ID signing, notarization and automatic updates remain deferred, so the README documents the macOS first-launch security prompt.
 
 ## Unknowns And Refresh Triggers
 
-- Unknowns:
-- Modules not yet analyzed:
-- Evidence changes that require refresh:
+- Unknowns: Sub2API deployment versions and feature flags; Developer ID signing/notarization and auto-update.
+- Modules not yet analyzed: notarization, automatic updates and Windows packaging.
+- Evidence changes that require refresh: adding package/config files, changing IPC boundaries, adding persistence, adding a second backend/provider, or changing manual compatibility probe contracts.
