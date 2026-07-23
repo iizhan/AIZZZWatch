@@ -173,11 +173,11 @@ capability_routes:
 branch_flow:
   feature_branch: "feature/sub2api-monitor"
   source_branch: main
-  release_branch: null
-  release_version: null
-  tag_name: null
+  release_branch: "release/0.1.0"
+  release_version: "0.1.0"
+  tag_name: "v0.1.0"
   merge_target: main
-  status: feature_verified
+  status: release_preparing
 
 role_reviews:
   - { role: frontend, status: passed_with_residual_risk }
