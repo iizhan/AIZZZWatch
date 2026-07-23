@@ -88,3 +88,7 @@ Claude Code 中仍按项目 skills 顺序执行。每次任务先检查 `project
 2. 再根据重复摩擦补 `project-skill-upgrade-advisor` 记录。
 3. 只有当同类检查需要自动化时，再新增 `.claude/settings.json` hooks。
 4. hooks 接入后，必须补对应验证 case。
+
+## v0.7 Formal Confirmation Loop
+
+Claude Code 与 Codex 共用 设计方案 vN -> 任务拆解 vN -> 影响范围 vN -> 验收与自测计划 -> 用户确认 门禁，Hooks 不得绕过确认或把新增范围并入旧版本。

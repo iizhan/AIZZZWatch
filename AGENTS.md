@@ -13,6 +13,8 @@ Use an adaptive task lane before choosing how much ceremony to expose:
 - `standard`: multiple work items or bounded shared impact. Confirm one versioned package containing goal, work items, acceptance criteria, and impact before editing.
 - `controlled`: cross-module, architecture, database, security, permissions, migration, external effects, destructive actions, release behavior, or material ambiguity. Confirm requirements and impact first, then confirm child tasks, dependencies, verification, and rollback.
 
+Do not classify UI wording or interaction tweaks as `fast` when the user is questioning business meaning, domain terminology, or mental model. For AIZZZWatch this includes account/group/source-station/cost/multiplier/recharge-ratio/profit wording such as “补入”, “成本”, “分组设置”, and similar terms. In those cases, publish a versioned `语义确认 vN` or `思考确认 vN` with the intended meaning, affected states, and acceptance wording, then wait for user confirmation before editing.
+
 Investigate discoverable project facts before asking questions. Ask only when ambiguity changes outcome, scope, data, permissions, compatibility, delivery behavior, or acceptance. Bind every approval to an explicit artifact version. If approved scope or impact expands during execution, pause and confirm the delta before continuing.
 
 Reassess the task lane after onboarding and impact analysis. Persist state as `clarification -> requirement_impact_pending -> plan_pending -> executing -> verifying -> awaiting_user_acceptance -> accepted | revision_requested`, skipping only gates marked `not_required`. Fast work skips pre-execution approval gates, not verification or final user acceptance.
@@ -31,6 +33,9 @@ Reassess the task lane after onboarding and impact analysis. Persist state as `c
 4. Use `$project-tech-solution` for cross-layer, risky, or unclear tasks.
    Turn confirmed requirements and impact into `TASK-*` child tasks with dependencies, completion conditions, verification evidence, and rollback.
    Controlled tasks require a second versioned confirmation before editing. Standard tasks need another confirmation only when decomposition changes approved scope or impact.
+
+4.5. Use `$project-workflow-router` after the task lane and Project Profile are known for standard or controlled development that may match a declared role, scenario, or integration Workflow.
+   Validate `.skill-os/workflows/` before recommendation and select at most one primary scenario or integration Workflow. Foundation and role Templates are dependencies, not additional primaries. A declared Workflow never bypasses confirmation, scope, budget, security review, verification, or user acceptance. Apply its bounded Loop Policy only after the formal package is confirmed; stop for a new confirmation if scope, contract, permission, migration, external effect, or release impact changes.
 
 5. Use `$project-superpowers-router` when a request benefits from enhanced capabilities.
    Route browser automation, asset generation, multi-agent delegation, external tools, GSD long-task orchestration, gstack role review, or recurring work through the confirmed requirement and locked scope.
@@ -108,6 +113,7 @@ Repository-specific rules:
   - business assets: application code, runtime config, scripts, infrastructure files
 - Prefer the smallest safe change over broad refactors unless the user explicitly asks for a larger cleanup.
 - Do not force multi-round approval on fast tasks. Do not collapse controlled tasks into a vague one-line approval.
+- Treat UI copy that encodes business semantics as behavior, not decoration. If a label/action/status could change how the user understands accounts, groups, source wallets, costs, multipliers, recharge ratios, profit, hidden groups, or admin operations, confirm the semantics first even when the code diff looks small.
 - Treat requirement, impact, plan, and verification confirmations as different decisions. A later expanded version is not approved by an earlier unscoped "可以".
 - Treat scope drift as a workflow event: stop, describe the delta, update affected `ITEM-*` / `TASK-*`, and reconfirm only the changed impact.
 - When architecture, process, stack rules, or delivery expectations change, sync:
@@ -116,3 +122,14 @@ Repository-specific rules:
   - `.specify/memory/constitution.md`
   - `.specify/templates/*`
   - `docs/Codex团队开发说明.md`
+
+## v0.7 Formal Implementation Confirmation
+
+For formal standard and controlled implementation, publish and confirm one aligned package before editing:
+
+1. 设计方案 vN: structure, UI/API/data behavior, alternatives, tradeoffs, and non-goals.
+2. 任务拆解 vN: ordered TASK-* items mapped to confirmed ITEM-*, dependencies, allowed paths, completion conditions, and evidence.
+3. 影响范围 vN: direct/indirect, data, interfaces/config, security/permissions, compatibility, performance, tests, release/rollback, Workflow/Skill, and explicit non-impact.
+4. 验收与自测计划：acceptance criteria, commands, visible path, evidence, and rollback trigger.
+
+Do not start formal implementation until the package version is explicitly confirmed. If a material design, scope, permission, data, migration, shared-module, or acceptance change appears, pause, publish vN+1, and reconfirm the delta. After implementation, run self-test and an impact-scope self-check, publish 验证报告 vN, and wait for awaiting_user_acceptance.

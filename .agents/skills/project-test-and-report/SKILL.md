@@ -35,3 +35,7 @@ Run: `npm run verify`
 - `关键改动` · `执行命令` · `结果说明` · `界面/交互验证`
 - `未覆盖项` · `剩余风险` · `是否存在记忆/规则候选`
 - `验收状态与用户选项`
+
+## v0.7 Impact Scope Self-Check
+
+Compare the actual diff and runtime behavior against the confirmed design, task breakdown, and impact scope. Record an impact-scope self-check in 验证报告 vN; keep the task in awaiting_user_acceptance until the user confirms acceptance or requests revision.

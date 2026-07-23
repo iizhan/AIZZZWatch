@@ -1,7 +1,8 @@
 schema_version: 1
 profile_version: 1
-status: pending_analysis
-last_analyzed_at: null
+# Initial bootstrap template state before evidence capture: status: pending_analysis
+status: ready
+last_analyzed_at: 2026-07-23
 analysis_scope: project
 
 project:
@@ -9,55 +10,57 @@ project:
   application_roots:
     - "."
   declared_stack: "Electron + React + TypeScript"
-  detected_languages: []
-  package_managers: []
-  frameworks: []
-  runtimes: []
+  detected_languages: ["TypeScript", "TSX", "CSS", "HTML", "Markdown", "YAML"]
+  package_managers: ["npm"]
+  frameworks: ["Electron 33", "React 18", "Vite 5", "Vitest 2", "TypeScript 5"]
+  runtimes: ["Node.js 24 development runtime", "Electron macOS desktop runtime"]
 
 architecture:
-  styles: []
-  modules: []
-  entry_points: []
-  request_or_event_flows: []
-  ownership_boundaries: []
-  data_stores: []
-  caches_indexes: []
-  messaging_jobs: []
-  external_integrations: []
+  styles: ["Electron desktop utility with main/preload/renderer boundary"]
+  modules: ["workflow assets", "desktop shell", "renderer dashboard", "station compatibility diagnostics", "Sub2API/NewAPI read adapters", "fork response-field mapping", "encrypted station storage with explicit station roles and adapter type"]
+  entry_points: ["src/main/index.ts", "src/preload/index.ts", "src/renderer/src/main.tsx"]
+  request_or_event_flows: ["renderer -> preload IPC -> main process -> station-type read adapter -> provider HTTP API", "renderer settings modal -> diagnostics IPC -> main read-only probe requests reusing encrypted Cookie/UA -> suggested apiPaths/apiBaseUrl and adapter type", "renderer data integration workspace -> narrow preview IPC -> saved station credentials in main -> same-origin HTTPS GET -> sanitized mapping preview", "station snapshot update -> main persisted rate baseline/change history -> renderer price ranking and history presentation", "explicit stationRole routes source stations to price ranking and own stations to administrator workspaces", "admin usage detail -> main-only strict ledger extraction -> renderer coverage summary", "renderer profit archive request -> main-only daily bounded /admin/usage -> sanitized local archive -> time-aware interval report", "renderer internal-use toggle -> preload preferences IPC -> local numeric user profile -> interval report excludes only exact user-id matches"]
+  ownership_boundaries: ["renderer owns presentation and ephemeral UI state", "main owns credentials, network requests, timers, diagnostics, and window lifecycle"]
+  data_stores: ["Electron safeStorage encrypted station settings under app userData, including explicit source/own stationRole, adapterType/detectedAdapterType, per-station recharge ratio metadata, apiBaseUrl, apiPaths, constrained readMapping rules, and session Cookie/UA", "local UI preferences for persisted group rate history, upstream account mappings, account cost profiles, internal-use user profiles containing only station ID and numeric user ID, time-bound observations, strict usage ledger entries, sanitized profit usage archive records, and daily coverage summaries"]
+  caches_indexes: ["in-memory per-station snapshot map", "main-only ephemeral SHA-256 Key credential fingerprint indexes used to resolve a unique upstream Key ID", "renderer-derived category price ranking", "main-owned persisted group multiplier change baseline/history"]
+  messaging_jobs: ["bounded per-station polling timers"]
+  external_integrations: ["Wei-Shaw/sub2api HTTP API"]
 
 source_of_truth:
-  business_rules: []
-  api_contracts: []
-  data_schema_migrations: []
-  configuration: []
+  business_rules: ["specs/sub2api-monitor/spec.md"]
+  api_contracts: ["Sub2API public/admin routes investigated from upstream source on 2026-07-16"]
+  data_schema_migrations: ["none for MVP"]
+  configuration: ["package.json", "electron.vite.config.ts", "tsconfig.json", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
   generated_outputs:
-    - "(none)"
+    - "out/"
+    - "release/AIZZZWatch-darwin-<arch>/AIZZZWatch.app"
+    - "release/AIZZZWatch-v<version>-darwin-arm64.zip"
 
 commands:
-  install: []
-  build: []
-  typecheck: []
-  lint: []
+  install: ["npm install"]
+  build: ["npm run build", "npm run package:mac"]
+  typecheck: ["npm run typecheck"]
+  lint: ["npm run lint"]
   test:
     - "npm run verify"
-  integration: []
-  run: []
+  integration: ["visible Electron smoke path documented in specs/sub2api-monitor/ui-verification.md"]
+  run: ["npm run dev"]
 
 engineering_conventions:
-  naming: []
-  layering: []
-  state_or_transaction_ownership: []
-  errors_logging_observability: []
-  security_privacy: []
-  testing_delivery: []
-  review_red_lines: []
+  naming: ["TypeScript camelCase, React PascalCase, feature-oriented modules"]
+  layering: ["main process for privileged work; preload exposes narrow IPC; renderer is unprivileged"]
+  state_or_transaction_ownership: ["main process owns remote snapshots; renderer owns view filters and mode state"]
+  errors_logging_observability: ["redacted structured errors; no tokens or passwords in logs"]
+  security_privacy: ["no secrets in renderer URL/storage/logs; admin mutations require explicit confirmation", "dedicated AIZZZWatch userData directory; no shared Electron storage"]
+  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip for GitHub Release"]
+  review_red_lines: ["no silent remote writes, no hardcoded credentials, no unbounded polling", "do not use generic Electron userData or auto-fallback development ports"]
 
 evidence:
-  source_paths: []
-  unknowns: []
-  confidence: low
+  source_paths: ["package.json", "electron.vite.config.ts", "scripts/package-mac.mjs", "scripts/build-icon.sh", "assets/icon.svg", "src/main/index.ts", "src/main/storage.ts", "src/main/sub2api-client.ts", "src/main/station-diagnostics.ts", "src/preload/index.ts", "src/renderer/src/App.tsx", "src/shared/types.ts", "src/shared/sub2api.ts", "tests/sub2api-client.test.ts", "tests/station-diagnostics.test.ts", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
+  unknowns: ["exact deployment versions and enabled feature flags vary by Sub2API station", "Developer ID signing, notarization and auto-update are not configured"]
+  confidence: high
 
 freshness:
-  evidence_state: missing
-  last_checked_at: null
+  evidence_state: release_preparation
+  last_checked_at: 2026-07-23
   changed_evidence: []

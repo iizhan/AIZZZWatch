@@ -37,6 +37,8 @@
 - `standard`：确认一版“需求 + 事项 + 验收 + 影响范围”后执行。
 - `controlled`：先确认需求、事项、验收和影响范围，再确认子任务、依赖、验证与回滚。
 
+如果用户是在质疑 UI 文案、按钮动作、状态标签或指标名称背后的业务含义，不要按 `fast` 直接改。AIZZZWatch 中账号、分组、来源站点、成本、倍率、充值比例、利润、隐藏/删除/停用等词会影响用户理解和操作安全，必须先给出 `语义确认 vN` 或 `思考确认 vN`，确认术语定义、影响状态和验收文案后再执行。
+
 确认必须绑定版本。执行中出现超出已确认范围的影响时，暂停并只确认新增差异。
 
 0. `project-profile-router`
@@ -99,3 +101,7 @@
 - 引入默认 `feature/* -> release/* -> tag -> merge main` 流程时，同步 `project-branch-release`、`.specify/release/release-policy.md`、相关 bash 脚本与发布模板
 - 引入用户偏好、团队 FAQ、产品事实、会话复盘或 agent 自我迭代时，同步 `project-memory-router`、`memory-policy.md` 与 `workflow-state.yaml`
 - 引入框架自总结、自调整、自我升级时，同步 `project-evolution-router`、`evolution-policy.md`、`workflow-state.yaml` 与相关 skill/template
+
+## v0.7 Formal Confirmation Loop
+
+正式实现前形成并确认 设计方案 vN、任务拆解 vN、影响范围 vN 和验收与自测计划。实质范围变化时暂停并发布 vN+1；完成后进行影响范围自查并等待用户验收。
