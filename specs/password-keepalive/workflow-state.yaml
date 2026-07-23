@@ -1,0 +1,128 @@
+feature:
+  slug: "password-keepalive"
+  name: "站点密码保活"
+  created_at: "2026-07-23"
+  original_request: "三方站点和我的站点保存本地加密账号密码，在令牌失效后安全自动重新登录并更新令牌。"
+
+requirement_status: confirmed
+scope_status: locked
+active_milestone: user_acceptance
+task_lane: controlled
+# clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
+confirmation_state: awaiting_user_acceptance
+task_lane_history: [controlled]
+
+project_profile:
+  status: ready
+  profile_version: 1
+  last_checked_at: 2026-07-23
+  evidence_state: release_preparation
+  changed_evidence: []
+  loaded_sections: []
+  refreshed_sections: []
+  reused_decisions: []
+  invalidation_reason: null
+
+artifact_versions:
+  requirement: v1
+  design: v1
+  impact: v1
+  plan: v1
+  task_breakdown: v1
+  verification: v1
+
+confirmation_gates:
+  requirement_impact:
+    required: true
+    status: approved
+    approved_version: v1
+  semantic_confirmation:
+    required: false
+    status: not_required
+    approved_version: null
+  design_plan:
+    required: true
+    status: approved
+    approved_version: v1
+  child_task_plan:
+    required: true
+    status: approved
+    approved_version: v1
+  user_acceptance:
+    required: true
+    status: pending
+    approved_version: null
+
+confirmation_history: []
+work_items: []
+child_tasks: []
+impact_assessment:
+  level: high
+  direct: ["encrypted station storage", "main-process web authentication", "preload status IPC", "station settings UI"]
+  indirect: []
+  user: []
+  data_migration: []
+  interfaces_config: []
+  security_permissions: ["local encrypted credentials", "same-origin HTTPS auto-submit", "no challenge bypass"]
+  compatibility: []
+  performance_resources: []
+  tests: ["storage unit tests", "typecheck", "Vitest", "visible desktop path"]
+  release_rollback: []
+  workflow_skills: []
+  explicitly_unaffected: ["price ranking", "group management", "profit calculation", "remote writes"]
+  unknowns: []
+
+scope_deltas: []
+
+semantic_confirmations: []
+
+milestones: []
+
+capability_routes: []
+
+branch_flow:
+  feature_branch: "feature/password-keepalive"
+  source_branch: null
+  release_branch: null
+  release_version: null
+  tag_name: null
+  merge_target: main
+  status: pending
+
+role_reviews: []
+
+session_reflections:
+  - status: completed
+    summary: "完成本地加密密码保活与安全授权回退，等待真实站点验收。"
+    user_choices: ["确认执行 v1", "不绕过验证码、2FA 与风控"]
+    choice_rationale: ["减少重复手工授权", "保留站点安全挑战边界"]
+    worked_well: ["复用现有 safeStorage 与网页登录令牌捕获"]
+    should_change: ["认证表单改动必须先做可见检查"]
+    user_feedback: []
+    acceptance_status: pending
+    dissatisfaction_categories: []
+
+reflection_artifacts: ["specs/password-keepalive/task-reflection.md"]
+delivery_artifacts: ["specs/password-keepalive/delivery-summary.md"]
+release_artifacts: []
+
+memory_candidates: []
+
+rule_change_candidates: []
+
+memory_updates:
+  approved: []
+  rejected: []
+  archived: []
+
+evolution_updates:
+  drafted: []
+  approved: []
+  validated: []
+  rejected: []
+  rolled_back: []
+
+validation_status: verified_with_risk
+verification_evidence: ["npm run verify: typecheck + 170 Vitest tests + production build", "Electron visible verification: credential section and keepalive toggle state"]
+handoff_notes: ["真实二开站点自动登录兼容性待用户验收"]
+residual_risks: ["验证码、2FA、WAF 与非标准登录 DOM 不会自动绕过，可能要求人工完成授权"]

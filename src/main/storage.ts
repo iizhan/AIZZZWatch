@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { applyLcodexApiPathDefaults, defaultStationApiPaths, defaultSub2ApiKeyListPath, isLcodexLegacyPublicApiUrl, normalizeStationBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiRequestUrl, Sub2ApiError } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { appendAccountUpstreamMappingEvents, appendObservedGroupRateChanges, appendProfitUsageArchiveDay, appendTimeCostSnapshot, emptyTimeCostLedger } from '../shared/time-cost-ledger'
-import type { AccountCostKind, AccountCostProfile, AccountUpstreamMapping, AdminCredentialType, DataCenterSummary, DataFileSummary, GroupCapabilityTagId, GroupChangeEvent, GroupChangeKind, InternalUserProfile, ProfitArchiveDayCoverage, ProfitUsageRecord, ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationInput, StationPublic, StationReadMapping, StationRole, StationSnapshot, TimeCostLedger, UiPreferences, UsageLedgerCoverage, UsageLedgerEntry } from '../shared/types'
+import type { AccountCostKind, AccountCostProfile, AccountUpstreamMapping, AdminCredentialType, DataCenterSummary, DataFileSummary, GroupCapabilityTagId, GroupChangeEvent, GroupChangeKind, InternalUserProfile, ProfitArchiveDayCoverage, ProfitUsageRecord, ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationAutoReauthStatus, StationInput, StationPublic, StationReadMapping, StationRole, StationSnapshot, TimeCostLedger, UiPreferences, UsageLedgerCoverage, UsageLedgerEntry } from '../shared/types'
 
 export interface StoredStation {
   id: string
@@ -27,6 +27,8 @@ export interface StoredStation {
   adminCredentialType?: AdminCredentialType
   loginAccount?: string
   loginPassword?: string
+  autoReauthEnabled?: boolean
+  autoReauthStatus?: StationAutoReauthStatus
   pollingIntervalMs: number
 }
 
@@ -106,6 +108,16 @@ function sanitizeDetectedAdapterType(value: unknown): ResolvedStationAdapterType
   return value === 'sub2api' || value === 'newapi' || value === 'custom' ? value : undefined
 }
 
+function sanitizeAutoReauthStatus(value: unknown): StationAutoReauthStatus | undefined {
+  if (!value || typeof value !== 'object') return undefined
+  const record = value as Record<string, unknown>
+  const state = record.state
+  const at = record.at
+  if (state !== 'pending' && state !== 'success' && state !== 'manual-required' && state !== 'failed') return undefined
+  if (typeof at !== 'string' || Number.isNaN(new Date(at).getTime())) return undefined
+  return { state, at }
+}
+
 function toPublic(station: StoredStation): StationPublic {
   return {
     id: station.id,
@@ -123,6 +135,8 @@ function toPublic(station: StoredStation): StationPublic {
     hasRefreshToken: Boolean(station.refreshToken),
     hasAdminToken: Boolean(station.adminToken),
     hasSavedLoginCredentials: Boolean(station.loginAccount && station.loginPassword),
+    autoReauthEnabled: Boolean(station.autoReauthEnabled),
+    autoReauthStatus: station.autoReauthStatus,
     adminCredentialType: station.adminToken ? (station.adminCredentialType ?? 'jwt') : undefined,
     pollingIntervalMs: station.pollingIntervalMs
   }
@@ -162,7 +176,9 @@ async function readStored(): Promise<StoredStation[]> {
           lowBalanceThreshold: sanitizeLowBalanceThreshold(value.lowBalanceThreshold),
           apiBaseUrl: resolveStoredApiBaseUrl(baseUrl, sanitizeApiBaseUrl(value.apiBaseUrl), apiPaths),
           apiPaths,
-          readMapping: normalizeStationReadMapping(value.readMapping)
+          readMapping: normalizeStationReadMapping(value.readMapping),
+          autoReauthEnabled: Boolean(value.autoReauthEnabled),
+          autoReauthStatus: sanitizeAutoReauthStatus(value.autoReauthStatus)
         }
       })
   } catch {
@@ -736,6 +752,18 @@ export async function saveStation(input: StationInput): Promise<StoredStation[]>
   if (!input.clearSavedLoginCredentials && Boolean(loginAccount) !== hasNewLoginPassword) {
     throw new Sub2ApiError('保存网页登录凭据时必须同时填写账号和密码', 'INVALID_RESPONSE')
   }
+  const willHaveSavedLoginCredentials = !input.clearSavedLoginCredentials
+    && Boolean(hasNewLoginPassword ? loginAccount : existing?.loginAccount)
+    && Boolean(hasNewLoginPassword ? loginPassword : existing?.loginPassword)
+  const autoReauthEnabled = input.clearSavedLoginCredentials
+    ? false
+    : input.autoReauthEnabled ?? existing?.autoReauthEnabled ?? false
+  if (autoReauthEnabled && !willHaveSavedLoginCredentials) {
+    throw new Sub2ApiError('开启自动重新登录前，必须先保存网页登录账号和密码', 'INVALID_RESPONSE')
+  }
+  if (autoReauthEnabled && new URL(baseUrl).protocol !== 'https:') {
+    throw new Sub2ApiError('自动重新登录仅允许 HTTPS 站点', 'INVALID_RESPONSE')
+  }
   const station: StoredStation = {
     id: existing?.id ?? input.id ?? randomUUID(),
     name,
@@ -756,6 +784,8 @@ export async function saveStation(input: StationInput): Promise<StoredStation[]>
     adminCredentialType: input.adminCredentialType ?? existing?.adminCredentialType,
     loginAccount: input.clearSavedLoginCredentials ? undefined : nextSecret(loginAccount, existing?.loginAccount),
     loginPassword: input.clearSavedLoginCredentials ? undefined : hasNewLoginPassword ? encrypt(loginPassword) : existing?.loginPassword,
+    autoReauthEnabled,
+    autoReauthStatus: autoReauthEnabled && !hasNewLoginPassword ? existing?.autoReauthStatus : undefined,
     pollingIntervalMs
   }
   const next = existing
@@ -806,6 +836,14 @@ function resolveStoredApiBaseUrl(baseUrl: string, apiBaseUrl: string | undefined
 
 export async function removeStation(id: string): Promise<StoredStation[]> {
   const next = (await readStored()).filter((station) => station.id !== id)
+  await writeStored(next)
+  return next
+}
+
+export async function updateStationAutoReauthStatus(id: string, status: StationAutoReauthStatus): Promise<StoredStation[]> {
+  const stations = await readStored()
+  if (!stations.some((station) => station.id === id)) return stations
+  const next = stations.map((station) => station.id === id ? { ...station, autoReauthStatus: status } : station)
   await writeStored(next)
   return next
 }

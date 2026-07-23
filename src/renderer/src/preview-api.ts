@@ -235,10 +235,15 @@ export function createPreviewApi(): AizzzApi {
   let stations: StationPublic[] = []
   const snapshots = new Map<string, StationSnapshot>()
   const snapshotListeners = new Set<(next: StationSnapshot[]) => void>()
+  const stationListeners = new Set<(next: StationPublic[]) => void>()
 
   const emitSnapshots = (): void => {
     const next = [...snapshots.values()]
     for (const listener of snapshotListeners) listener(next)
+  }
+
+  const emitStations = (): void => {
+    for (const listener of stationListeners) listener(stations)
   }
 
   return {
@@ -277,6 +282,7 @@ export function createPreviewApi(): AizzzApi {
           hasRefreshToken: hasValue(input.refreshToken) || Boolean(existing?.hasRefreshToken),
           hasAdminToken,
           hasSavedLoginCredentials: false,
+          autoReauthEnabled: false,
           adminCredentialType: hasAdminToken ? input.adminCredentialType ?? existing?.adminCredentialType ?? 'jwt' : undefined,
           pollingIntervalMs: clampPollingInterval(input.pollingIntervalMs)
         }
@@ -284,12 +290,14 @@ export function createPreviewApi(): AizzzApi {
           ? stations.map((item) => (item.id === station.id ? station : item))
           : [...stations, station]
         snapshots.set(station.id, createPreviewSnapshot(station))
+        emitStations()
         emitSnapshots()
         return stations
       },
       remove: async (id: string) => {
         stations = stations.filter((station) => station.id !== id)
         snapshots.delete(id)
+        emitStations()
         emitSnapshots()
         return stations
       },
@@ -303,6 +311,10 @@ export function createPreviewApi(): AizzzApi {
       onSnapshotsUpdated: (callback) => {
         snapshotListeners.add(callback)
         return () => snapshotListeners.delete(callback)
+      },
+      onStationsUpdated: (callback) => {
+        stationListeners.add(callback)
+        return () => stationListeners.delete(callback)
       }
     },
     window: {

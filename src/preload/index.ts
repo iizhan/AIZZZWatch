@@ -20,6 +20,11 @@ const api: AizzzApi = {
       const listener = (_event: Electron.IpcRendererEvent, snapshots: Awaited<ReturnType<AizzzApi['stations']['getSnapshots']>>) => callback(snapshots)
       ipcRenderer.on('stations:snapshot-updated', listener)
       return () => ipcRenderer.removeListener('stations:snapshot-updated', listener)
+    },
+    onStationsUpdated: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, stations: Awaited<ReturnType<AizzzApi['stations']['list']>>) => callback(stations)
+      ipcRenderer.on('stations:updated', listener)
+      return () => ipcRenderer.removeListener('stations:updated', listener)
     }
   },
   window: {

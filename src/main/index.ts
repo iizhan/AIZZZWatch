@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, nativeImage, net, session, Tray } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, saveDismissedGroupChangeEventIds } from './storage'
+import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, updateStationAutoReauthStatus, saveDismissedGroupChangeEventIds, type StoredStation } from './storage'
 import { diagnoseStation } from './station-diagnostics'
 import { hasUsableAdminCredential, isJwtExpiringSoon, resolveWebAuthTokens, Sub2ApiClient } from './sub2api-client'
 import { createStationReadClient, usesSub2ApiContract } from './station-adapter'
@@ -9,7 +9,7 @@ import { collectWebAuthApiBaseUrls, readWebAuthProbeSnapshot, resolveWebAuthApiB
 import { classifySub2ApiError, createEmptySnapshot, normalizeStationApiPaths, normalizeStationBaseUrl, resolveStationApiRequestUrl, sameNumberSet } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { buildProfitIntervalReport } from '../shared/time-cost-ledger'
-import type { AccountGroupMutation, AccountUpstreamMapping, ProfitArchiveDayCoverage, ProfitIntervalQuery, StationDiagnostics, StationInput, StationMappingPreview, StationSnapshot, TimeCostLedger, UsageLedgerCoverage, WebAuthInput, WindowMode } from '../shared/types'
+import type { AccountGroupMutation, AccountUpstreamMapping, ProfitArchiveDayCoverage, ProfitIntervalQuery, StationAutoReauthStatus, StationDiagnostics, StationInput, StationMappingPreview, StationSnapshot, TimeCostLedger, UsageLedgerCoverage, WebAuthInput, WindowMode } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let bubbleWindow: BrowserWindow | null = null
@@ -22,6 +22,9 @@ const snapshots = new Map<string, StationSnapshot>()
 const pollers = new Map<string, NodeJS.Timeout>()
 const sourceKeyFingerprints = new Map<string, Map<string, string>>()
 const accountCredentialFingerprints = new Map<string, Map<number, string>>()
+const autoReauthAttempts = new Map<string, Promise<void>>()
+let autoReauthReservation: string | undefined
+const autoReauthFailureCooldownMs = 5 * 60_000
 
 app.setName('AIZZZWatch')
 app.setAppUserModelId('com.aizzzwatch.desktop')
@@ -125,6 +128,17 @@ function sendSnapshots(): void {
   bubbleWindow?.webContents.send('stations:snapshot-updated', [...snapshots.values()])
 }
 
+function sendStationsUpdated(stations: StoredStation[]): void {
+  const publicStationList = publicStations(stations)
+  mainWindow?.webContents.send('stations:updated', publicStationList)
+  bubbleWindow?.webContents.send('stations:updated', publicStationList)
+}
+
+async function setStationAutoReauthStatus(id: string, state: StationAutoReauthStatus['state']): Promise<void> {
+  const stations = await updateStationAutoReauthStatus(id, { state, at: new Date().toISOString() })
+  sendStationsUpdated(stations)
+}
+
 function createPostMutationRefreshFailureSnapshot(stationId: string, stationName: string, error: unknown): StationSnapshot {
   const previous = snapshots.get(stationId) ?? createEmptySnapshot(stationId, stationName)
   const classified = classifySub2ApiError(error)
@@ -137,6 +151,74 @@ function createPostMutationRefreshFailureSnapshot(stationId: string, stationName
     errorMessage: `分组已提交，但刷新失败：${classified.message}`,
     lastUpdatedAt: new Date().toISOString()
   }
+}
+
+function isHttpsStation(station: Pick<StoredStation, 'baseUrl'>): boolean {
+  try {
+    return new URL(station.baseUrl).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isSessionReauthorizationNeeded(snapshot: Pick<StationSnapshot, 'errorCode' | 'errorMessage'>): boolean {
+  if (snapshot.errorCode === 'UNAUTHORIZED') return true
+  if (snapshot.errorCode !== 'FORBIDDEN') return false
+  return /session|cookie|jwt|token|\u4f1a\u8bdd|\u91cd\u65b0\u6388\u6743|\u767b\u5f55/i.test(snapshot.errorMessage ?? '')
+}
+
+function isAutoReauthCoolingDown(station: Pick<StoredStation, 'autoReauthStatus'>): boolean {
+  const status = station.autoReauthStatus
+  if (status?.state !== 'failed') return false
+  const attemptedAt = new Date(status.at).getTime()
+  return Number.isFinite(attemptedAt) && Date.now() - attemptedAt < autoReauthFailureCooldownMs
+}
+
+function webAuthInputFromStoredStation(station: StoredStation): WebAuthInput {
+  return {
+    id: station.id,
+    name: station.name,
+    baseUrl: station.baseUrl,
+    apiBaseUrl: station.apiBaseUrl,
+    stationRole: station.stationRole,
+    adapterType: station.adapterType,
+    detectedAdapterType: station.detectedAdapterType,
+    rechargeRatio: station.rechargeRatio,
+    lowBalanceThreshold: station.lowBalanceThreshold,
+    apiPaths: station.apiPaths,
+    adminCredentialType: station.adminCredentialType,
+    pollingIntervalMs: station.pollingIntervalMs,
+    useSavedLoginCredentials: true
+  }
+}
+
+function scheduleStationAutoReauth(station: StoredStation): void {
+  if (!station.autoReauthEnabled || !isHttpsStation(station) || isAutoReauthCoolingDown(station)) return
+  if (autoReauthAttempts.has(station.id) || autoReauthReservation || (authWindow && !authWindow.isDestroyed())) return
+  const credentials = stationLoginCredentials(station)
+  if (!credentials.loginAccount || !credentials.loginPassword) return
+
+  autoReauthReservation = station.id
+  const attempt = (async () => {
+    try {
+      await setStationAutoReauthStatus(station.id, 'pending')
+      await beginWebAuth(webAuthInputFromStoredStation(station), {
+        autoSubmitSavedLogin: true,
+        onManualInterventionRequired: () => {
+          void setStationAutoReauthStatus(station.id, 'manual-required')
+        }
+      })
+      await setStationAutoReauthStatus(station.id, 'success')
+      await refreshStation(station.id, false).catch(() => undefined)
+    } catch {
+      await setStationAutoReauthStatus(station.id, 'failed').catch(() => undefined)
+    }
+  })()
+  autoReauthAttempts.set(station.id, attempt)
+  void attempt.finally(() => {
+    autoReauthAttempts.delete(station.id)
+    if (autoReauthReservation === station.id) autoReauthReservation = undefined
+  })
 }
 
 async function refreshStation(id: string, allowTokenRefresh = true): Promise<StationSnapshot> {
@@ -179,6 +261,7 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
       next = await client.fetchSnapshot(snapshots.get(id))
     }
   }
+  if (allowTokenRefresh && isSessionReauthorizationNeeded(next)) scheduleStationAutoReauth(station)
   let usageDetail: Awaited<ReturnType<Sub2ApiClient['fetchAdminUsageDetail']>> | undefined
   if (client instanceof Sub2ApiClient && next.health === 'healthy' && hasUsableAdminCredential({ ...station, ...tokens })) {
     try {
@@ -389,30 +472,20 @@ function isSameOrigin(url: string, stationBaseUrl: string): boolean {
   }
 }
 
-async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBaseUrl: string, credentials: { loginAccount: string; loginPassword: string }): Promise<boolean> {
+type SavedLoginFillResult = 'filled' | 'submitted' | 'manual-required' | 'unavailable'
+
+interface WebAuthFlowOptions {
+  autoSubmitSavedLogin?: boolean
+  onManualInterventionRequired?: () => void
+}
+
+async function hasWebAuthSecurityChallenge(loginWindow: BrowserWindow, stationBaseUrl: string): Promise<boolean> {
   if (loginWindow.isDestroyed() || !isSameOrigin(loginWindow.webContents.getURL(), stationBaseUrl)) return false
   const script = `(() => {
-    const credentials = ${JSON.stringify(credentials)}
-    const visible = (element) => Boolean(element && !element.disabled && element.offsetParent !== null)
-    const password = [...document.querySelectorAll('input[type="password"]')].find(visible)
-    if (!password) return false
-    const form = password.closest('form') || document
-    const account = [...form.querySelectorAll('input')].find((element) => {
-      if (!visible(element) || element === password) return false
-      const type = (element.getAttribute('type') || 'text').toLowerCase()
-      const hint = [element.name, element.id, element.autocomplete, element.placeholder].filter(Boolean).join(' ').toLowerCase()
-      return type === 'email' || /email|mail|user|account|login|phone|mobile/.test(hint)
-    })
-    if (!account) return false
-    const assign = (element, value) => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      if (!setter) return false
-      setter.call(element, value)
-      element.dispatchEvent(new Event('input', { bubbles: true }))
-      element.dispatchEvent(new Event('change', { bubbles: true }))
-      return true
-    }
-    return assign(account, credentials.loginAccount) && assign(password, credentials.loginPassword)
+    const form = document.querySelector('form') || document
+    const pageText = [document.body?.innerText, form.textContent].filter(Boolean).join(' ').toLowerCase()
+    return Boolean(document.querySelector('[data-sitekey], iframe[src*="captcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="totp" i]'))
+      || /captcha|\\u9a8c\\u8bc1\\u7801|\\u4eba\\u673a\\u9a8c\\u8bc1|verify you are human|two[ -]?factor|\\u4e8c\\u6b21\\u9a8c\\u8bc1|\\u5b89\\u5168\\u9a8c\\u8bc1/.test(pageText)
   })()`
   try {
     return Boolean(await loginWindow.webContents.executeJavaScript(script, true))
@@ -421,7 +494,54 @@ async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBase
   }
 }
 
-async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publicStations>> {
+async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBaseUrl: string, credentials: { loginAccount: string; loginPassword: string }, autoSubmit = false): Promise<SavedLoginFillResult> {
+  if (loginWindow.isDestroyed() || !isSameOrigin(loginWindow.webContents.getURL(), stationBaseUrl)) return 'unavailable'
+  const script = `(() => {
+    const credentials = ${JSON.stringify(credentials)}
+    const visible = (element) => Boolean(element && !element.disabled && element.offsetParent !== null)
+    const password = [...document.querySelectorAll('input[type="password"]')].find(visible)
+    if (!password) return 'unavailable'
+    const form = password.closest('form') || document
+    const account = [...form.querySelectorAll('input')].find((element) => {
+      if (!visible(element) || element === password) return false
+      const type = (element.getAttribute('type') || 'text').toLowerCase()
+      const hint = [element.name, element.id, element.autocomplete, element.placeholder].filter(Boolean).join(' ').toLowerCase()
+      return type === 'email' || /email|mail|user|account|login|phone|mobile/.test(hint)
+    })
+    if (!account) return 'unavailable'
+    const assign = (element, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      if (!setter) return false
+      setter.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+      element.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    }
+    if (!assign(account, credentials.loginAccount) || !assign(password, credentials.loginPassword)) return 'unavailable'
+    if (!${JSON.stringify(autoSubmit)}) return 'filled'
+    const pageText = [document.body?.innerText, form.textContent].filter(Boolean).join(' ').toLowerCase()
+    const hasChallenge = Boolean(document.querySelector('[data-sitekey], iframe[src*="captcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="totp" i]'))
+      || /captcha|\u9a8c\u8bc1\u7801|\u4eba\u673a\u9a8c\u8bc1|verify you are human|two[ -]?factor|\u4e8c\u6b21\u9a8c\u8bc1|\u5b89\u5168\u9a8c\u8bc1/.test(pageText)
+    if (hasChallenge) return 'manual-required'
+    const submit = [...form.querySelectorAll('button, input[type="submit"]')].find((element) => {
+      if (!visible(element)) return false
+      const type = (element.getAttribute('type') || '').toLowerCase()
+      const label = [element.textContent, element.getAttribute('value'), element.getAttribute('aria-label'), element.getAttribute('title')].filter(Boolean).join(' ').toLowerCase()
+      return type === 'submit' || /login|sign in|\u767b\u5f55|\u767b\u5165/.test(label)
+    })
+    if (!submit) return 'manual-required'
+    submit.click()
+    return 'submitted'
+  })()`
+  try {
+    const result = await loginWindow.webContents.executeJavaScript(script, true)
+    return result === 'filled' || result === 'submitted' || result === 'manual-required' ? result : 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
+}
+
+async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {}): Promise<ReturnType<typeof publicStations>> {
   const name = input.name.trim()
   if (!name) throw new Error('站点名称不能为空')
   const baseUrl = input.baseUrl.trim()
@@ -429,6 +549,7 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
   const normalizedBaseUrl = normalizeStationBaseUrl(baseUrl, input.adapterType === 'auto' ? input.detectedAdapterType : input.adapterType)
   const authLaunchTarget = resolveWebAuthLaunchTarget(normalizedBaseUrl)
   if (authWindow && !authWindow.isDestroyed()) {
+    if (!authWindow.isVisible()) authWindow.show()
     authWindow.focus()
     throw new Error('已有授权窗口打开')
   }
@@ -451,7 +572,7 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
     width: 520,
     height: 760,
     title: `登录 ${name}`,
-    show: true,
+    show: !options.autoSubmitSavedLogin,
     webPreferences: {
       sandbox: true,
       nodeIntegration: false,
@@ -464,18 +585,32 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
   return new Promise<ReturnType<typeof publicStations>>((resolve, reject) => {
     let settled = false
     let poller: NodeJS.Timeout | undefined
+    let automaticAuthTimeout: NodeJS.Timeout | undefined
     let requestedClientLoginRoute = false
     let savedLoginFilled = false
+    let manualInterventionRequired = false
+    const requestManualIntervention = (): void => {
+      if (!options.autoSubmitSavedLogin || manualInterventionRequired) return
+      manualInterventionRequired = true
+      if (automaticAuthTimeout) clearTimeout(automaticAuthTimeout)
+      options.onManualInterventionRequired?.()
+      if (!loginWindow.isDestroyed()) {
+        loginWindow.show()
+        loginWindow.focus()
+      }
+    }
     const fillSavedLogin = (): void => {
       if (!savedLoginCredentials || savedLoginFilled) return
-      void fillSavedLoginCredentials(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl, savedLoginCredentials).then((filled) => {
-        savedLoginFilled = filled
+      void fillSavedLoginCredentials(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl, savedLoginCredentials, Boolean(options.autoSubmitSavedLogin)).then((result) => {
+        if (result !== 'unavailable') savedLoginFilled = true
+        if (result === 'manual-required') requestManualIntervention()
       })
     }
     const finish = async (callback: () => void): Promise<void> => {
       if (settled) return
       settled = true
       if (poller) clearInterval(poller)
+      if (automaticAuthTimeout) clearTimeout(automaticAuthTimeout)
       await closeAuthWindow()
       callback()
     }
@@ -560,7 +695,15 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
       }
       fillSavedLogin()
       void capture()
-      if (!poller) poller = setInterval(() => void capture(), 700)
+      if (!poller) poller = setInterval(() => {
+        if (!savedLoginFilled) fillSavedLogin()
+        else if (options.autoSubmitSavedLogin && !manualInterventionRequired) {
+          void hasWebAuthSecurityChallenge(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl).then((hasChallenge) => {
+            if (hasChallenge) requestManualIntervention()
+          })
+        }
+        void capture()
+      }, 700)
     })
     loginWindow.webContents.on('did-navigate-in-page', fillSavedLogin)
     loginWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -570,6 +713,11 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
     loginWindow.on('closed', () => {
       void finish(() => reject(new Error('AUTH_CANCELLED')))
     })
+    if (options.autoSubmitSavedLogin) {
+      automaticAuthTimeout = setTimeout(() => {
+        void finish(() => reject(new Error('AUTO_AUTH_TIMEOUT')))
+      }, 45_000)
+    }
     void loginWindow.loadURL(authLaunchTarget.loadUrl)
   })
 }

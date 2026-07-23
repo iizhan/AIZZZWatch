@@ -11,6 +11,7 @@ function station(input: Partial<StationPublic> & Pick<StationPublic, 'id' | 'nam
     hasRefreshToken: false,
     hasAdminToken: false,
     hasSavedLoginCredentials: false,
+    autoReauthEnabled: false,
     pollingIntervalMs: 30_000,
     ...input
   }

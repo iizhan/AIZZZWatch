@@ -201,6 +201,39 @@ describe('station storage', () => {
     expect(stationLoginCredentials(cleared)).toEqual({})
   })
 
+  it('keeps automatic reauthorization opt-in, local, and separate from credential values', async () => {
+    const { publicStations, saveStation, updateStationAutoReauthStatus } = await importStorage()
+    const [created] = await saveStation({
+      name: 'Saved login', baseUrl: 'https://relay.example.com/api/v1', loginAccount: 'member@example.com', loginPassword: 'password-test', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [updated] = await updateStationAutoReauthStatus(created.id, { state: 'manual-required', at: '2026-07-23T12:00:00.000Z' })
+    const station = publicStations([updated])[0]
+
+    expect(station).toMatchObject({ hasSavedLoginCredentials: true, autoReauthEnabled: true, autoReauthStatus: { state: 'manual-required', at: '2026-07-23T12:00:00.000Z' } })
+    expect(station).not.toHaveProperty('loginAccount')
+    expect(station).not.toHaveProperty('loginPassword')
+  })
+
+  it('requires saved credentials before enabling automatic reauthorization and disables it when credentials are cleared', async () => {
+    const { publicStations, saveStation } = await importStorage()
+    await expect(saveStation({
+      name: 'No saved login', baseUrl: 'https://relay.example.com/api/v1', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })).rejects.toThrow('开启自动重新登录前，必须先保存网页登录账号和密码')
+
+    const [created] = await saveStation({
+      name: 'Saved login', baseUrl: 'https://relay.example.com/api/v1', loginAccount: 'member@example.com', loginPassword: 'password-test', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [cleared] = await saveStation({
+      id: created.id, name: 'Saved login', baseUrl: 'https://relay.example.com/api/v1', clearSavedLoginCredentials: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+
+    expect(publicStations([cleared])[0]).toMatchObject({ hasSavedLoginCredentials: false, autoReauthEnabled: false })
+  })
+
   it('normalizes a root API base URL back to the versioned API root when the station uses relative API paths', async () => {
     const { saveStation } = await importStorage()
     const [saved] = await saveStation({

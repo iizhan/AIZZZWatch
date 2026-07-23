@@ -87,6 +87,7 @@ const demoStations: StationPublic[] = [
     hasRefreshToken: true,
     hasAdminToken: true,
     hasSavedLoginCredentials: false,
+    autoReauthEnabled: false,
     adminCredentialType: 'jwt',
     pollingIntervalMs: 30_000
   },
@@ -103,6 +104,7 @@ const demoStations: StationPublic[] = [
     hasRefreshToken: false,
     hasAdminToken: false,
     hasSavedLoginCredentials: false,
+    autoReauthEnabled: false,
     pollingIntervalMs: 30_000
   }
 ]
@@ -191,6 +193,7 @@ type SettingsForm = {
   loginAccount: string
   loginPassword: string
   clearSavedLoginCredentials: boolean
+  autoReauthEnabled: boolean
   pollingIntervalMs: number
   rechargeRatio: number
   lowBalanceThreshold: number
@@ -200,7 +203,7 @@ type SettingsForm = {
 type NoticeKind = 'success' | 'warning' | 'error'
 
 const newApiPathDefaults: StationApiPaths = { profile: '/api/user/self', channels: '/api/models', keys: '/api/token/?p=0&size=100' }
-const emptyForm: SettingsForm = { name: '', baseUrl: '', apiBaseUrl: '', stationRole: 'source', adapterType: 'auto', accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {} }
+const emptyForm: SettingsForm = { name: '', baseUrl: '', apiBaseUrl: '', stationRole: 'source', adapterType: 'auto', accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, autoReauthEnabled: false, pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {} }
 
 const categoryTabs = [
   { id: 'all', label: '全部', keywords: [] },
@@ -603,6 +606,15 @@ function formatGroupChangeObservedAt(value?: string): string {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
     .format(occurredAt)
     .replaceAll('/', '-')
+}
+
+function autoReauthStatusLabel(status: StationPublic['autoReauthStatus']): string {
+  if (!status) return ''
+  const timestamp = formatGroupChangeObservedAt(status.at)
+  if (status.state === 'pending') return `正在尝试重新登录${timestamp ? ` · ${timestamp}` : ''}`
+  if (status.state === 'success') return `上次保活成功${timestamp ? ` · ${timestamp}` : ''}`
+  if (status.state === 'manual-required') return `需要人工完成验证${timestamp ? ` · ${timestamp}` : ''}`
+  return `上次保活未完成${timestamp ? ` · ${timestamp}` : ''}`
 }
 
 function formatAge(value: string | undefined, now: number): string {
@@ -2797,6 +2809,9 @@ function App() {
         setTimeCostLedger(preferences.timeCostLedger ?? emptyTimeCostLedger())
       }).catch(() => undefined)
     })
+    const unsubscribeStations = window.aizzz.stations.onStationsUpdated((next) => {
+      if (!disposed) setStations(next)
+    })
     const unsubscribeWindow = window.aizzz.window.onModeChanged((state) => {
       if (!disposed) {
         setMode(state.mode)
@@ -2806,6 +2821,7 @@ function App() {
     return () => {
       disposed = true
       unsubscribe()
+      unsubscribeStations()
       unsubscribeWindow()
     }
   }, [])
@@ -2942,7 +2958,9 @@ function App() {
   }, [visibleSnapshots, visibleStations])
   const showRankingToolbar = mode === 'compact' || viewportWidth <= 620
   const newApiSettings = settingsForm.adapterType === 'newapi' || (settingsForm.adapterType === 'auto' && settingsForm.detectedAdapterType === 'newapi')
-  const settingsHasSavedLoginCredentials = Boolean(settingsForm.id && stations.find((station) => station.id === settingsForm.id)?.hasSavedLoginCredentials)
+  const settingsStation = settingsForm.id ? stations.find((station) => station.id === settingsForm.id) : undefined
+  const settingsHasSavedLoginCredentials = Boolean(settingsStation?.hasSavedLoginCredentials)
+  const settingsCanConfigureAutoReauth = !settingsForm.clearSavedLoginCredentials && (settingsHasSavedLoginCredentials || Boolean(settingsForm.loginAccount.trim() && settingsForm.loginPassword))
 
   async function refreshDataCenterSummary() {
     setDataCenterLoading(true)
@@ -3098,7 +3116,7 @@ function App() {
 
   function openEdit(station?: StationPublic) {
     setDiagnostics(null)
-    setSettingsForm(station ? { id: station.id, name: station.name, baseUrl: station.baseUrl, apiBaseUrl: station.apiBaseUrl ?? '', stationRole: station.stationRole ?? (isOwnStation(station, visibleSnapshots[station.id]) ? 'own' : 'source'), adapterType: station.adapterType ?? 'sub2api', detectedAdapterType: station.detectedAdapterType, accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: station.adminCredentialType ?? 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, pollingIntervalMs: station.pollingIntervalMs, rechargeRatio: station.rechargeRatio ?? 1, lowBalanceThreshold: station.lowBalanceThreshold ?? 10, apiPaths: station.apiPaths ?? {} } : { ...emptyForm, stationRole: sourceWalletView === 'own' ? 'own' : 'source' })
+    setSettingsForm(station ? { id: station.id, name: station.name, baseUrl: station.baseUrl, apiBaseUrl: station.apiBaseUrl ?? '', stationRole: station.stationRole ?? (isOwnStation(station, visibleSnapshots[station.id]) ? 'own' : 'source'), adapterType: station.adapterType ?? 'sub2api', detectedAdapterType: station.detectedAdapterType, accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: station.adminCredentialType ?? 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, autoReauthEnabled: station.autoReauthEnabled, pollingIntervalMs: station.pollingIntervalMs, rechargeRatio: station.rechargeRatio ?? 1, lowBalanceThreshold: station.lowBalanceThreshold ?? 10, apiPaths: station.apiPaths ?? {} } : { ...emptyForm, stationRole: sourceWalletView === 'own' ? 'own' : 'source' })
     setSettingsOpen(true)
   }
 
@@ -5778,11 +5796,16 @@ function App() {
             {settingsHasSavedLoginCredentials && <button type="button" className="outline-button" onClick={() => void authorizeStation(true)} disabled={isBrowserPreview || authorizing || saving} title="仅在同源登录页填入已保存账号密码，不会自动提交"><KeyRound size={15} /> 使用保存账号密码授权</button>}
             <span className="field-hint">{isBrowserPreview ? '浏览器预览不执行网页登录授权；请打开桌面快捷入口完成真实登录。' : settingsForm.id ? '会覆盖当前站点的登录令牌和 Cookie；如果登录账号是管理员，同一 JWT 会用于“我的站点”账号管理。' : '在隔离窗口完成站点登录；如果登录账号是管理员，同一 JWT 会用于“我的站点”账号管理。'}</span>
           </div>
-          <div className="diagnostic-block">
+          <div className="auth-credentials-block">
             <div className="section-heading compact-section"><div><span className="eyebrow">LOGIN CREDENTIALS</span><h2>网页登录账号密码</h2></div>{settingsHasSavedLoginCredentials && !settingsForm.clearSavedLoginCredentials && <span className="status-chip ready"><CheckCircle2 size={13} /> 已加密保存</span>}</div>
             <label>登录账号 <span className="optional">可选</span><input value={settingsForm.loginAccount} onChange={(event) => setSettingsForm({ ...settingsForm, loginAccount: event.target.value, clearSavedLoginCredentials: false })} placeholder={settingsHasSavedLoginCredentials ? '留空则保留已保存账号' : '邮箱、用户名或手机号'} autoComplete="username" /></label>
             <label>登录密码 <span className="optional">可选</span><input type="password" value={settingsForm.loginPassword} onChange={(event) => setSettingsForm({ ...settingsForm, loginPassword: event.target.value, clearSavedLoginCredentials: false })} placeholder={settingsHasSavedLoginCredentials ? '留空则保留已保存密码' : '与登录账号同时填写'} autoComplete="new-password" /></label>
-            {settingsHasSavedLoginCredentials && <div className="auth-actions"><span className="field-hint">密码原文不会回显。{settingsForm.clearSavedLoginCredentials ? '保存配置后会清除已保存账号密码。' : '可使用上方按钮在同源登录页填入，仍需你自行提交登录。'}</span><button type="button" className="text-button" onClick={() => setSettingsForm({ ...settingsForm, loginAccount: '', loginPassword: '', clearSavedLoginCredentials: !settingsForm.clearSavedLoginCredentials })}>{settingsForm.clearSavedLoginCredentials ? '撤销清除' : '清除已保存凭据'}</button></div>}
+            <div className="auth-keepalive-row">
+              <label className="auth-keepalive-toggle"><input type="checkbox" checked={settingsForm.autoReauthEnabled} disabled={!settingsCanConfigureAutoReauth} onChange={(event) => setSettingsForm({ ...settingsForm, autoReauthEnabled: event.target.checked })} /><span>令牌失效时自动重新登录</span></label>
+              <span className="field-hint">先尝试刷新令牌；仅 HTTPS 同源登录页会自动提交。验证码、2FA 与风控页会转为人工授权。</span>
+              {settingsStation?.autoReauthStatus && <span className={`auth-keepalive-status ${settingsStation.autoReauthStatus.state}`}>{autoReauthStatusLabel(settingsStation.autoReauthStatus)}</span>}
+            </div>
+            {settingsHasSavedLoginCredentials && <div className="auth-actions"><span className="field-hint">密码原文不会回显。{settingsForm.clearSavedLoginCredentials ? '保存配置后会清除已保存账号密码并关闭自动重新登录。' : '可使用上方按钮在同源登录页填入，仍需你自行提交登录。'}</span><button type="button" className="text-button" onClick={() => setSettingsForm({ ...settingsForm, loginAccount: '', loginPassword: '', clearSavedLoginCredentials: !settingsForm.clearSavedLoginCredentials, autoReauthEnabled: settingsForm.clearSavedLoginCredentials ? settingsForm.autoReauthEnabled : false })}>{settingsForm.clearSavedLoginCredentials ? '撤销清除' : '清除已保存凭据'}</button></div>}
           </div>
           <label>站点登录 JWT <span className="optional">备用</span><input type="password" value={settingsForm.accessToken} onChange={(event) => setSettingsForm({ ...settingsForm, accessToken: event.target.value })} placeholder={settingsForm.id ? '留空则保留原令牌' : '粘贴 access token'} autoComplete="off" /></label>
           <label>刷新令牌 <span className="optional">可选</span><input type="password" value={settingsForm.refreshToken} onChange={(event) => setSettingsForm({ ...settingsForm, refreshToken: event.target.value })} placeholder={settingsForm.id ? '留空则保留原令牌' : '用于自动续期'} autoComplete="off" /></label>
