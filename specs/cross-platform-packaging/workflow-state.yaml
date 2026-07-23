@@ -1,0 +1,164 @@
+feature:
+  slug: "cross-platform-packaging"
+  name: "跨平台 DMG 与 Windows 安装包"
+  created_at: "2026-07-24"
+  original_request: "支持 Windows，并可打包 macOS DMG 与 Windows EXE 安装包。"
+
+requirement_status: confirmed
+scope_status: locked
+active_milestone: awaiting-user-acceptance
+task_lane: controlled
+# clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
+confirmation_state: awaiting_user_acceptance
+task_lane_history:
+  - lane: controlled
+    reason: "跨平台原生安装包、构建配置、资源与验证环境变更。"
+    at: "2026-07-24"
+
+project_profile:
+  status: fresh
+  profile_version: 1
+  last_checked_at: "2026-07-24"
+  evidence_state: fresh
+  changed_evidence: []
+  loaded_sections: ["profile.yaml", "architecture.md", "decision-memory.yaml"]
+  refreshed_sections: []
+  reused_decisions: []
+  invalidation_reason: null
+
+artifact_versions:
+  requirement: v1
+  design: v1
+  impact: v1
+  plan: v1
+  task_breakdown: v1
+  verification: v1
+
+confirmation_gates:
+  requirement_impact:
+    required: true
+    status: approved
+    approved_version: v1
+  semantic_confirmation:
+    required: false
+    status: not_required
+    approved_version: null
+  design_plan:
+    required: true
+    status: approved
+    approved_version: v1
+  child_task_plan:
+    required: true
+    status: approved
+    approved_version: v1
+  user_acceptance:
+    required: true
+    status: pending
+    approved_version: null
+
+confirmation_history:
+  - version: v1
+    kind: formal_implementation_package
+    approved_at: "2026-07-24"
+    wording: "确认执行 跨平台打包正式实施包 v1"
+work_items:
+  - id: ITEM-PKG-001
+    status: verified
+  - id: ITEM-PKG-002
+    status: verified_with_risk
+  - id: ITEM-PKG-003
+    status: verified_with_risk
+  - id: ITEM-PKG-004
+    status: verified
+child_tasks:
+  - id: TASK-PKG-001
+    status: completed
+  - id: TASK-PKG-002
+    status: completed
+  - id: TASK-PKG-003
+    status: completed
+  - id: TASK-PKG-004
+    status: completed
+impact_assessment:
+  level: high
+  direct: ["构建配置", "原生图标", "Electron 主进程", "README", "测试"]
+  indirect: ["Windows 原生构建环境", "安装包资源复制"]
+  user: ["Windows 系统托盘", "未签名系统提示"]
+  data_migration: ["无格式迁移；跨系统凭据不迁移"]
+  interfaces_config: ["新增 package:dmg 和 package:win"]
+  security_permissions: ["不修改凭据处理；未签名安装包风险告知"]
+  compatibility: ["macOS arm64", "Windows x64", "不含 MSI/Windows ARM64/macOS Intel"]
+  performance_resources: ["构建期新增 electron-builder；运行期加载图标"]
+  tests: ["verify", "DMG 构建/挂载", "Windows 原生待验收"]
+  release_rollback: ["不发布远端；移除新增配置可回退"]
+  workflow_skills: ["工程治理 Workflow 已验证"]
+  explicitly_unaffected: ["站点 API", "IPC", "授权数据", "收益计算", "远端写入"]
+  unknowns: ["Windows 实机验收待环境"]
+
+scope_deltas: []
+
+semantic_confirmations: []
+
+milestones: []
+
+capability_routes: []
+
+branch_flow:
+  feature_branch: "featuew/cross-platform-packaging"
+  source_branch: "featuew/newapi-station-compatibility"
+  release_branch: null
+  release_version: null
+  tag_name: null
+  merge_target: main
+  status: verified_stacked_feature
+
+role_reviews: []
+
+session_reflections:
+  - status: awaiting_user_acceptance
+    summary: "DMG 已实际生成、校验、挂载和签名验证；Windows EXE 配置已验证但需 Windows 原生环境验收。"
+    user_choices: ["NSIS EXE", "不加入 MSI/签名/公证/远端发布"]
+    choice_rationale: ["NSIS 避免 WiX 工具链", "证书和远端权限不在本轮范围"]
+    worked_well: ["实际 DMG 构建发现并修复了 identity:null 跳过签名的问题"]
+    should_change: ["提供 Windows x64 runner 和无旧实例的隔离桌面验证环境"]
+    user_feedback: []
+    acceptance_status: pending
+    dissatisfaction_categories: ["verification_gap"]
+
+reflection_artifacts: []
+delivery_artifacts: []
+release_artifacts: []
+
+memory_candidates:
+  - status: proposed_only
+    value: "Windows 安装包在发布前必须完成 Windows x64 原生构建、安装、系统托盘和卸载验证。"
+    scope: project_shared
+    requires_user_confirmation: true
+
+rule_change_candidates: []
+
+memory_updates:
+  approved: []
+  rejected: []
+  archived: []
+
+evolution_updates:
+  drafted: []
+  approved: []
+  validated: []
+  rejected: []
+  rolled_back: []
+
+validation_status: verified_with_risk
+verification_evidence:
+  - "npm run verify: 13 test files / 180 tests passed; TypeScript and production build passed."
+  - "npm run package:dmg: release/AIZZZWatch-0.1.0-arm64.dmg generated with electron-builder 26.15.3."
+  - "hdiutil verify: checksum valid; mounted DMG contains AIZZZWatch.app, Applications link and both icon resources."
+  - "codesign --verify --deep --strict: ad-hoc signed bundle valid on disk."
+  - "package configuration test covers DMG, NSIS, icon resources and legacy package:mac retention."
+handoff_notes:
+  - "Do not release the Windows installer until a Windows x64 environment has built, installed, launched, exercised tray/window modes, and uninstalled it."
+  - "The visible macOS app smoke was not accepted as evidence because a running old instance received the single-instance handoff."
+residual_risks:
+  - "No Windows x64 native build/install/tray verification on this macOS host without Wine."
+  - "No isolated visible launch proof from the new DMG while an old AIZZZWatch instance was running."

@@ -989,3 +989,11 @@
 - 安全：原始令牌、JWT、Cookie、UA 和密码不进入 renderer；网页登录恢复及后续刷新均在主进程加密保存轮换后的 `new_api_refresh` Cookie。
 - 验证：`npm run verify` 通过（12 个测试文件、177 条测试），`git diff --check` 通过，浏览器预览确认 NewAPI 五路径和能力边界。
 - 剩余风险：不同 NewAPI 二开可能变更路径或字段，需要脱敏响应样本后用明确的同源路径配置联调；管理员功能、收益归档和远程写入不在本轮范围。
+
+# 2026-07-24 跨平台 DMG 与 Windows 安装包 正式实施包 v1
+
+- 确认版本：用户确认“确认执行 跨平台打包正式实施包 v1”；验收状态 `awaiting_user_acceptance`。
+- 完成：引入 electron-builder，新增 `package:dmg`（macOS arm64 DMG）和 `package:win`（Windows x64 NSIS EXE），保留 `package:mac`；生成受版本控制的 ICO，主窗口与托盘按平台加载 ICNS/ICO；README 明确未签名风险与跨系统凭据不可迁移。
+- 验证：`npm run verify` 通过（13 个文件、180 条）；`npm run package:dmg` 生成 `release/AIZZZWatch-0.1.0-arm64.dmg`；DMG checksum、挂载内容、平台图标资源和严格 ad-hoc 签名均通过；`git diff --check` 通过。
+- 不满意分类与证据：`verification_gap`；Mac 无 Wine，Windows EXE 尚未原生构建/安装验证；尝试隔离启动 DMG 时，被运行中的旧实例通过单实例机制接管，旧窗口截图未被计入新包证据。
+- 剩余风险：Windows 产物不得在 Windows x64 完成构建、安装、系统托盘、窗口模式和卸载验证前发布；两个平台均未配置正式代码签名或公证。

@@ -1,13 +1,13 @@
 # AIZZZWatch Project Architecture
 
 Status: `implemented_mvp`
-Last analyzed: `2026-07-23`
+Last analyzed: `2026-07-24`
 
 ## System Shape
 
 - Architecture style: Electron desktop utility with privileged main process, narrow preload bridge, and React renderer.
 - Application roots: `.`
-- Deployable units: local ad-hoc signed macOS arm64 `.app`, compressed for GitHub Release; Developer ID signing, notarization, automatic updates and Windows packaging remain future work.
+- Deployable units: local ad-hoc signed macOS arm64 `.app` and DMG; a Windows x64 NSIS EXE build configuration. Developer ID signing, notarization, Windows code signing, automatic updates and Windows native runtime verification remain future work.
 - Main languages/frameworks: TypeScript, Electron, React.
 
 ## Module Map
@@ -15,7 +15,8 @@ Last analyzed: `2026-07-23`
 | Module | Responsibility | Entry | Depends On | Data/Side Effects | Evidence |
 | --- | --- | --- | --- | --- | --- |
 | workflow assets | AGENTS, local Skills, specs and verification contracts | repository root | none | process governance | `AGENTS.md`, `.agents/`, `.specify/` |
-| desktop shell | window lifecycle, always-on-top, bubble, menu bar | `src/main/index.ts` | renderer via preload | native BrowserWindow/Tray APIs | source + visible smoke |
+| desktop shell | window lifecycle, always-on-top, bubble, macOS status bar / Windows system tray | `src/main/index.ts` | renderer via preload | native BrowserWindow/Tray APIs and platform-native icon resources | source + visible smoke |
+| packaging | produce local macOS arm64 DMG and Windows x64 NSIS artifacts while retaining legacy app packager | `package.json`, `scripts/package-mac.mjs`, `scripts/build-icon.sh` | electron-builder, Electron runtime | ignored `release/` artifacts; ICNS/ICO copied as app resources | package config test + DMG verification |
 | renderer dashboard | category-driven token buying board, source wallet tabs, model price ranking with exact upstream-usage indicators and compact usage-switch filtering, own-station account workspaces, upstream Key mapping, internal-use user marking, persisted multiplier history, settings, data-integration mapping workspace and state feedback | `src/renderer/src/App.tsx` | preload IPC | visible UI state and persisted UI preferences | source + screenshots |
 | station compatibility diagnostics | auto-probe Sub2API/NewAPI signatures or manual compatibility paths; reuse saved browser Cookie/UA for read-only diagnostics | `src/main/station-diagnostics.ts` | Chromium `net.fetch`, shared URL/path helpers | read-only probe requests and suggestion payload | source + unit test |
 | station adapters | select Sub2API or NewAPI read contract; NewAPI normalizes user balance, available group ratios, fixed pricing and token group assignments without admin mutation | `src/main/station-adapter.ts`, `src/main/newapi-client.ts`, `src/main/sub2api-client.ts` | station HTTP endpoints | remote reads and explicit capability degradation | source + contract tests |
@@ -141,10 +142,10 @@ Last analyzed: `2026-07-23`
 
 ## Engineering And Delivery
 
-- Build/test commands: `npm run verify`; visible Electron smoke evidence in `specs/sub2api-monitor/ui-verification.md`.
+- Build/test commands: `npm run verify`; `npm run package:mac` retains the legacy app bundle, `npm run package:dmg` produces an arm64 DMG, and `npm run package:win` produces a Windows x64 NSIS EXE on a Windows native environment.
 - Error/logging/observability conventions: redact secrets, surface per-station health and last-success timestamp.
 - Security/privacy boundaries: main process only for secrets, privileged remote writes, and diagnostics probes; dedicated `AIZZZWatch` userData directory, unique app identity, and single-instance lock prevent cross-app state/process collisions.
-- Release/rollback path: `npm run package:mac` creates an ignored local `.app`; the verified arm64 app is compressed as a GitHub Release asset. Developer ID signing, notarization and automatic updates remain deferred, so the README documents the macOS first-launch security prompt.
+- Release/rollback path: `npm run package:mac` creates the ignored local `.app`; `npm run package:dmg` creates an ignored ad-hoc signed DMG. The Windows NSIS artifact is unsigned until a signing certificate is configured and must be verified on Windows before release. Rollback removes the electron-builder configuration and platform icon selection without disturbing the legacy macOS packager.
 
 ## Unknowns And Refresh Triggers
 

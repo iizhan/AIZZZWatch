@@ -13,7 +13,7 @@ project:
   detected_languages: ["TypeScript", "TSX", "CSS", "HTML", "Markdown", "YAML"]
   package_managers: ["npm"]
   frameworks: ["Electron 33", "React 18", "Vite 5", "Vitest 2", "TypeScript 5"]
-  runtimes: ["Node.js 24 development runtime", "Electron macOS desktop runtime"]
+  runtimes: ["Node.js 24 development runtime", "Electron macOS arm64 desktop runtime", "Electron Windows x64 desktop runtime"]
 
 architecture:
   styles: ["Electron desktop utility with main/preload/renderer boundary"]
@@ -35,10 +35,12 @@ source_of_truth:
     - "out/"
     - "release/AIZZZWatch-darwin-<arch>/AIZZZWatch.app"
     - "release/AIZZZWatch-v<version>-darwin-arm64.zip"
+    - "release/AIZZZWatch-<version>-arm64.dmg"
+    - "release/AIZZZWatch Setup <version>.exe"
 
 commands:
   install: ["npm install"]
-  build: ["npm run build", "npm run package:mac"]
+  build: ["npm run build", "npm run package:mac", "npm run package:dmg", "npm run package:win"]
   typecheck: ["npm run typecheck"]
   lint: ["npm run lint"]
   test:
@@ -52,12 +54,12 @@ engineering_conventions:
   state_or_transaction_ownership: ["main process owns remote snapshots; renderer owns view filters and mode state"]
   errors_logging_observability: ["redacted structured errors; no tokens or passwords in logs"]
   security_privacy: ["no secrets in renderer URL/storage/logs; admin mutations require explicit confirmation", "dedicated AIZZZWatch userData directory; no shared Electron storage"]
-  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip for GitHub Release"]
+  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip and DMG", "Windows x64 NSIS EXE is built and installed on a native Windows environment before release"]
   review_red_lines: ["no silent remote writes, no hardcoded credentials, no unbounded polling", "do not use generic Electron userData or auto-fallback development ports"]
 
 evidence:
-  source_paths: ["package.json", "electron.vite.config.ts", "scripts/package-mac.mjs", "scripts/build-icon.sh", "assets/icon.svg", "src/main/index.ts", "src/main/storage.ts", "src/main/sub2api-client.ts", "src/main/station-diagnostics.ts", "src/preload/index.ts", "src/renderer/src/App.tsx", "src/shared/types.ts", "src/shared/sub2api.ts", "tests/sub2api-client.test.ts", "tests/station-diagnostics.test.ts", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
-  unknowns: ["exact deployment versions and enabled feature flags vary by Sub2API station", "Developer ID signing, notarization and auto-update are not configured"]
+  source_paths: ["package.json", "package-lock.json", "electron.vite.config.ts", "scripts/package-mac.mjs", "scripts/build-icon.sh", "assets/icon.svg", "assets/icon.icns", "assets/icon.ico", "src/main/index.ts", "src/main/storage.ts", "src/main/sub2api-client.ts", "src/main/station-diagnostics.ts", "src/preload/index.ts", "src/renderer/src/App.tsx", "src/shared/types.ts", "src/shared/sub2api.ts", "tests/sub2api-client.test.ts", "tests/station-diagnostics.test.ts", "tests/packaging-config.test.ts", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
+  unknowns: ["exact deployment versions and enabled feature flags vary by Sub2API station", "Developer ID signing, notarization and auto-update are not configured", "Windows native build/install/tray verification requires a Windows x64 machine or runner"]
   confidence: high
 
 freshness:

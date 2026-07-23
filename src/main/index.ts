@@ -32,6 +32,18 @@ app.setAppUserModelId('com.aizzzwatch.desktop')
 app.setPath('userData', process.env.AIZZZWATCH_USER_DATA_DIR?.trim() || join(app.getPath('appData'), 'AIZZZWatch'))
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
+function nativeAssetPath(filename: 'icon.icns' | 'icon.ico'): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'assets', filename)
+    : join(app.getAppPath(), 'assets', filename)
+}
+
+function createPlatformIcon() {
+  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.icns'
+  const icon = nativeImage.createFromPath(nativeAssetPath(iconName))
+  return icon.isEmpty() ? nativeImage.createEmpty() : icon
+}
+
 function rendererLaunchQuery(mode?: WindowMode): Record<string, string> {
   // The packaged renderer uses a stable file URL; give its HTML document a
   // fresh URL per launch so Electron never reuses an older cached shell.
@@ -416,6 +428,7 @@ function createWindow(): void {
     minWidth: 760,
     minHeight: 540,
     title: 'AIZZZWatch',
+    icon: createPlatformIcon(),
     show: false,
     backgroundColor: '#F4F6F8',
     webPreferences: {
@@ -744,8 +757,8 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
 }
 
 function createTray(): void {
-  tray = new Tray(nativeImage.createEmpty())
-  tray.setTitle('AW')
+  tray = new Tray(createPlatformIcon())
+  if (process.platform === 'darwin') tray.setTitle('AW')
   tray.setToolTip('AIZZZWatch')
   tray.on('click', () => {
     if (mode === 'bubble' && bubbleWindow) {
