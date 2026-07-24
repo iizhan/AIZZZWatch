@@ -47,4 +47,22 @@ describe('cross-platform packaging configuration', () => {
     expect(manifest.build.win.target).toContainEqual({ target: 'nsis', arch: ['x64'] })
     expect(manifest.build.nsis).toMatchObject({ oneClick: true, perMachine: false })
   })
+
+  it('uses a least-privilege Windows runner workflow that uploads only the EXE artifact', () => {
+    const workflow = readFileSync(resolve(root, '.github', 'workflows', 'windows-package.yml'), 'utf8')
+
+    expect(workflow).toContain('workflow_dispatch:')
+    expect(workflow).toContain('featuew/cross-platform-packaging')
+    expect(workflow).toContain('paths:')
+    expect(workflow).toContain('.github/workflows/windows-package.yml')
+    expect(workflow).toContain('contents: read')
+    expect(workflow).toContain('runs-on: windows-latest')
+    expect(workflow).toContain('actions/checkout@v4')
+    expect(workflow).toContain('actions/setup-node@v4')
+    expect(workflow).toContain('run: npm ci')
+    expect(workflow).toContain('run: npm run package:win')
+    expect(workflow).toContain('actions/upload-artifact@v4')
+    expect(workflow).toContain('path: release/*.exe')
+    expect(workflow).toContain('retention-days: 7')
+  })
 })

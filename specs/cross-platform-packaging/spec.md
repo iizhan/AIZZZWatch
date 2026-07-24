@@ -6,8 +6,8 @@
 **状态**: 执行中
 **原始需求**: 支持 Windows，并可打包 macOS DMG 与 Windows EXE 安装包。
 **任务通道**: controlled
-**需求版本**: v1
-**确认状态**: 用户已于 2026-07-24 确认“跨平台打包正式实施包 v1”
+**需求版本**: v3
+**确认状态**: 用户已于 2026-07-24 确认“Windows CI 打包增量 v3”
 **业务语义确认**: not_required / pending / confirmed
 
 ## 1. 业务背景与目标
@@ -66,6 +66,7 @@
 - 规则 2：跨系统不迁移已加密的凭据，用户需重新授权。
 - 边界 1：不构建 MSI，不添加签名证书、不发布 GitHub Release。
 - 边界 2：当前 Mac 只验证 DMG；Windows EXE 由 Windows 设备或 runner 验收。
+- 边界 3：Windows CI 只获得仓库内容读取权限，上传 7 天临时 EXE Artifact；不读取仓库密钥或本地运行数据。
 
 ### 4.1 业务语义门禁
 
@@ -86,6 +87,7 @@
 - **FR-001**：提供 `npm run package:dmg` 与 arm64 DMG 输出。
 - **FR-002**：提供 `npm run package:win` 与 Windows x64 NSIS 输出。
 - **FR-003**：窗口和托盘按平台加载 ICNS/ICO，并随打包资源复制。
+- **FR-004**：GitHub Actions 在 `windows-latest` 原生 Runner 上运行 Windows x64 NSIS 构建，并上传仅含 EXE 的临时 Artifact。
 
 ## 7. 关键对象
 
@@ -102,6 +104,7 @@
 
 - 假设 1：Electron safeStorage 在 macOS 与 Windows 均由 Electron 提供受支持的本地安全存储实现。
 - 假设 2：Windows 实机/runner 将在后续可用环境中完成最终安装验证。
+- 假设 3：GitHub Actions 的 `workflow_dispatch` 文件需要先进入默认分支；在此之前，当前功能分支的受限 `push` 触发仅用于首轮 CI 构建。
 
 ## 10. 待澄清事项
 
@@ -110,6 +113,8 @@
 ## 11. 确认记录
 
 - v1：2026-07-24 已确认执行“跨平台打包正式实施包 v1”。
+- v2：2026-07-24 已确认执行“Windows CI 打包正式实施包 v2”。
+- v3：2026-07-24 已确认执行“Windows CI 打包增量 v3”；允许只在 `featuew/cross-platform-packaging` 推送时自动启动首轮原生 Windows 构建。
 - fast：recorded_without_preapproval；无需执行前确认
 - 业务语义变更：必须有 `语义确认 vN` / `思考确认 vN`，不适用 fast 免确认
 - standard / controlled 用户选择：确认执行 / 修改事项 / 缩小范围 / 补充需求

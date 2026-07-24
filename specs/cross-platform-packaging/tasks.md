@@ -2,8 +2,8 @@
 
 **功能标识**: `cross-platform-packaging`
 **日期**: 2026-07-24
-**关联计划版本**: v1
-**确认状态**: controlled: 已确认执行 v1
+**关联计划版本**: v3
+**确认状态**: controlled: 已确认执行 v3
 
 ## 1. 准备阶段
 
@@ -37,6 +37,29 @@
   - 完成条件：命令、平台边界、未签名风险和凭据迁移边界明确。
   - 验证证据：文档审阅。
 
+### ITEM-PKG-005：Windows 原生 CI 构建与 Artifact
+
+- 验收标准：受限功能分支推送可在 GitHub `windows-latest` 上生成 Windows x64 NSIS EXE Artifact；默认分支支持手动触发；不创建 Release。
+- 影响范围：`.github/workflows/`、README、打包规格与交付记录。
+- 状态：executing
+
+- [x] TASK-PKG-005：新增最小权限的 Windows 构建工作流
+  - 依赖：TASK-PKG-002
+  - 完成条件：执行 `npm ci`、`npm run package:win` 并只上传 EXE。
+  - 验证证据：工作流 YAML 审阅、GitHub run。
+- [x] TASK-PKG-006：约束临时 Artifact、权限和触发范围
+  - 依赖：TASK-PKG-005
+  - 完成条件：`contents: read`、无 secrets、7 天保留、当前功能分支首轮受限 push + 默认分支手动入口。
+  - 验证证据：工作流配置审阅。
+- [x] TASK-PKG-007：补充 Windows CI 使用说明与规格
+  - 依赖：TASK-PKG-005
+  - 完成条件：README 与正式实施包版本说明一致。
+  - 验证证据：文档审阅。
+- [ ] TASK-PKG-008：推送并验证 GitHub 原生 Artifact
+  - 依赖：TASK-PKG-005..007
+  - 完成条件：Actions run 成功并有 EXE Artifact；若失败，记录原因和修正。
+  - 验证证据：Run URL、日志摘要和 Artifact 结果。
+
 ## 3. 验证任务
 
 - [x] 执行自动化检查
@@ -59,3 +82,4 @@
 - 影响范围版本：v1
 - 验收与自测计划：DMG 实测；Windows 原生验收路径；自动化与差异审查。
 - 用户确认：2026-07-24 确认执行
+- 增量确认：2026-07-24 确认执行 Windows CI 打包增量 v3。

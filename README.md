@@ -107,6 +107,14 @@ npm run package:win
 
 当前开发机为 macOS arm64，未安装 Wine，因此不能在这里实测生成或安装 Windows EXE。请在 Windows 电脑或 Windows CI runner 上执行 `package:win` 完成最终验证。
 
+### GitHub Actions Windows 构建
+
+仓库提供 `Package Windows EXE` 工作流，使用 GitHub 的 `windows-latest` 原生 Runner 执行 `npm ci` 和 `npm run package:win`，并把 NSIS `.exe` 上传为保留 7 天的 Actions Artifact。它不创建 GitHub Release、不上传本地站点配置，也不读取仓库密钥。
+
+- 当前 `featuew/cross-platform-packaging` 分支仅在本工作流文件变更后自动构建，便于完成首轮 Windows 验证，避免普通提交重复占用 CI。
+- 工作流合入默认分支后，可在 **Actions → Package Windows EXE → Run workflow** 手动构建指定分支。
+- 下载 Artifact 后，仍应在 Windows 上安装、启动、检查系统托盘与三种窗口模式，再执行卸载；GitHub Runner 的构建成功不等于这些可见路径已完成验收。
+
 ### 保留的 macOS `.app` 打包
 
 ```bash

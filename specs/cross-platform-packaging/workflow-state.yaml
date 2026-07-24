@@ -6,10 +6,10 @@ feature:
 
 requirement_status: confirmed
 scope_status: locked
-active_milestone: awaiting-user-acceptance
+active_milestone: executing
 task_lane: controlled
 # clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
-confirmation_state: awaiting_user_acceptance
+confirmation_state: confirmed
 task_lane_history:
   - lane: controlled
     reason: "跨平台原生安装包、构建配置、资源与验证环境变更。"
@@ -27,18 +27,18 @@ project_profile:
   invalidation_reason: null
 
 artifact_versions:
-  requirement: v1
-  design: v1
-  impact: v1
-  plan: v1
-  task_breakdown: v1
-  verification: v1
+  requirement: v3
+  design: v3
+  impact: v3
+  plan: v3
+  task_breakdown: v3
+  verification: v2_pending
 
 confirmation_gates:
   requirement_impact:
     required: true
     status: approved
-    approved_version: v1
+    approved_version: v3
   semantic_confirmation:
     required: false
     status: not_required
@@ -46,11 +46,11 @@ confirmation_gates:
   design_plan:
     required: true
     status: approved
-    approved_version: v1
+    approved_version: v3
   child_task_plan:
     required: true
     status: approved
-    approved_version: v1
+    approved_version: v3
   user_acceptance:
     required: true
     status: pending
@@ -61,6 +61,14 @@ confirmation_history:
     kind: formal_implementation_package
     approved_at: "2026-07-24"
     wording: "确认执行 跨平台打包正式实施包 v1"
+  - version: v2
+    kind: formal_implementation_package
+    approved_at: "2026-07-24"
+    wording: "确认执行 Windows CI 打包正式实施包 v2"
+  - version: v3
+    kind: scope_delta
+    approved_at: "2026-07-24"
+    wording: "确认执行 Windows CI 打包增量 v3"
 work_items:
   - id: ITEM-PKG-001
     status: verified
@@ -70,6 +78,8 @@ work_items:
     status: verified_with_risk
   - id: ITEM-PKG-004
     status: verified
+  - id: ITEM-PKG-005
+    status: executing
 child_tasks:
   - id: TASK-PKG-001
     status: completed
@@ -79,29 +89,46 @@ child_tasks:
     status: completed
   - id: TASK-PKG-004
     status: completed
+  - id: TASK-PKG-005
+    status: completed
+  - id: TASK-PKG-006
+    status: completed
+  - id: TASK-PKG-007
+    status: completed
+  - id: TASK-PKG-008
+    status: verifying
 impact_assessment:
   level: high
-  direct: ["构建配置", "原生图标", "Electron 主进程", "README", "测试"]
-  indirect: ["Windows 原生构建环境", "安装包资源复制"]
-  user: ["Windows 系统托盘", "未签名系统提示"]
+  direct: ["构建配置", "原生图标", "Electron 主进程", "README", "测试", "GitHub Actions 工作流"]
+  indirect: ["Windows 原生构建环境", "安装包资源复制", "GitHub Artifact 临时存储"]
+  user: ["Windows 系统托盘", "未签名系统提示", "Actions Artifact 下载"]
   data_migration: ["无格式迁移；跨系统凭据不迁移"]
-  interfaces_config: ["新增 package:dmg 和 package:win"]
-  security_permissions: ["不修改凭据处理；未签名安装包风险告知"]
+  interfaces_config: ["新增 package:dmg 和 package:win", "新增 workflow_dispatch 与当前功能分支受限 push 触发"]
+  security_permissions: ["不修改凭据处理；未签名安装包风险告知", "GitHub Actions 仅 contents: read、无 secrets、仅上传 EXE"]
   compatibility: ["macOS arm64", "Windows x64", "不含 MSI/Windows ARM64/macOS Intel"]
   performance_resources: ["构建期新增 electron-builder；运行期加载图标"]
-  tests: ["verify", "DMG 构建/挂载", "Windows 原生待验收"]
-  release_rollback: ["不发布远端；移除新增配置可回退"]
+  tests: ["verify", "DMG 构建/挂载", "Windows CI 原生构建与 Artifact", "Windows 安装/托盘/卸载待验收"]
+  release_rollback: ["不创建 Release；删除新增工作流可停止云端构建"]
   workflow_skills: ["工程治理 Workflow 已验证"]
   explicitly_unaffected: ["站点 API", "IPC", "授权数据", "收益计算", "远端写入"]
-  unknowns: ["Windows 实机验收待环境"]
+  unknowns: ["Windows 安装/托盘/窗口模式/卸载待真实设备验收"]
 
-scope_deltas: []
+scope_deltas:
+  - version: v3
+    at: "2026-07-24"
+    summary: "由于 workflow_dispatch 只有文件进入默认分支后才能在网页手动触发，新增仅对当前功能分支、仅在工作流文件变化时触发的 push 验证入口。"
+    approved: true
+    affected_items: ["ITEM-PKG-005", "TASK-PKG-005", "TASK-PKG-006", "TASK-PKG-007", "TASK-PKG-008"]
 
 semantic_confirmations: []
 
 milestones: []
 
-capability_routes: []
+capability_routes:
+  - capability: "external side effect"
+    purpose: "推送当前功能分支后启动一次 GitHub windows-latest 原生构建并上传临时 Artifact"
+    approval: "Windows CI 打包增量 v3"
+    rollback: "删除工作流文件；不创建 Release 或远端标签"
 
 branch_flow:
   feature_branch: "featuew/cross-platform-packaging"
@@ -149,16 +176,18 @@ evolution_updates:
   rejected: []
   rolled_back: []
 
-validation_status: verified_with_risk
+validation_status: verifying
 verification_evidence:
   - "npm run verify: 13 test files / 180 tests passed; TypeScript and production build passed."
   - "npm run package:dmg: release/AIZZZWatch-0.1.0-arm64.dmg generated with electron-builder 26.15.3."
   - "hdiutil verify: checksum valid; mounted DMG contains AIZZZWatch.app, Applications link and both icon resources."
   - "codesign --verify --deep --strict: ad-hoc signed bundle valid on disk."
   - "package configuration test covers DMG, NSIS, icon resources and legacy package:mac retention."
+  - "Windows CI workflow YAML parses and packaging-config test covers trigger, least-privilege permission, Windows runner and EXE-only Artifact settings."
 handoff_notes:
   - "Do not release the Windows installer until a Windows x64 environment has built, installed, launched, exercised tray/window modes, and uninstalled it."
   - "The visible macOS app smoke was not accepted as evidence because a running old instance received the single-instance handoff."
+  - "Push the current feature branch to obtain the approved first Windows native CI build; do not create a GitHub Release."
 residual_risks:
-  - "No Windows x64 native build/install/tray verification on this macOS host without Wine."
+  - "Windows CI run, installation, tray and uninstall verification are not complete until GitHub finishes the first run and a Windows user exercises the EXE."
   - "No isolated visible launch proof from the new DMG while an old AIZZZWatch instance was running."
