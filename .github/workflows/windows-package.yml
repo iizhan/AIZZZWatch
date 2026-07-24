@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - featuew/cross-platform-packaging
+      - release/0.1.1
     paths:
       - .github/workflows/windows-package.yml
   workflow_dispatch:
