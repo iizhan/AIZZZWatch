@@ -6,10 +6,10 @@ feature:
 
 requirement_status: confirmed
 scope_status: locked
-active_milestone: awaiting-user-acceptance
+active_milestone: executing
 task_lane: controlled
 # clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
-confirmation_state: awaiting_user_acceptance
+confirmation_state: approved_risk_waiver_release
 task_lane_history:
   - lane: controlled
     reason: "跨平台原生安装包、构建配置、资源与验证环境变更。"
@@ -53,8 +53,8 @@ confirmation_gates:
     approved_version: v3
   user_acceptance:
     required: true
-    status: pending
-    approved_version: null
+    status: approved_with_known_risk
+    approved_version: "v0.1.1-risk-waiver"
 
 confirmation_history:
   - version: v1
@@ -69,6 +69,10 @@ confirmation_history:
     kind: scope_delta
     approved_at: "2026-07-24"
     wording: "确认执行 Windows CI 打包增量 v3"
+  - version: v0.1.1-risk-waiver
+    kind: release_risk_waiver
+    approved_at: "2026-07-24"
+    wording: "确认按已知风险发布 v0.1.1"
 work_items:
   - id: ITEM-PKG-001
     status: verified
@@ -194,6 +198,8 @@ verification_evidence:
   - "package configuration test covers DMG, NSIS, icon resources and legacy package:mac retention."
   - "Windows CI workflow YAML parses and packaging-config test covers trigger, least-privilege permission, Windows runner and EXE-only Artifact settings."
   - "GitHub Actions Run #2 succeeded on windows-latest in 1m45s for aeb59b6; one 78.7 MB EXE Artifact was uploaded with SHA-256 001eb19d1e2873c7ba73234b7a87f13557547ad1b22c6c7ab6b0992be26bffe5."
+  - "GitHub Actions Run #3 succeeded on windows-latest for 22ea9d7; one Windows x64 NSIS EXE was downloaded and hashed as 23e3e157d69f1f1530897f777944363d764c136311c59dd485fc8a1f6bb974d1."
+  - "User accepted the v0.1.1 Windows visible-validation gap as a version-scoped release risk waiver on 2026-07-24."
 handoff_notes:
   - "Do not release the Windows installer until a Windows x64 environment has built, installed, launched, exercised tray/window modes, and uninstalled it."
   - "The visible macOS app smoke was not accepted as evidence because a running old instance received the single-instance handoff."

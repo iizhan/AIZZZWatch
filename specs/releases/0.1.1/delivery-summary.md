@@ -9,10 +9,10 @@
 
 ## 当前状态
 
-`awaiting_windows_visible_acceptance`：Windows 安装、启动、系统托盘、完整/紧凑/气泡窗口与卸载没有可访问的 Windows 桌面可完成验证。该状态是公开发布、打标签和合并主干前的阻断项，而不是构建失败。
+`executing_risk_accepted_release`：Windows 安装、启动、系统托盘、完整/紧凑/气泡窗口与卸载仍没有可访问的 Windows 桌面可完成验证。用户已于 `2026-07-24` 明确接受这一缺口并批准 v0.1.1 按已知风险发布；该豁免只适用于当前版本，不能将缺口表述为已验证。
 
 ## 下一步
 
-1. 在 Windows x64 桌面安装 `AIZZZWatch Setup 0.1.1.exe`，验证启动、系统托盘、三种窗口形态和卸载。
-2. 补充验证结论后，运行发布 doctor，创建 `v0.1.1` 标签，合并并推送 `main`。
-3. 创建 GitHub Release，只上传已校验的 DMG 与 EXE，附带 SHA-256 和未签名提示。
+1. 运行发布 doctor，创建 `v0.1.1` 标签，合并并推送 `main`。
+2. 创建 GitHub Release，只上传已校验的 DMG 与 EXE，附带 SHA-256、未签名提示和 Windows 可见验收缺口。
+3. 发布后尽快在 Windows x64 桌面补做安装、启动、系统托盘、三种窗口形态和卸载验收。

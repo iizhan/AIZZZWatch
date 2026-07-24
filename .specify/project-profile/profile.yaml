@@ -2,7 +2,7 @@ schema_version: 1
 profile_version: 1
 # Initial bootstrap template state before evidence capture: status: pending_analysis
 status: ready
-last_analyzed_at: 2026-07-23
+last_analyzed_at: 2026-07-24
 analysis_scope: project
 
 project:
@@ -54,7 +54,7 @@ engineering_conventions:
   state_or_transaction_ownership: ["main process owns remote snapshots; renderer owns view filters and mode state"]
   errors_logging_observability: ["redacted structured errors; no tokens or passwords in logs"]
   security_privacy: ["no secrets in renderer URL/storage/logs; admin mutations require explicit confirmation", "dedicated AIZZZWatch userData directory; no shared Electron storage"]
-  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip and DMG", "GitHub Actions windows-latest has built the Windows x64 NSIS EXE Artifact", "Windows x64 installation, tray, window modes and uninstall remain required before release"]
+  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip and DMG", "GitHub Actions windows-latest has built the Windows x64 NSIS EXE Artifact", "Windows x64 installation, tray, window modes and uninstall remain required for normal release readiness"]
   review_red_lines: ["no silent remote writes, no hardcoded credentials, no unbounded polling", "do not use generic Electron userData or auto-fallback development ports"]
 
 evidence:

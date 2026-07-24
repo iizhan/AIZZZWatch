@@ -29,6 +29,8 @@
 - 不包含 `stations.json`、`ui-preferences.json`、用户数据目录、Cookie、JWT、API Key、HAR、私有截图、`release/` 或 `out/`。
 - 本次仅新增受限 `release/0.1.1` 的一次 Windows CI 触发，普通发布分支不会自动构建。
 
-## 残余风险与阻断判断
+## 残余风险与发布豁免
 
-Windows CI 的构建成功不能替代可见桌面验收。按照项目 Profile，Windows 安装、系统托盘、完整/紧凑/气泡窗口与卸载仍是正式 Release 的阻断项；在获得用户明确的风险豁免或提供可用 Windows 桌面完成验收前，不应创建公开 GitHub Release、标签或合并 `main`。
+Windows CI 的构建成功不能替代可见桌面验收。按照项目 Profile，Windows 安装、系统托盘、完整/紧凑/气泡窗口与卸载仍未完成，不能表述为已验证。
+
+用户已于 `2026-07-24` 以“确认按已知风险发布 v0.1.1”明确豁免上述当前版本的发布阻断项。因此，本次允许创建公开 GitHub Release、标签并合并 `main`，但 Release Notes 必须继续保留 Windows 可见验收缺口与未签名提示；该豁免不构成后续版本的通用发布批准。
