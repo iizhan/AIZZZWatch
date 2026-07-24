@@ -1,0 +1,86 @@
+feature:
+  slug: "newapi-login-route-compatibility"
+  name: "NewAPI 登录入口兼容"
+  created_at: "2026-07-24"
+  original_request: "修复 nihao.dog 新版 NewAPI 网页授权固定 /login 产生客户端 404 的兼容问题"
+
+requirement_status: confirmed
+scope_status: locked
+active_milestone: newapi_login_route_compatibility_v1
+task_lane: controlled
+confirmation_state: awaiting_user_acceptance
+task_lane_history:
+  - { lane: controlled, reason: "第三方网页登录、主进程会话与用户可见授权路径兼容", date: "2026-07-24" }
+
+project_profile:
+  status: fresh
+  profile_version: 1
+  last_checked_at: "2026-07-24T12:30:55.810Z"
+  evidence_state: fresh
+  loaded_sections: ["desktop shell", "station adapters", "secure storage", "renderer dashboard"]
+  refreshed_sections: ["desktop authorization route flow", "web-auth source evidence"]
+  reused_decisions: []
+
+artifact_versions:
+  requirement: v1
+  design: v1
+  impact: v1
+  plan: v1
+  task_breakdown: v1
+  verification: null
+
+confirmation_gates:
+  requirement_impact: { required: true, status: confirmed, approved_version: v1 }
+  semantic_confirmation: { required: false, status: not_required, approved_version: not_required }
+  design_plan: { required: true, status: confirmed, approved_version: v1 }
+  child_task_plan: { required: true, status: confirmed, approved_version: v1 }
+  user_acceptance: { required: true, status: pending, approved_version: null }
+confirmation_history:
+  - { gate: requirement_impact, version: v1, choice: "确认执行 NewAPI 登录入口兼容 v1", date: "2026-07-24" }
+  - { gate: design_plan, version: v1, choice: "确认执行 NewAPI 登录入口兼容 v1", date: "2026-07-24" }
+
+work_items:
+  - { id: ITEM-001, title: "兼容 NewAPI 登录入口", status: completed }
+child_tasks:
+  - { id: TASK-001, title: "记录规格与计划", status: completed }
+  - { id: TASK-002, title: "实现路由选择与一次回退", status: completed }
+  - { id: TASK-003, title: "补充测试与错误提示", status: completed }
+  - { id: TASK-004, title: "验证与测试包", status: completed }
+
+impact_assessment:
+  level: high
+  direct: ["src/main/web-auth.ts", "src/main/index.ts", "src/renderer/src/App.tsx", "tests/web-auth.test.ts"]
+  indirect: ["所有隔离网页登录站点"]
+  user: ["新版 NewAPI 登录页", "旧版 /login 兼容", "明确授权失败反馈"]
+  data_migration: ["none"]
+  interfaces_config: ["无 IPC 新字段；新增内部路由错误前缀"]
+  security_permissions: ["固定同源路径", "safeStorage 不变", "无远程写入"]
+  compatibility: ["保留 /login 与 lcodex 特例"]
+  performance_resources: ["最多一次额外页面加载"]
+  tests: ["授权辅助单测", "npm run verify", "公开登录页可见验证"]
+  release_rollback: ["本地 ZIP，无发布；可还原功能提交"]
+  workflow_skills: ["foundation engineering governance；无完整匹配主 Workflow"]
+  explicitly_unaffected: ["余额、分组、定价、持久化凭据、远程写入、版本号"]
+  unknowns: ["其他二开第三登录路径不在本次范围"]
+
+branch_flow:
+  feature_branch: "feature/newapi-login-route-compatibility"
+  source_branch: main
+  release_branch: null
+  release_version: null
+  tag_name: null
+  merge_target: main
+  status: feature_development
+
+validation_status: verified_with_risk
+verification_evidence:
+  - "npm test -- tests/web-auth.test.ts：12/12 通过"
+  - "npm run typecheck：通过"
+  - "npm run verify：13 个测试文件、184 项测试及生产构建通过"
+  - "git diff --check：通过"
+  - "公开可见验证：nihao.dog/sign-in 显示登录表单；/login 显示明确 404"
+  - "本地 macOS arm64 测试包：codesign --verify 与 unzip -t 通过"
+delivery_artifacts: ["specs/newapi-login-route-compatibility/delivery-summary.md"]
+reflection_artifacts: ["specs/newapi-login-route-compatibility/task-reflection.md"]
+handoff_notes: ["已完成 v1；本地测试 ZIP 位于 release/AIZZZWatch-v0.1.1-darwin-arm64.zip，等待用户在桌面端自行登录验收。"]
+residual_risks: ["未使用用户账号在 Electron 授权窗口完成真实登录；验证码、2FA、反爬和站点后续路由变更仍需用户验收。"]

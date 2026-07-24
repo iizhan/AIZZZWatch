@@ -1894,6 +1894,16 @@ function cleanUrl(value: string): string {
   return value.trim().replace(/\/+$/, '')
 }
 
+export function webAuthErrorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : ''
+  if (message === 'AUTH_CANCELLED') return '已取消网页登录授权'
+  if (message.startsWith('AUTH_LOGIN_ROUTE_NOT_FOUND:')) {
+    const paths = message.slice('AUTH_LOGIN_ROUTE_NOT_FOUND:'.length).split(',').filter(Boolean)
+    return `未找到网页登录入口（已尝试 ${paths.join('、')}）。请确认站点类型或向站点确认登录入口。`
+  }
+  return message || '网页登录授权失败'
+}
+
 function categoryLabel(category: CategoryId): string {
   return categoryTabs.find((item) => item.id === category)?.label ?? '其他'
 }
@@ -3177,7 +3187,7 @@ function App() {
       setSettingsOpen(false)
       setNotice({ kind: 'success', text: '网页登录授权成功，正在同步' })
     } catch (error) {
-      setNotice({ kind: 'error', text: error instanceof Error && error.message === 'AUTH_CANCELLED' ? '已取消网页登录授权' : error instanceof Error ? error.message : '网页登录授权失败' })
+      setNotice({ kind: 'error', text: webAuthErrorText(error) })
     } finally {
       setAuthorizing(false)
     }

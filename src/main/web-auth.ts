@@ -36,6 +36,7 @@ export interface WebAuthRestoreResult {
 
 export interface WebAuthLaunchTarget {
   loadUrl: string
+  fallbackUrl?: string
   clientRoute?: string
 }
 
@@ -113,12 +114,42 @@ export function resolveWebAuthCookieUrl(apiBaseUrl: string, newApiAuth: boolean,
   return resolveNewApiRefreshUrl(apiBaseUrl, authRefreshPath) ?? apiBaseUrl
 }
 
-export function resolveWebAuthLaunchTarget(normalizedBaseUrl: string): WebAuthLaunchTarget {
+export function resolveWebAuthLaunchTarget(normalizedBaseUrl: string, preferNewApiSignIn = false): WebAuthLaunchTarget {
   const compatibility = resolveLcodexStationCompatibility(normalizedBaseUrl)
   if (compatibility) {
     return { loadUrl: compatibility.managementApiBaseUrl, clientRoute: '/login' }
   }
-  return { loadUrl: `${normalizedBaseUrl.replace(/\/api\/v1\/?$/, '')}/login` }
+  const root = normalizedBaseUrl.replace(/\/api\/v1\/?$/, '')
+  return preferNewApiSignIn
+    ? { loadUrl: `${root}/sign-in`, fallbackUrl: `${root}/login` }
+    : { loadUrl: `${root}/login`, fallbackUrl: `${root}/sign-in` }
+}
+
+/**
+ * Some SPA deployments return 200 for an unknown route and render their own
+ * 404 page. Only a same-origin, current candidate login route is eligible for
+ * the one-time fallback; redirects, challenge pages and external OAuth pages
+ * must remain untouched.
+ */
+export async function isWebAuthLoginRouteNotFound(loginWindow: WebAuthWindowLike, expectedUrl: string): Promise<boolean> {
+  let current: URL
+  let expected: URL
+  try {
+    current = new URL(loginWindow.webContents.getURL())
+    expected = new URL(expectedUrl)
+  } catch {
+    return false
+  }
+  if (current.origin !== expected.origin) return false
+  const currentPath = current.pathname.replace(/\/+$/, '') || '/'
+  const expectedPath = expected.pathname.replace(/\/+$/, '') || '/'
+  if (currentPath !== expectedPath && !['/404', '/not-found'].includes(currentPath)) return false
+  try {
+    const pageText = await loginWindow.webContents.executeJavaScript(`document.body?.innerText?.slice(0, 1200) || ''`, true)
+    return typeof pageText === 'string' && /(?:\b404\b|page\s+not\s+found|页面未找到|页面不存在)/i.test(pageText)
+  } catch {
+    return false
+  }
 }
 
 export function resolveWebAuthApiBaseUrl(input: {

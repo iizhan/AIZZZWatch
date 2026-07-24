@@ -6,7 +6,7 @@ import { diagnoseStation } from './station-diagnostics'
 import { hasUsableAdminCredential, isJwtExpiringSoon, resolveWebAuthTokens, Sub2ApiClient } from './sub2api-client'
 import { NewApiClient } from './newapi-client'
 import { createStationReadClient, usesSub2ApiContract } from './station-adapter'
-import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from './web-auth'
+import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, isWebAuthLoginRouteNotFound, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from './web-auth'
 import { classifySub2ApiError, createEmptySnapshot, normalizeStationApiPaths, normalizeStationBaseUrl, resolveStationApiRequestUrl, sameNumberSet } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { buildProfitIntervalReport } from '../shared/time-cost-ledger'
@@ -565,7 +565,8 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
   const baseUrl = input.baseUrl.trim()
   if (!baseUrl) throw new Error('站点地址不能为空')
   const normalizedBaseUrl = normalizeStationBaseUrl(baseUrl, input.adapterType === 'auto' ? input.detectedAdapterType : input.adapterType)
-  const authLaunchTarget = resolveWebAuthLaunchTarget(normalizedBaseUrl)
+  const newApiAuth = isNewApiWebAuthContract(input)
+  const authLaunchTarget = resolveWebAuthLaunchTarget(normalizedBaseUrl, newApiAuth)
   if (authWindow && !authWindow.isDestroyed()) {
     if (!authWindow.isVisible()) authWindow.show()
     authWindow.focus()
@@ -605,6 +606,8 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
     let poller: NodeJS.Timeout | undefined
     let automaticAuthTimeout: NodeJS.Timeout | undefined
     let requestedClientLoginRoute = false
+    let authRouteFallbackUsed = false
+    const missingAuthRoutePaths: string[] = []
     let savedLoginFilled = false
     let manualInterventionRequired = false
     const requestManualIntervention = (): void => {
@@ -644,7 +647,6 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
           inputApiBaseUrl: explicitApiBaseUrl,
           pageApiBaseUrl: probe.pageApiBaseUrl
         })
-        const newApiAuth = isNewApiWebAuthContract(input)
         const newApiAuthRefreshPath = newApiAuth ? input.apiPaths?.authRefresh : undefined
         const cookieSets = await Promise.all(apiBaseUrls.map(async (apiBaseUrl) => {
           const cookieUrl = resolveWebAuthCookieUrl(apiBaseUrl, newApiAuth, newApiAuthRefreshPath)
@@ -715,29 +717,64 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
         await finish(() => reject(error instanceof Error ? error : new Error('网页登录授权失败')))
       }
     }
-    loginWindow.webContents.on('did-finish-load', () => {
-      if (authLaunchTarget.clientRoute && !requestedClientLoginRoute) {
-        requestedClientLoginRoute = true
-        void loginWindow.webContents.executeJavaScript(`(() => {
-          if (window.location.pathname === ${JSON.stringify(authLaunchTarget.clientRoute)}) return true
-          window.history.pushState({}, '', ${JSON.stringify(authLaunchTarget.clientRoute)})
-          window.dispatchEvent(new PopStateEvent('popstate'))
-          return true
-        })()`, true).catch((error: unknown) => {
-          void finish(() => reject(error instanceof Error ? error : new Error('新版网页登录路由跳转失败')))
-        })
+    const tryFallbackAuthRoute = async (): Promise<boolean> => {
+      if (!authLaunchTarget.fallbackUrl || authRouteFallbackUsed || loginWindow.isDestroyed()) return false
+      const routeMissing = await isWebAuthLoginRouteNotFound(loginWindow, authLaunchTarget.loadUrl)
+      if (!routeMissing) return false
+      try {
+        const currentPath = new URL(loginWindow.webContents.getURL()).pathname
+        missingAuthRoutePaths.push(currentPath)
+      } catch {
+        // The expected primary path below remains useful in the final error.
       }
-      fillSavedLogin()
-      void capture()
-      if (!poller) poller = setInterval(() => {
-        if (!savedLoginFilled) fillSavedLogin()
-        else if (options.autoSubmitSavedLogin && !manualInterventionRequired) {
-          void hasWebAuthSecurityChallenge(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl).then((hasChallenge) => {
-            if (hasChallenge) requestManualIntervention()
-          })
+      authRouteFallbackUsed = true
+      try {
+        await loginWindow.loadURL(authLaunchTarget.fallbackUrl)
+      } catch (error) {
+        await finish(() => reject(error instanceof Error ? error : new Error('网页登录备用入口加载失败')))
+      }
+      return true
+    }
+    const reportMissingAuthRoute = async (): Promise<boolean> => {
+      if (!authRouteFallbackUsed || loginWindow.isDestroyed()) return false
+      const routeMissing = await isWebAuthLoginRouteNotFound(loginWindow, authLaunchTarget.fallbackUrl ?? authLaunchTarget.loadUrl)
+      if (!routeMissing) return false
+      try {
+        missingAuthRoutePaths.push(new URL(loginWindow.webContents.getURL()).pathname)
+      } catch {
+        // The fixed fallback path below still documents the attempted route.
+      }
+      const attemptedPaths = [...new Set([...missingAuthRoutePaths, new URL(authLaunchTarget.loadUrl).pathname, new URL(authLaunchTarget.fallbackUrl ?? authLaunchTarget.loadUrl).pathname])]
+      await finish(() => reject(new Error(`AUTH_LOGIN_ROUTE_NOT_FOUND:${attemptedPaths.join(',')}`)))
+      return true
+    }
+    loginWindow.webContents.on('did-finish-load', () => {
+      void (async () => {
+        if (authLaunchTarget.clientRoute && !requestedClientLoginRoute) {
+          requestedClientLoginRoute = true
+          await loginWindow.webContents.executeJavaScript(`(() => {
+            if (window.location.pathname === ${JSON.stringify(authLaunchTarget.clientRoute)}) return true
+            window.history.pushState({}, '', ${JSON.stringify(authLaunchTarget.clientRoute)})
+            window.dispatchEvent(new PopStateEvent('popstate'))
+            return true
+          })()`, true)
         }
+        if (await tryFallbackAuthRoute()) return
+        if (await reportMissingAuthRoute()) return
+        fillSavedLogin()
         void capture()
-      }, 700)
+        if (!poller) poller = setInterval(() => {
+          if (!savedLoginFilled) fillSavedLogin()
+          else if (options.autoSubmitSavedLogin && !manualInterventionRequired) {
+            void hasWebAuthSecurityChallenge(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl).then((hasChallenge) => {
+              if (hasChallenge) requestManualIntervention()
+            })
+          }
+          void capture()
+        }, 700)
+      })().catch((error: unknown) => {
+        void finish(() => reject(error instanceof Error ? error : new Error('新版网页登录路由跳转失败')))
+      })
     })
     loginWindow.webContents.on('did-navigate-in-page', fillSavedLogin)
     loginWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {

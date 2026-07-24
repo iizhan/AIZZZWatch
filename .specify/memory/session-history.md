@@ -1,5 +1,15 @@
 # Session History
 
+# 2026-07-24 NewAPI 登录入口兼容 v1
+
+- 确认版本：用户确认执行 `NewAPI 登录入口兼容 v1`；验收状态 `awaiting_user_acceptance`。
+- 结论：明确或已检测为 NewAPI 的网页登录现在优先打开 `/sign-in`；旧站继续优先 `/login`。仅当当前同源候选页面明确显示 SPA 404 时，才一次回退到另一条固定入口。双入口都不存在时显示具体尝试路径，不再误报为用户取消。
+- 影响文件：`src/main/web-auth.ts`、`src/main/index.ts`、`src/renderer/src/App.tsx`、`tests/web-auth.test.ts`、特性规格和项目授权链路档案。
+- 验证：聚焦 12 项授权测试、完整 184 项测试、类型检查、生产构建和差异检查均通过；公开可见验证显示 `nihao.dog/sign-in` 是登录表单，`/login` 是 404 页面；本地 macOS arm64 ZIP 已通过 ad-hoc 签名和完整性校验。
+- 安全边界：不代填或提交用户账号、密码、验证码或 2FA；回退仅限同源两条固定路径，页面正文、Cookie、JWT 与密码不跨主进程边界。
+- 不满意分类：`verification_gap`；自动检查不能替代用户的真实第三方账号登录。
+- 下一步：用户使用最新本地 ZIP 完成一次 `nihao.dog` 桌面端登录验收；若站点后续引入第三条登录路径，再单独确认兼容范围。
+
 # 2026-07-24 跨平台 Windows CI 构建增量 v3
 
 - 确认版本：用户确认执行 `Windows CI 打包增量 v3`；验收状态 `awaiting_user_acceptance`。

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, readWebAuthProbeSnapshot, resolveNewApiRefreshUrl, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from '../src/main/web-auth'
+import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, isWebAuthLoginRouteNotFound, readWebAuthProbeSnapshot, resolveNewApiRefreshUrl, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from '../src/main/web-auth'
+import { webAuthErrorText } from '../src/renderer/src/App'
 
 describe('web auth helpers', () => {
   it('collects api base url candidates from the page config and login origin', () => {
@@ -47,6 +48,38 @@ describe('web auth helpers', () => {
     expect(resolveWebAuthApiPaths('https://lcodex.cc/api/v1', {
       channels: '/channels/available'
     })).toEqual({ channels: '/api/v1/channels/available' })
+  })
+
+  it('prefers the current NewAPI sign-in route while retaining the legacy fallback', () => {
+    expect(resolveWebAuthLaunchTarget('https://newapi.example.com', true)).toEqual({
+      loadUrl: 'https://newapi.example.com/sign-in',
+      fallbackUrl: 'https://newapi.example.com/login'
+    })
+    expect(resolveWebAuthLaunchTarget('https://relay.example.com/api/v1')).toEqual({
+      loadUrl: 'https://relay.example.com/login',
+      fallbackUrl: 'https://relay.example.com/sign-in'
+    })
+  })
+
+  it('recognizes only a same-origin candidate-page SPA 404 as eligible for a route fallback', async () => {
+    const executeJavaScript = vi.fn().mockResolvedValue('404\n糟糕！页面未找到！\n您要查找的页面似乎不存在或可能已被移除。')
+    const loginWindow = {
+      webContents: {
+        executeJavaScript,
+        getURL: () => 'https://nihao.dog/login',
+        getUserAgent: () => 'test-agent'
+      }
+    }
+    await expect(isWebAuthLoginRouteNotFound(loginWindow, 'https://nihao.dog/login')).resolves.toBe(true)
+
+    loginWindow.webContents.getURL = () => 'https://oauth.example.com/login'
+    await expect(isWebAuthLoginRouteNotFound(loginWindow, 'https://nihao.dog/login')).resolves.toBe(false)
+    expect(executeJavaScript).toHaveBeenCalledTimes(1)
+  })
+
+  it('renders a missing-route error distinctly from a user-cancelled authorization', () => {
+    expect(webAuthErrorText(new Error('AUTH_CANCELLED'))).toBe('已取消网页登录授权')
+    expect(webAuthErrorText(new Error('AUTH_LOGIN_ROUTE_NOT_FOUND:/sign-in,/login'))).toContain('已尝试 /sign-in、/login')
   })
 
   it('keeps individual storage token aliases for JWT preference resolution', async () => {

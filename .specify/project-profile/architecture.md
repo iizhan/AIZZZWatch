@@ -79,6 +79,16 @@ Last analyzed: `2026-07-24`
 - Verification path: unit tests for storage redaction and recovery classification, plus a visible station reauthorization path.
 - Evidence: `src/main/index.ts`, `src/main/storage.ts`, `src/main/web-auth.ts`, `src/preload/index.ts`, `src/renderer/src/App.tsx`, `tests/storage.test.ts`.
 
+### Flow 13: Isolated web-login route compatibility
+
+`renderer authorization intent -> main-only isolated BrowserWindow -> fixed same-origin login route -> bounded SPA-404 fallback -> main-only session capture -> renderer-safe outcome`
+
+- Contract: NewAPI explicitly starts at `/sign-in` and can fall back once to `/login`; other compatible stations start at `/login` and can fall back once to `/sign-in`. The lcodex root-page client-route behaviour remains separate. A fallback is permitted only when the current page is same-origin, at an allowed candidate route (or its own `/404` route), and visibly reports a 404 state.
+- Security: no arbitrary route is accepted, external OAuth/challenge pages are never redirected, and raw page text, Cookie, JWT, account name and password remain in the main process.
+- Failure boundaries: if both fixed routes visibly return 404, the renderer receives a route-specific, Chinese actionable error. A normally closed authorization window remains a user cancellation.
+- Verification path: web-auth helper unit tests, public `nihao.dog/sign-in` and `/login` visible checks, full typecheck/test/build, and a locally signed macOS test ZIP.
+- Evidence: `src/main/web-auth.ts`, `src/main/index.ts`, `src/renderer/src/App.tsx`, `tests/web-auth.test.ts`.
+
 ### Flow 9: Exact upstream Key usage indicator
 
 `source/admin read DTO -> main-only temporary credential hash -> unique source Key record match -> safe station/key ID on account snapshot -> renderer usage filter`
