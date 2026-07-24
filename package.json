@@ -1,8 +1,8 @@
 {
   "name": "aizzzwatch",
   "productName": "AIZZZWatch",
-  "version": "0.1.0",
-  "description": "macOS desktop monitor for Sub2API relay stations",
+  "version": "0.1.1",
+  "description": "Desktop monitor for Sub2API and NewAPI relay stations",
   "main": "out/main/index.js",
   "type": "module",
   "scripts": {
