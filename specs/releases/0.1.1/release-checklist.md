@@ -26,7 +26,7 @@
 ## 发布动作
 
 - [x] 创建 `release/0.1.1`
-- [ ] 运行 `bash .specify/scripts/bash/release-doctor.sh 0.1.1`
+- [x] 运行 `bash .specify/scripts/bash/release-doctor.sh 0.1.1`（`2026-07-24` 通过）
 - [ ] 复核版本号与发布说明
 - [ ] 创建标签 `v0.1.1`
 - [ ] 合并到 `main`
