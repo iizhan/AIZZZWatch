@@ -1,5 +1,15 @@
 # Session History
 
+# 2026-07-24 跨平台 Windows CI 构建增量 v3
+
+- 确认版本：用户确认执行 `Windows CI 打包增量 v3`；验收状态 `awaiting_user_acceptance`。
+- 结论：新增最小权限的 GitHub Actions Windows 构建，`windows-latest` 已实际生成 Windows x64 NSIS EXE Artifact。首轮因 electron-builder 在 CI 中隐式发布、缺少 `GH_TOKEN` 失败；显式 `--publish never` 后 Run #2 成功。
+- 影响文件：`.github/workflows/windows-package.yml`、`package.json`、`tests/packaging-config.test.ts`、README、`specs/cross-platform-packaging/`、Project Profile。
+- 验证：`npm run verify` 通过（13 文件 / 181 测试、类型检查、生产构建）；YAML 与差异检查通过；GitHub Run #2 成功，上传 78.7 MB Artifact，SHA-256 `001eb19d1e2873c7ba73234b7a87f13557547ad1b22c6c7ab6b0992be26bffe5`。
+- 安全边界：工作流仅 `contents: read`，不读取 secrets，只上传 `release/*.exe`，不创建 Release 或标签。
+- 不满意分类：`verification_gap`；构建已覆盖，Windows 安装、托盘、窗口模式和卸载仍待真实可见验收。
+- 下一步：下载 Artifact，在 Windows 验证安装、启动、系统托盘、完整/紧凑/气泡窗口和卸载。
+
 # 2026-07-23 站点密码保活 v1
 
 - 确认版本：用户确认执行 `密码保活 v1`；验收状态 `awaiting_user_acceptance`。

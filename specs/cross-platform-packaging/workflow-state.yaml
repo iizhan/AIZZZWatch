@@ -6,10 +6,10 @@ feature:
 
 requirement_status: confirmed
 scope_status: locked
-active_milestone: executing
+active_milestone: awaiting-user-acceptance
 task_lane: controlled
 # clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
-confirmation_state: confirmed
+confirmation_state: awaiting_user_acceptance
 task_lane_history:
   - lane: controlled
     reason: "跨平台原生安装包、构建配置、资源与验证环境变更。"
@@ -22,7 +22,7 @@ project_profile:
   evidence_state: fresh
   changed_evidence: []
   loaded_sections: ["profile.yaml", "architecture.md", "decision-memory.yaml"]
-  refreshed_sections: []
+  refreshed_sections: ["configuration", "architecture", "delivery"]
   reused_decisions: []
   invalidation_reason: null
 
@@ -32,7 +32,7 @@ artifact_versions:
   impact: v3
   plan: v3
   task_breakdown: v3
-  verification: v2_pending
+  verification: v2
 
 confirmation_gates:
   requirement_impact:
@@ -79,7 +79,7 @@ work_items:
   - id: ITEM-PKG-004
     status: verified
   - id: ITEM-PKG-005
-    status: executing
+    status: verified
 child_tasks:
   - id: TASK-PKG-001
     status: completed
@@ -96,7 +96,7 @@ child_tasks:
   - id: TASK-PKG-007
     status: completed
   - id: TASK-PKG-008
-    status: verifying
+    status: completed
 impact_assessment:
   level: high
   direct: ["构建配置", "原生图标", "Electron 主进程", "README", "测试", "GitHub Actions 工作流"]
@@ -151,9 +151,18 @@ session_reflections:
     user_feedback: []
     acceptance_status: pending
     dissatisfaction_categories: ["verification_gap"]
+  - status: awaiting_user_acceptance
+    summary: "GitHub windows-latest 已成功生成 Windows x64 NSIS EXE Artifact；安装、托盘、窗口模式和卸载仍待 Windows 可见验收。"
+    user_choices: ["Windows x64 NSIS EXE", "GitHub Windows Runner", "不创建 Release"]
+    choice_rationale: ["避免 WiX", "本地 VM 不可访问", "构建验证与正式发布分离"]
+    worked_well: ["通过真实 CI 发现并修复 electron-builder 隐式发布"]
+    should_change: ["下载 Artifact 后在 Windows 环境完成可见安装验收"]
+    user_feedback: []
+    acceptance_status: pending
+    dissatisfaction_categories: ["verification_gap"]
 
-reflection_artifacts: []
-delivery_artifacts: []
+reflection_artifacts: ["specs/cross-platform-packaging/task-reflection.md"]
+delivery_artifacts: ["specs/cross-platform-packaging/delivery-summary.md"]
 release_artifacts: []
 
 memory_candidates:
@@ -176,18 +185,19 @@ evolution_updates:
   rejected: []
   rolled_back: []
 
-validation_status: verifying
+validation_status: verified_with_risk
 verification_evidence:
-  - "npm run verify: 13 test files / 180 tests passed; TypeScript and production build passed."
+  - "npm run verify: 13 test files / 181 tests passed; TypeScript and production build passed."
   - "npm run package:dmg: release/AIZZZWatch-0.1.0-arm64.dmg generated with electron-builder 26.15.3."
   - "hdiutil verify: checksum valid; mounted DMG contains AIZZZWatch.app, Applications link and both icon resources."
   - "codesign --verify --deep --strict: ad-hoc signed bundle valid on disk."
   - "package configuration test covers DMG, NSIS, icon resources and legacy package:mac retention."
   - "Windows CI workflow YAML parses and packaging-config test covers trigger, least-privilege permission, Windows runner and EXE-only Artifact settings."
+  - "GitHub Actions Run #2 succeeded on windows-latest in 1m45s for aeb59b6; one 78.7 MB EXE Artifact was uploaded with SHA-256 001eb19d1e2873c7ba73234b7a87f13557547ad1b22c6c7ab6b0992be26bffe5."
 handoff_notes:
   - "Do not release the Windows installer until a Windows x64 environment has built, installed, launched, exercised tray/window modes, and uninstalled it."
   - "The visible macOS app smoke was not accepted as evidence because a running old instance received the single-instance handoff."
-  - "Push the current feature branch to obtain the approved first Windows native CI build; do not create a GitHub Release."
+  - "Windows CI Artifact: https://github.com/iizhan/AIZZZWatch/actions/runs/30065500320/artifacts/8586100313 (7-day retention); do not create a GitHub Release."
 residual_risks:
-  - "Windows CI run, installation, tray and uninstall verification are not complete until GitHub finishes the first run and a Windows user exercises the EXE."
+  - "Windows CI run passed, but installation, tray, window modes and uninstall remain unverified until a Windows user exercises the EXE."
   - "No isolated visible launch proof from the new DMG while an old AIZZZWatch instance was running."

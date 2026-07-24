@@ -41,7 +41,7 @@
 
 - 验收标准：受限功能分支推送可在 GitHub `windows-latest` 上生成 Windows x64 NSIS EXE Artifact；默认分支支持手动触发；不创建 Release。
 - 影响范围：`.github/workflows/`、README、打包规格与交付记录。
-- 状态：executing
+- 状态：verified_with_risk
 
 - [x] TASK-PKG-005：新增最小权限的 Windows 构建工作流
   - 依赖：TASK-PKG-002
@@ -55,7 +55,7 @@
   - 依赖：TASK-PKG-005
   - 完成条件：README 与正式实施包版本说明一致。
   - 验证证据：文档审阅。
-- [ ] TASK-PKG-008：推送并验证 GitHub 原生 Artifact
+- [x] TASK-PKG-008：推送并验证 GitHub 原生 Artifact
   - 依赖：TASK-PKG-005..007
   - 完成条件：Actions run 成功并有 EXE Artifact；若失败，记录原因和修正。
   - 验证证据：Run URL、日志摘要和 Artifact 结果。

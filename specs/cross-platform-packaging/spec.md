@@ -3,7 +3,7 @@
 **功能标识**: `cross-platform-packaging`
 **功能目录**: `specs/cross-platform-packaging`
 **创建日期**: 2026-07-24
-**状态**: 执行中
+**状态**: awaiting_user_acceptance
 **原始需求**: 支持 Windows，并可打包 macOS DMG 与 Windows EXE 安装包。
 **任务通道**: controlled
 **需求版本**: v3

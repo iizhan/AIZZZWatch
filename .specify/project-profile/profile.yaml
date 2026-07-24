@@ -13,11 +13,11 @@ project:
   detected_languages: ["TypeScript", "TSX", "CSS", "HTML", "Markdown", "YAML"]
   package_managers: ["npm"]
   frameworks: ["Electron 33", "React 18", "Vite 5", "Vitest 2", "TypeScript 5"]
-  runtimes: ["Node.js 24 development runtime", "Electron macOS arm64 desktop runtime", "Electron Windows x64 desktop runtime"]
+  runtimes: ["Node.js 24 development runtime", "Electron macOS arm64 desktop runtime", "Electron Windows x64 desktop runtime", "GitHub Actions windows-latest native Windows x64 build runner"]
 
 architecture:
   styles: ["Electron desktop utility with main/preload/renderer boundary"]
-  modules: ["workflow assets", "desktop shell", "renderer dashboard", "station compatibility diagnostics", "Sub2API/NewAPI read adapters", "fork response-field mapping", "encrypted station storage with explicit station roles and adapter type"]
+  modules: ["workflow assets", "desktop shell", "renderer dashboard", "station compatibility diagnostics", "Sub2API/NewAPI read adapters", "fork response-field mapping", "encrypted station storage with explicit station roles and adapter type", "GitHub Actions Windows NSIS packaging"]
   entry_points: ["src/main/index.ts", "src/preload/index.ts", "src/renderer/src/main.tsx"]
   request_or_event_flows: ["renderer -> preload IPC -> main process -> station-type read adapter -> provider HTTP API", "renderer settings modal -> diagnostics IPC -> main read-only probe requests reusing encrypted Cookie/UA -> suggested apiPaths/apiBaseUrl and adapter type", "renderer data integration workspace -> narrow preview IPC -> saved station credentials in main -> same-origin HTTPS GET -> sanitized mapping preview", "station snapshot update -> main persisted rate baseline/change history -> renderer price ranking and history presentation", "explicit stationRole routes source stations to price ranking and own stations to administrator workspaces", "admin usage detail -> main-only strict ledger extraction -> renderer coverage summary", "renderer profit archive request -> main-only daily bounded /admin/usage -> sanitized local archive -> time-aware interval report", "renderer internal-use toggle -> preload preferences IPC -> local numeric user profile -> interval report excludes only exact user-id matches", "station token failure -> refresh-token recovery or encrypted password re-login -> main-only credential rotation -> retry snapshot"]
   ownership_boundaries: ["renderer owns presentation and ephemeral UI state", "main owns credentials, network requests, timers, diagnostics, and window lifecycle"]
@@ -30,7 +30,7 @@ source_of_truth:
   business_rules: ["specs/sub2api-monitor/spec.md"]
   api_contracts: ["Sub2API public/admin routes investigated from upstream source on 2026-07-16", "NewAPI public/user/admin routes investigated from local upstream source on 2026-07-23"]
   data_schema_migrations: ["none for MVP"]
-  configuration: ["package.json", "electron.vite.config.ts", "tsconfig.json", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
+  configuration: ["package.json", "electron.vite.config.ts", "tsconfig.json", ".github/workflows/windows-package.yml", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
   generated_outputs:
     - "out/"
     - "release/AIZZZWatch-darwin-<arch>/AIZZZWatch.app"
@@ -54,12 +54,12 @@ engineering_conventions:
   state_or_transaction_ownership: ["main process owns remote snapshots; renderer owns view filters and mode state"]
   errors_logging_observability: ["redacted structured errors; no tokens or passwords in logs"]
   security_privacy: ["no secrets in renderer URL/storage/logs; admin mutations require explicit confirmation", "dedicated AIZZZWatch userData directory; no shared Electron storage"]
-  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip and DMG", "Windows x64 NSIS EXE is built and installed on a native Windows environment before release"]
+  testing_delivery: ["npm run verify plus visible Electron path and constrained-window screenshots", "macOS arm64 ad-hoc signed app zip and DMG", "GitHub Actions windows-latest has built the Windows x64 NSIS EXE Artifact", "Windows x64 installation, tray, window modes and uninstall remain required before release"]
   review_red_lines: ["no silent remote writes, no hardcoded credentials, no unbounded polling", "do not use generic Electron userData or auto-fallback development ports"]
 
 evidence:
-  source_paths: ["package.json", "package-lock.json", "electron.vite.config.ts", "scripts/package-mac.mjs", "scripts/build-icon.sh", "assets/icon.svg", "assets/icon.icns", "assets/icon.ico", "src/main/index.ts", "src/main/storage.ts", "src/main/sub2api-client.ts", "src/main/station-diagnostics.ts", "src/preload/index.ts", "src/renderer/src/App.tsx", "src/shared/types.ts", "src/shared/sub2api.ts", "tests/sub2api-client.test.ts", "tests/station-diagnostics.test.ts", "tests/packaging-config.test.ts", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
-  unknowns: ["exact deployment versions and enabled feature flags vary by Sub2API station", "Developer ID signing, notarization and auto-update are not configured", "Windows native build/install/tray verification requires a Windows x64 machine or runner"]
+  source_paths: ["package.json", "package-lock.json", "electron.vite.config.ts", ".github/workflows/windows-package.yml", "scripts/package-mac.mjs", "scripts/build-icon.sh", "assets/icon.svg", "assets/icon.icns", "assets/icon.ico", "src/main/index.ts", "src/main/storage.ts", "src/main/sub2api-client.ts", "src/main/station-diagnostics.ts", "src/preload/index.ts", "src/renderer/src/App.tsx", "src/shared/types.ts", "src/shared/sub2api.ts", "tests/sub2api-client.test.ts", "tests/station-diagnostics.test.ts", "tests/packaging-config.test.ts", "DESIGN.md", "README.md", "LICENSE", "docs/OPEN_SOURCE_CHECKLIST.md"]
+  unknowns: ["exact deployment versions and enabled feature flags vary by Sub2API station", "Developer ID signing, notarization and auto-update are not configured", "Windows x64 installation, tray, window-mode and uninstall verification remain pending"]
   confidence: high
 
 freshness:
