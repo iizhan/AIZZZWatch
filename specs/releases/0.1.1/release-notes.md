@@ -25,8 +25,9 @@
 
 ## 验证结果
 
-- 自动化验证：待本发布提交的 `npm run verify`、`npm run package:dmg` 和 Windows 原生 CI 完成后更新。
-- 手工验证：待复核 DMG 挂载与应用元信息；Windows 安装、托盘、窗口模式和卸载需要 Windows 桌面环境的可见验收。
+- 自动化验证：`npm run verify` 通过（13 个测试文件、181 条测试、类型检查、生产构建）；`npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org` 发现 0 个漏洞；Windows 原生 CI [Run #3](https://github.com/iizhan/AIZZZWatch/actions/runs/30080595570) 成功。
+- 手工验证：`AIZZZWatch-0.1.1-arm64.dmg` 已通过 `hdiutil verify`、挂载、应用签名结构校验和卸载；Windows EXE 已解压并确认是 NSIS 安装包。
+- 未覆盖项：Windows 安装、托盘、完整/紧凑/气泡窗口和卸载尚未在 Windows 桌面可见验收；不提供 MSI、Windows ARM64、macOS Intel、代码签名、公证或自动更新。
 - 未覆盖项：不提供 MSI、Windows ARM64、macOS Intel、代码签名、公证或自动更新。
 
 ## 升级与兼容
@@ -38,5 +39,5 @@
 ## 风险与后续
 
 - 剩余风险：三方站点的接口、登录流程及风控策略会变化；自动恢复不会绕过验证码、二次验证或网站限制。
-- 发布后观察点：首次授权、会话恢复、NewAPI 只读快照和 Windows 安装/托盘/窗口模式。
+- 发布后观察点：首次授权、会话恢复、NewAPI 只读快照和 Windows 安装/托盘/窗口模式；安装包均未签名。
 - 后续计划：根据真实站点兼容反馈补充受控适配，并在具备签名证书后评估 macOS 公证与 Windows 签名。
