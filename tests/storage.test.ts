@@ -154,7 +154,7 @@ describe('station storage', () => {
     expect(updated.apiPaths.keys).toBe('/keys?page=1&page_size=20&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai')
   })
 
-  it('uses the standard Key path only for Sub2API-compatible stations', async () => {
+  it('uses adapter-specific default paths for Sub2API and NewAPI stations', async () => {
     const { saveStation } = await importStorage()
     const [sub2api] = await saveStation({
       name: 'Sub2API', baseUrl: 'https://relay.example.com/api/v1', adapterType: 'sub2api',
@@ -167,7 +167,30 @@ describe('station storage', () => {
     const newapi = stored.find((station) => station.name === 'NewAPI')
 
     expect(sub2api.apiPaths.keys).toBe('/keys?page=1&page_size=20&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai')
-    expect(newapi?.apiPaths.keys).toBe('')
+    expect(newapi?.apiPaths).toMatchObject({
+      profile: '/api/user/self',
+      groups: '/api/user/self/groups',
+      channels: '/api/pricing',
+      keys: '/api/token/?p=0&size=100',
+      authRefresh: '/api/user/auth/refresh'
+    })
+  })
+
+  it('upgrades a legacy NewAPI model probe path without replacing manual paths', async () => {
+    const { saveStation } = await importStorage()
+    const [created] = await saveStation({
+      name: 'Legacy NewAPI', baseUrl: 'https://newapi.example.com', adapterType: 'newapi',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10,
+      apiPaths: { channels: '/api/models' }
+    })
+    const [updated] = await saveStation({
+      id: created.id, name: 'Legacy NewAPI', baseUrl: 'https://newapi.example.com', adapterType: 'newapi',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10,
+      apiPaths: { channels: '/custom/pricing' }
+    })
+
+    expect(created.apiPaths.channels).toBe('/api/pricing')
+    expect(updated.apiPaths.channels).toBe('/custom/pricing')
   })
 
   it('encrypts saved web login credentials without exposing them in public station data', async () => {
@@ -199,6 +222,39 @@ describe('station storage', () => {
 
     expect(publicStations([cleared])[0].hasSavedLoginCredentials).toBe(false)
     expect(stationLoginCredentials(cleared)).toEqual({})
+  })
+
+  it('keeps automatic reauthorization opt-in, local, and separate from credential values', async () => {
+    const { publicStations, saveStation, updateStationAutoReauthStatus } = await importStorage()
+    const [created] = await saveStation({
+      name: 'Saved login', baseUrl: 'https://relay.example.com/api/v1', loginAccount: 'member@example.com', loginPassword: 'password-test', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [updated] = await updateStationAutoReauthStatus(created.id, { state: 'manual-required', at: '2026-07-23T12:00:00.000Z' })
+    const station = publicStations([updated])[0]
+
+    expect(station).toMatchObject({ hasSavedLoginCredentials: true, autoReauthEnabled: true, autoReauthStatus: { state: 'manual-required', at: '2026-07-23T12:00:00.000Z' } })
+    expect(station).not.toHaveProperty('loginAccount')
+    expect(station).not.toHaveProperty('loginPassword')
+  })
+
+  it('requires saved credentials before enabling automatic reauthorization and disables it when credentials are cleared', async () => {
+    const { publicStations, saveStation } = await importStorage()
+    await expect(saveStation({
+      name: 'No saved login', baseUrl: 'https://relay.example.com/api/v1', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })).rejects.toThrow('开启自动重新登录前，必须先保存网页登录账号和密码')
+
+    const [created] = await saveStation({
+      name: 'Saved login', baseUrl: 'https://relay.example.com/api/v1', loginAccount: 'member@example.com', loginPassword: 'password-test', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [cleared] = await saveStation({
+      id: created.id, name: 'Saved login', baseUrl: 'https://relay.example.com/api/v1', clearSavedLoginCredentials: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+
+    expect(publicStations([cleared])[0]).toMatchObject({ hasSavedLoginCredentials: false, autoReauthEnabled: false })
   })
 
   it('normalizes a root API base URL back to the versioned API root when the station uses relative API paths', async () => {

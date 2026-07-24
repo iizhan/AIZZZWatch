@@ -1,5 +1,5 @@
-import { applyLcodexApiPathDefaults, isLcodexLegacyPublicApiUrl, resolveLcodexStationCompatibility, unwrapApiResponse } from '../shared/sub2api'
-import type { StationApiPaths } from '../shared/types'
+import { applyLcodexApiPathDefaults, isLcodexLegacyPublicApiUrl, resolveLcodexStationCompatibility, resolveStationApiPath, resolveStationApiRequestUrl, unwrapApiResponse, usesNewApiContract } from '../shared/sub2api'
+import type { ResolvedStationAdapterType, StationAdapterType, StationApiPaths } from '../shared/types'
 
 export type WebAuthFetchLike = (input: string, init?: RequestInit) => Promise<Response>
 
@@ -30,6 +30,8 @@ export interface WebAuthWindowLike {
 export interface WebAuthRestoreResult {
   accessToken?: string
   refreshToken?: string
+  /** Main-process only Cookie header after NewAPI rotates its HttpOnly refresh Cookie. */
+  sessionCookie?: string
 }
 
 export interface WebAuthLaunchTarget {
@@ -49,6 +51,18 @@ function normalizeBaseCandidate(value: string | undefined): string | undefined {
   if (!trimmed) return undefined
   if (!/^https?:\/\//i.test(trimmed)) return undefined
   return trimmed
+}
+
+function normalizeNewApiBaseCandidate(value: string | undefined): string | undefined {
+  const candidate = normalizeBaseCandidate(value)
+  if (!candidate) return undefined
+  try {
+    const url = new URL(candidate)
+    url.pathname = url.pathname.replace(/\/api\/v1$/i, '') || '/'
+    return url.toString().replace(/\/+$/, '')
+  } catch {
+    return candidate.replace(/\/api\/v1$/i, '')
+  }
 }
 
 function unique(values: Array<string | undefined>): string[] {
@@ -74,6 +88,29 @@ export function collectWebAuthApiBaseUrls(input: {
     loginOrigin,
     normalizeBaseCandidate(input.normalizedBaseUrl)
   ])
+}
+
+export function isNewApiWebAuthContract(input: Pick<{ adapterType?: StationAdapterType; detectedAdapterType?: ResolvedStationAdapterType }, 'adapterType' | 'detectedAdapterType'>): boolean {
+  return usesNewApiContract(input.adapterType ?? 'sub2api', input.detectedAdapterType)
+}
+
+export function resolveNewApiRefreshUrl(apiBaseUrl: string, authRefreshPath?: string): string | undefined {
+  const normalized = normalizeNewApiBaseCandidate(apiBaseUrl)
+  if (!normalized) return undefined
+  try {
+    return resolveStationApiRequestUrl(normalized, resolveStationApiPath('/api/user/auth/refresh', authRefreshPath))
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Chromium only returns a cookie when the queried URL is within the cookie's
+ * path. NewAPI scopes its HttpOnly refresh cookie to its refresh endpoint.
+ */
+export function resolveWebAuthCookieUrl(apiBaseUrl: string, newApiAuth: boolean, authRefreshPath?: string): string {
+  if (!newApiAuth) return apiBaseUrl
+  return resolveNewApiRefreshUrl(apiBaseUrl, authRefreshPath) ?? apiBaseUrl
 }
 
 export function resolveWebAuthLaunchTarget(normalizedBaseUrl: string): WebAuthLaunchTarget {
@@ -106,6 +143,20 @@ export function resolveWebAuthApiPaths(normalizedBaseUrl: string, paths?: Statio
 
 export function buildCookieHeader(cookies: Array<{ name: string; value: string }>): string {
   return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+}
+
+function rotatedNewApiSessionCookie(headers: Headers, cookies: Array<{ name: string; value: string }>): string | undefined {
+  const setCookieHeaders = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.()
+    ?? [headers.get('set-cookie')].filter((value): value is string => Boolean(value))
+  const refreshValue = setCookieHeaders
+    .map((value) => value.match(/(?:^|,\s*)new_api_refresh=([^;]*)/i)?.[1])
+    .find((value): value is string => value !== undefined)
+  if (refreshValue === undefined) return undefined
+  const remaining = cookies
+    .filter((cookie) => cookie.name.toLowerCase() !== 'new_api_refresh')
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+  if (refreshValue) remaining.push(`new_api_refresh=${refreshValue}`)
+  return remaining.join('; ')
 }
 
 function cleanString(value: unknown): string | undefined {
@@ -196,4 +247,57 @@ export async function tryRestoreWebAuthSession(input: {
     accessToken,
     refreshToken: refreshToken || undefined
   }
+}
+
+/**
+ * NewAPI keeps its short-lived access token in client memory and its refresh
+ * session in an HttpOnly cookie. Restore the access token in the main process
+ * after browser login without exposing either value to the renderer.
+ */
+export async function tryRestoreNewApiSession(input: {
+  fetchImpl: WebAuthFetchLike
+  apiBaseUrl: string
+  authRefreshPath?: string
+  cookies: Array<{ name: string; value: string }>
+  userAgent: string
+}): Promise<WebAuthRestoreResult | undefined> {
+  const refreshUrl = resolveNewApiRefreshUrl(input.apiBaseUrl, input.authRefreshPath)
+  if (!refreshUrl || input.cookies.length === 0) return undefined
+  let origin: string
+  try {
+    origin = new URL(refreshUrl).origin
+  } catch {
+    return undefined
+  }
+  const response = await input.fetchImpl(refreshUrl, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Origin: origin,
+      Referer: `${origin}/`,
+      Cookie: buildCookieHeader(input.cookies),
+      'User-Agent': input.userAgent
+    },
+    body: '{}'
+  })
+  if (!response.ok) return undefined
+  const raw = await response.text().catch(() => '')
+  if (!raw.trim()) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  const envelope = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined
+  if (!envelope || envelope.success === false) return undefined
+  const payload = envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data)
+    ? envelope.data as Record<string, unknown>
+    : envelope
+  const accessToken = cleanString(payload.access_token ?? payload.accessToken)
+  return accessToken
+    ? { accessToken, sessionCookie: rotatedNewApiSessionCookie(response.headers, input.cookies) }
+    : undefined
 }

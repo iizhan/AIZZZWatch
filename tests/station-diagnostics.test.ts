@@ -129,6 +129,12 @@ describe('station diagnostics', () => {
     })
 
     expect(result).toMatchObject({ apiVariant: 'newapi', detectedAdapterType: 'newapi' })
-    expect(result.suggestedPaths).toMatchObject({ profile: '/api/user/self', keys: '/api/token/?p=0&size=100', channels: '/api/models' })
+    expect(result.suggestedPaths).toMatchObject({
+      profile: '/api/user/self',
+      groups: '/api/user/self/groups',
+      channels: '/api/pricing',
+      keys: '/api/token/?p=0&size=100',
+      authRefresh: '/api/user/auth/refresh'
+    })
   })
 })

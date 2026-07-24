@@ -1,5 +1,25 @@
 # Session History
 
+# 2026-07-24 跨平台 Windows CI 构建增量 v3
+
+- 确认版本：用户确认执行 `Windows CI 打包增量 v3`；验收状态 `awaiting_user_acceptance`。
+- 结论：新增最小权限的 GitHub Actions Windows 构建，`windows-latest` 已实际生成 Windows x64 NSIS EXE Artifact。首轮因 electron-builder 在 CI 中隐式发布、缺少 `GH_TOKEN` 失败；显式 `--publish never` 后 Run #2 成功。
+- 影响文件：`.github/workflows/windows-package.yml`、`package.json`、`tests/packaging-config.test.ts`、README、`specs/cross-platform-packaging/`、Project Profile。
+- 验证：`npm run verify` 通过（13 文件 / 181 测试、类型检查、生产构建）；YAML 与差异检查通过；GitHub Run #2 成功，上传 78.7 MB Artifact，SHA-256 `001eb19d1e2873c7ba73234b7a87f13557547ad1b22c6c7ab6b0992be26bffe5`。
+- 安全边界：工作流仅 `contents: read`，不读取 secrets，只上传 `release/*.exe`，不创建 Release 或标签。
+- 不满意分类：`verification_gap`；构建已覆盖，Windows 安装、托盘、窗口模式和卸载仍待真实可见验收。
+- 下一步：下载 Artifact，在 Windows 验证安装、启动、系统托盘、完整/紧凑/气泡窗口和卸载。
+
+# 2026-07-23 站点密码保活 v1
+
+- 确认版本：用户确认执行 `密码保活 v1`；验收状态 `awaiting_user_acceptance`。
+- 结论：三方站点与我的站点现在可在同一站点设置内保存本地加密登录账号密码，并显式开启“令牌失效时自动重新登录”。主进程先刷新令牌，未授权时才在 HTTPS 同源隔离页面尝试自动登录；挑战页改为人工完成。
+- 影响文件：认证主进程、加密站点存储、窄 preload 状态 IPC、站点设置 UI、预览适配、存储/成本测试与 `specs/password-keepalive/` 交付工件。
+- 验证：`npm run verify` 通过（12 文件 / 170 测试、类型检查、生产构建）；真实 Electron 窗口确认无凭据时开关禁用、填写草稿后启用，草稿未保存。
+- 不满意分类与证据：`ui_interaction`；可见检查发现凭据区被通用诊断隐藏样式遮挡，已改为独立容器并复测。
+- 剩余风险：不同二开站点的 DOM、验证码、2FA 与 WAF 不能保证自动成功；应用不会尝试绕过，需用户真实站点验收。
+- 下一步：选择一个非关键 HTTPS 站点，保存凭据并启用保活，验证令牌失效后的实际恢复效果。
+
 # 2026-07-22 用户自用排除经营核算 正式实施包 v1
 
 - 确认版本：用户确认“用户自用排除经营核算 正式实施包 v1”；验收状态 `awaiting_user_acceptance`。
@@ -859,7 +879,7 @@
 
 - [2026-07-21] 站点类型适配器 正式实施包 v1
   - 确认版本：用户确认“确认执行”；验收状态 `awaiting_user_acceptance`。
-  - 结论：站点新增 `auto/sub2api/newapi/custom` 类型，与 `source/own` 角色独立。NewAPI 只读取用户、令牌记录和模型能力；不把令牌/模型误解为分组，不进入价格榜或 Sub2API 管理功能。自定义兼容仍要求选择已知数据结构，不解析任意 JSON。
+  - 结论：站点新增 `auto/sub2api/newapi/custom` 类型，与 `source/own` 角色独立。此阶段 NewAPI 只读取用户、令牌记录和模型能力；不把令牌/模型误解为分组，不进入价格榜或 Sub2API 管理功能。后续 `NewAPI 兼容正式实施包 v1` 已确认用户分组/定价契约并开放来源价格榜，管理员能力仍不复用。自定义兼容仍要求选择已知数据结构，不解析任意 JSON。
   - 影响文件：共享类型/URL 规范化、storage、main adapter/diagnostics/IPC、React 设置表单与来源详情、预览 API、适配器与回归测试、Profile 和 feature 工件。
   - 验证：`npm run verify` 通过（11 个测试文件、137 条测试），生产构建通过；浏览器预览确认 NewAPI 动态字段、能力说明和 900px 无横向溢出；`npm run package:mac`、严格 codesign 与 `git diff --check` 通过。
   - 不满意分类与证据：`requirement_miss`；用户指出“不同站点配置和读取接口不同”，现有手工路径无法表达不同数据契约。
@@ -971,3 +991,19 @@
 - 验证：`npm run verify` 通过 12 个测试文件 / 168 条；`git diff --check` 通过；真实 token 片段复扫为 0；敏感扫描仅命中测试假数据。
 - 安全结论：未复制正式 userData，未新增真实站点、账号、余额、用量、token、Cookie 或邮箱；README 截图均为演示数据。
 - 剩余风险：当前暂存区仍包含大量前序功能与 workflow 改动，公开发布前需按 `docs/OPEN_SOURCE_CHECKLIST.md` 逐项复核并决定哪些 specs / memory 资料适合公开。
+
+# 2026-07-23 NewAPI 兼容正式实施包 v1
+
+- 确认版本：用户确认“确认执行 NewAPI 兼容正式实施包 v1”；验收状态 `awaiting_user_acceptance`。
+- 结论：NewAPI 可作为三方来源站读取当前用户余额、可用分组倍率、固定模型定价与令牌所属分组，并进入价格榜；当前用户无权限的全局分组被过滤。
+- 安全：原始令牌、JWT、Cookie、UA 和密码不进入 renderer；网页登录恢复及后续刷新均在主进程加密保存轮换后的 `new_api_refresh` Cookie。
+- 验证：`npm run verify` 通过（12 个测试文件、177 条测试），`git diff --check` 通过，浏览器预览确认 NewAPI 五路径和能力边界。
+- 剩余风险：不同 NewAPI 二开可能变更路径或字段，需要脱敏响应样本后用明确的同源路径配置联调；管理员功能、收益归档和远程写入不在本轮范围。
+
+# 2026-07-24 跨平台 DMG 与 Windows 安装包 正式实施包 v1
+
+- 确认版本：用户确认“确认执行 跨平台打包正式实施包 v1”；验收状态 `awaiting_user_acceptance`。
+- 完成：引入 electron-builder，新增 `package:dmg`（macOS arm64 DMG）和 `package:win`（Windows x64 NSIS EXE），保留 `package:mac`；生成受版本控制的 ICO，主窗口与托盘按平台加载 ICNS/ICO；README 明确未签名风险与跨系统凭据不可迁移。
+- 验证：`npm run verify` 通过（13 个文件、180 条）；`npm run package:dmg` 生成 `release/AIZZZWatch-0.1.0-arm64.dmg`；DMG checksum、挂载内容、平台图标资源和严格 ad-hoc 签名均通过；`git diff --check` 通过。
+- 不满意分类与证据：`verification_gap`；Mac 无 Wine，Windows EXE 尚未原生构建/安装验证；尝试隔离启动 DMG 时，被运行中的旧实例通过单实例机制接管，旧窗口截图未被计入新包证据。
+- 剩余风险：Windows 产物不得在 Windows x64 完成构建、安装、系统托盘、窗口模式和卸载验证前发布；两个平台均未配置正式代码签名或公证。

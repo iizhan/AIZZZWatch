@@ -1,4 +1,4 @@
-import type { GroupSnapshot, PricingModelSnapshot, SourceKeySnapshot, StationAdapterType, StationErrorCode, StationSnapshot } from './types'
+import type { GroupSnapshot, PricingModelSnapshot, ResolvedStationAdapterType, SourceKeySnapshot, StationAdapterType, StationErrorCode, StationSnapshot } from './types'
 import type { StationApiPaths } from './types'
 
 export const defaultStationApiPaths: Required<StationApiPaths> = {
@@ -22,6 +22,15 @@ export const defaultStationApiPaths: Required<StationApiPaths> = {
 
 /** Standard Sub2API user Key list. NewAPI and custom adapters keep their own contracts. */
 export const defaultSub2ApiKeyListPath = '/keys?page=1&page_size=20&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai'
+
+/** Confirmed NewAPI user-facing read endpoints. `channels` remains the shared price-list path. */
+export const defaultNewApiPaths: Required<Pick<StationApiPaths, 'profile' | 'groups' | 'channels' | 'keys' | 'authRefresh'>> = {
+  profile: '/api/user/self',
+  groups: '/api/user/self/groups',
+  channels: '/api/pricing',
+  keys: '/api/token/?p=0&size=100',
+  authRefresh: '/api/user/auth/refresh'
+}
 
 const lcodexHost = 'lcodex.cc'
 const lcodexLegacyPublicApiHost = 'api.lcodex.cc'
@@ -239,6 +248,28 @@ export function normalizeStationApiPaths(paths?: StationApiPaths): StationApiPat
     next[key as keyof StationApiPaths] = /^https?:\/\//i.test(trimmed)
       ? trimmed
       : trimmed.startsWith('/') ? trimmed : `/${trimmed}`
+  }
+  return next
+}
+
+export function usesNewApiContract(adapterType: StationAdapterType, detectedAdapterType: ResolvedStationAdapterType | undefined): boolean {
+  return adapterType === 'newapi' || (adapterType === 'auto' && detectedAdapterType === 'newapi')
+}
+
+/**
+ * Old NewAPI records inherited Sub2API defaults and used `/api/models` only as
+ * a capability probe. Replace only those known defaults so manual paths remain
+ * authoritative.
+ */
+export function applyNewApiPathDefaults(paths: StationApiPaths, adapterType: StationAdapterType, detectedAdapterType: ResolvedStationAdapterType | undefined): StationApiPaths {
+  if (!usesNewApiContract(adapterType, detectedAdapterType)) return paths
+  const next = { ...paths }
+  const fallbackKeys = new Set<keyof typeof defaultNewApiPaths>(['profile', 'groups', 'channels', 'keys', 'authRefresh'])
+  for (const key of fallbackKeys) {
+    const value = next[key]?.trim()
+    const sub2Default = defaultStationApiPaths[key]
+    const legacyNewApiDefault = key === 'channels' ? '/api/models' : undefined
+    if (!value || value === sub2Default || value === legacyNewApiDefault) next[key] = defaultNewApiPaths[key]
   }
   return next
 }

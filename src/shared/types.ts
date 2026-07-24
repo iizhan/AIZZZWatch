@@ -7,6 +7,13 @@ export type StationAdapterType = 'auto' | 'sub2api' | 'newapi' | 'custom'
 export type ResolvedStationAdapterType = Exclude<StationAdapterType, 'auto'>
 export type GroupChangeKind = 'added' | 'removed' | 'rate-up' | 'rate-down'
 export type GroupCapabilityTagId = 'image' | 'coding' | 'vision' | 'embedding' | 'audio' | 'video' | 'chat'
+export type StationAutoReauthState = 'pending' | 'success' | 'manual-required' | 'failed'
+
+/** Safe, local-only status of the most recent password keepalive attempt. */
+export interface StationAutoReauthStatus {
+  state: StationAutoReauthState
+  at: string
+}
 
 export type StationHealth = 'loading' | 'healthy' | 'stale' | 'error' | 'forbidden' | 'empty'
 
@@ -42,6 +49,8 @@ export interface StationInput {
   loginAccount?: string
   loginPassword?: string
   clearSavedLoginCredentials?: boolean
+  /** Allows saved local login credentials to renew an expired station session. */
+  autoReauthEnabled?: boolean
   pollingIntervalMs?: number
 }
 
@@ -65,6 +74,8 @@ export interface StationPublic {
   hasRefreshToken: boolean
   hasAdminToken: boolean
   hasSavedLoginCredentials: boolean
+  autoReauthEnabled: boolean
+  autoReauthStatus?: StationAutoReauthStatus
   adminCredentialType?: AdminCredentialType
   pollingIntervalMs: number
 }
@@ -523,6 +534,7 @@ export interface AizzzApi {
     diagnose: (input: Pick<StationInput, 'id' | 'name' | 'baseUrl' | 'apiBaseUrl' | 'adapterType' | 'accessToken' | 'refreshToken' | 'adminToken' | 'adminCredentialType' | 'apiPaths'>) => Promise<StationDiagnostics>
     previewMapping: (input: Pick<StationInput, 'id' | 'apiPaths' | 'readMapping'>) => Promise<StationMappingPreview>
     onSnapshotsUpdated: (callback: (snapshots: StationSnapshot[]) => void) => () => void
+    onStationsUpdated: (callback: (stations: StationPublic[]) => void) => () => void
   }
   window: {
     setMode: (mode: WindowMode) => Promise<{ mode: WindowMode }>

@@ -87,6 +87,7 @@ const demoStations: StationPublic[] = [
     hasRefreshToken: true,
     hasAdminToken: true,
     hasSavedLoginCredentials: false,
+    autoReauthEnabled: false,
     adminCredentialType: 'jwt',
     pollingIntervalMs: 30_000
   },
@@ -103,6 +104,7 @@ const demoStations: StationPublic[] = [
     hasRefreshToken: false,
     hasAdminToken: false,
     hasSavedLoginCredentials: false,
+    autoReauthEnabled: false,
     pollingIntervalMs: 30_000
   }
 ]
@@ -191,6 +193,7 @@ type SettingsForm = {
   loginAccount: string
   loginPassword: string
   clearSavedLoginCredentials: boolean
+  autoReauthEnabled: boolean
   pollingIntervalMs: number
   rechargeRatio: number
   lowBalanceThreshold: number
@@ -199,8 +202,8 @@ type SettingsForm = {
 
 type NoticeKind = 'success' | 'warning' | 'error'
 
-const newApiPathDefaults: StationApiPaths = { profile: '/api/user/self', channels: '/api/models', keys: '/api/token/?p=0&size=100' }
-const emptyForm: SettingsForm = { name: '', baseUrl: '', apiBaseUrl: '', stationRole: 'source', adapterType: 'auto', accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {} }
+const newApiPathDefaults: StationApiPaths = { profile: '/api/user/self', groups: '/api/user/self/groups', channels: '/api/pricing', keys: '/api/token/?p=0&size=100', authRefresh: '/api/user/auth/refresh' }
+const emptyForm: SettingsForm = { name: '', baseUrl: '', apiBaseUrl: '', stationRole: 'source', adapterType: 'auto', accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, autoReauthEnabled: false, pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {} }
 
 const categoryTabs = [
   { id: 'all', label: '全部', keywords: [] },
@@ -603,6 +606,15 @@ function formatGroupChangeObservedAt(value?: string): string {
   return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
     .format(occurredAt)
     .replaceAll('/', '-')
+}
+
+function autoReauthStatusLabel(status: StationPublic['autoReauthStatus']): string {
+  if (!status) return ''
+  const timestamp = formatGroupChangeObservedAt(status.at)
+  if (status.state === 'pending') return `正在尝试重新登录${timestamp ? ` · ${timestamp}` : ''}`
+  if (status.state === 'success') return `上次保活成功${timestamp ? ` · ${timestamp}` : ''}`
+  if (status.state === 'manual-required') return `需要人工完成验证${timestamp ? ` · ${timestamp}` : ''}`
+  return `上次保活未完成${timestamp ? ` · ${timestamp}` : ''}`
 }
 
 function formatAge(value: string | undefined, now: number): string {
@@ -2797,6 +2809,9 @@ function App() {
         setTimeCostLedger(preferences.timeCostLedger ?? emptyTimeCostLedger())
       }).catch(() => undefined)
     })
+    const unsubscribeStations = window.aizzz.stations.onStationsUpdated((next) => {
+      if (!disposed) setStations(next)
+    })
     const unsubscribeWindow = window.aizzz.window.onModeChanged((state) => {
       if (!disposed) {
         setMode(state.mode)
@@ -2806,6 +2821,7 @@ function App() {
     return () => {
       disposed = true
       unsubscribe()
+      unsubscribeStations()
       unsubscribeWindow()
     }
   }, [])
@@ -2942,7 +2958,9 @@ function App() {
   }, [visibleSnapshots, visibleStations])
   const showRankingToolbar = mode === 'compact' || viewportWidth <= 620
   const newApiSettings = settingsForm.adapterType === 'newapi' || (settingsForm.adapterType === 'auto' && settingsForm.detectedAdapterType === 'newapi')
-  const settingsHasSavedLoginCredentials = Boolean(settingsForm.id && stations.find((station) => station.id === settingsForm.id)?.hasSavedLoginCredentials)
+  const settingsStation = settingsForm.id ? stations.find((station) => station.id === settingsForm.id) : undefined
+  const settingsHasSavedLoginCredentials = Boolean(settingsStation?.hasSavedLoginCredentials)
+  const settingsCanConfigureAutoReauth = !settingsForm.clearSavedLoginCredentials && (settingsHasSavedLoginCredentials || Boolean(settingsForm.loginAccount.trim() && settingsForm.loginPassword))
 
   async function refreshDataCenterSummary() {
     setDataCenterLoading(true)
@@ -3098,7 +3116,7 @@ function App() {
 
   function openEdit(station?: StationPublic) {
     setDiagnostics(null)
-    setSettingsForm(station ? { id: station.id, name: station.name, baseUrl: station.baseUrl, apiBaseUrl: station.apiBaseUrl ?? '', stationRole: station.stationRole ?? (isOwnStation(station, visibleSnapshots[station.id]) ? 'own' : 'source'), adapterType: station.adapterType ?? 'sub2api', detectedAdapterType: station.detectedAdapterType, accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: station.adminCredentialType ?? 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, pollingIntervalMs: station.pollingIntervalMs, rechargeRatio: station.rechargeRatio ?? 1, lowBalanceThreshold: station.lowBalanceThreshold ?? 10, apiPaths: station.apiPaths ?? {} } : { ...emptyForm, stationRole: sourceWalletView === 'own' ? 'own' : 'source' })
+    setSettingsForm(station ? { id: station.id, name: station.name, baseUrl: station.baseUrl, apiBaseUrl: station.apiBaseUrl ?? '', stationRole: station.stationRole ?? (isOwnStation(station, visibleSnapshots[station.id]) ? 'own' : 'source'), adapterType: station.adapterType ?? 'sub2api', detectedAdapterType: station.detectedAdapterType, accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: station.adminCredentialType ?? 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, autoReauthEnabled: station.autoReauthEnabled, pollingIntervalMs: station.pollingIntervalMs, rechargeRatio: station.rechargeRatio ?? 1, lowBalanceThreshold: station.lowBalanceThreshold ?? 10, apiPaths: station.apiPaths ?? {} } : { ...emptyForm, stationRole: sourceWalletView === 'own' ? 'own' : 'source' })
     setSettingsOpen(true)
   }
 
@@ -5172,7 +5190,7 @@ function App() {
                 {!integrationStation || !integrationDraft ? (
                   <div className="empty-state ranking-empty"><SlidersHorizontal size={18} /><span>先添加并保存一个三方站点，再在这里配置它的只读数据接入。</span></div>
                 ) : integrationStation.adapterType === 'newapi' ? (
-                  <div className="integration-empty"><ShieldCheck size={18} /><strong>NewAPI 使用内置只读适配器</strong><span>它的用户、令牌和模型读取契约与 Sub2API 不同，因此不开放任意字段映射，也不会进入分组倍率价格榜。</span></div>
+                  <div className="integration-empty"><ShieldCheck size={18} /><strong>NewAPI 使用内置只读适配器</strong><span>它会读取当前用户可用分组、固定定价和令牌所属分组，并进入价格榜；二开差异请通过站点设置中的五个明确路径配置，不开放任意字段映射。</span></div>
                 ) : (
                   <div className="integration-workspace">
                     <div className="integration-station-strip" role="tablist" aria-label="选择要适配的站点">
@@ -5496,7 +5514,7 @@ function App() {
                   {expanded && <div className="source-inline-detail">
                     {balanceLow && <div className="inline-alert balance-alert"><AlertTriangle size={15} /><span>余额低于提醒阈值 {formatMoney(station.lowBalanceThreshold)}，建议充值。</span></div>}
                     {snapshot?.errorMessage && <div className="inline-alert source-alert" aria-busy={sourceBusy}><AlertTriangle size={15} /><span>{snapshot.errorMessage}</span><button className="text-button" disabled={sourceBusy} onClick={() => void retrySourceStation(station, snapshot)}>{sourceBusy ? <LoaderCircle className="spin" size={13} /> : null}{sourceAction?.kind === 'login' ? '重新登录中' : sourceBusy ? '重试中' : snapshot.health === 'forbidden' || snapshot.errorCode === 'UNAUTHORIZED' ? '重新登录' : '重试'}</button></div>}
-                    <div className="source-stats"><div><span>余额</span><strong className={balanceLow ? 'low-balance-text' : undefined}>{formatMoney(snapshot?.balance)}</strong></div><div><span>响应</span><strong>{snapshot?.responseTimeMs ? `${snapshot.responseTimeMs} ms` : '--'}</strong></div><div><span>价格</span><strong>{stationAdapterLabel(station) === 'NewAPI' ? '不支持' : snapshot?.priceCapability === 'available' ? '已提供' : snapshot?.priceCapability === 'disabled' ? '未启用' : '不可用'}</strong></div><div><span>同步</span><strong>{formatAge(snapshot?.lastUpdatedAt, nowTick)}</strong></div></div>
+                    <div className="source-stats"><div><span>余额</span><strong className={balanceLow ? 'low-balance-text' : undefined}>{formatMoney(snapshot?.balance)}</strong></div><div><span>响应</span><strong>{snapshot?.responseTimeMs ? `${snapshot.responseTimeMs} ms` : '--'}</strong></div><div><span>价格</span><strong>{snapshot?.priceCapability === 'available' ? '已提供' : snapshot?.priceCapability === 'disabled' ? '未启用' : snapshot?.priceCapability === 'missing' ? '暂无固定价格' : '不可用'}</strong></div><div><span>同步</span><strong>{formatAge(snapshot?.lastUpdatedAt, nowTick)}</strong></div></div>
                     <div className="source-inline-actions" aria-label={`${station.name} 操作`}>
                       <button className="source-action-button" title={sourceAction?.kind === 'refresh' ? '刷新中' : '刷新'} aria-label={`${sourceAction?.kind === 'refresh' ? '正在刷新' : '刷新'} ${station.name}`} disabled={sourceBusy} onClick={() => void refreshSourceStation(station)}>{sourceAction?.kind === 'refresh' ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}</button>
                       <button className="source-action-button" title="编辑" aria-label={`编辑 ${station.name}`} onClick={() => openEdit(station)}><MoreHorizontal size={14} /></button>
@@ -5540,7 +5558,7 @@ function App() {
                       </div>
                     )}
                     <div className="mini-group-list inline" aria-label={`${station.name} 当前分类分组`}>
-                      {stationGroups.length === 0 && <div className="empty-state compact-empty"><SlidersHorizontal size={18} /><span>{stationAdapterLabel(station) === 'NewAPI' ? 'NewAPI 未提供 Sub2API 分组倍率，已排除出价格榜。' : '暂无匹配分组'}</span></div>}
+                      {stationGroups.length === 0 && <div className="empty-state compact-empty"><SlidersHorizontal size={18} /><span>{snapshot?.priceCapability === 'disabled' ? '分组或定价接口当前不可读取，请检查路径或重新授权。' : '暂无可用于比价的分组'}</span></div>}
                       {stationGroups.map((group) => {
                         const latestChange = latestVisibleGroupChangeFor(station.id, group.id, visibleGroupChangeEvents)
                         const groupKey = groupPreferenceKey(station.id, group.id)
@@ -5710,8 +5728,8 @@ function App() {
               apiPaths: adapterType === 'newapi' ? { ...current.apiPaths, ...newApiPathDefaults } : current.apiPaths
             }))
           }}><option value="auto">自动检测</option><option value="sub2api">Sub2API</option><option value="newapi">NewAPI</option><option value="custom">自定义兼容</option></select><span className="field-hint">自动检测只做读取探测；自定义兼容仍需选择与 Sub2API 相同的数据结构，不能猜测任意 JSON。</span></label>
-          <label>{newApiSettings ? '站点地址' : 'API 地址'}<input required value={settingsForm.baseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, baseUrl: event.target.value })} placeholder={newApiSettings ? 'https://newapi.example.com' : 'https://relay.example.com/api/v1'} /><span className="field-hint">{newApiSettings ? 'NewAPI 使用站点根地址；会读取用户、令牌和模型能力。' : '支持站点根地址或带 /api/v1 的地址'}</span></label>
-          <label>API 基址 <span className="optional">可选</span><input value={settingsForm.apiBaseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, apiBaseUrl: cleanUrl(event.target.value) })} placeholder={newApiSettings ? '部署在子路径时填写实际根地址' : '二开站可手动填真实 API 根地址'} /><span className="field-hint">{newApiSettings ? 'NewAPI 不读取 Sub2API 的 /groups 或 /admin 路径。' : '标准站留空即可；二开站如果实际接口根不是默认 /api/v1，请在这里记录。'}</span></label>
+          <label>{newApiSettings ? '站点地址' : 'API 地址'}<input required value={settingsForm.baseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, baseUrl: event.target.value })} placeholder={newApiSettings ? 'https://newapi.example.com' : 'https://relay.example.com/api/v1'} /><span className="field-hint">{newApiSettings ? 'NewAPI 使用站点根地址；会读取余额、可用分组、定价与令牌分组。' : '支持站点根地址或带 /api/v1 的地址'}</span></label>
+          <label>API 基址 <span className="optional">可选</span><input value={settingsForm.apiBaseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, apiBaseUrl: cleanUrl(event.target.value) })} placeholder={newApiSettings ? '部署在子路径时填写实际根地址' : '二开站可手动填真实 API 根地址'} /><span className="field-hint">{newApiSettings ? 'NewAPI 可作为来源站进入价格榜；管理员控制台仍不复用 Sub2API 管理接口。' : '标准站留空即可；二开站如果实际接口根不是默认 /api/v1，请在这里记录。'}</span></label>
           <label>充值比例 <span className="field-inline">1 : <input type="number" min={0.0001} step={0.0001} value={settingsForm.rechargeRatio} onChange={(event) => setSettingsForm({ ...settingsForm, rechargeRatio: Number(event.target.value) })} /></span><span className="field-hint">例如 1:10 填 10，1:1 填 1；用于换算最终倍率。</span></label>
           <label>余额提醒阈值 <span className="field-inline"><input type="number" min={0} step={0.01} value={settingsForm.lowBalanceThreshold} onChange={(event) => setSettingsForm({ ...settingsForm, lowBalanceThreshold: Number(event.target.value) })} /><span>余额</span></span><span className="field-hint">余额小于等于该值时来源钱包标红；填 0 关闭提醒。</span></label>
           <div className="station-access-link">
@@ -5751,8 +5769,10 @@ function App() {
           <div className="diagnostic-paths">
             {newApiSettings ? <>
               <label>NewAPI 用户路径<input value={pathValue(settingsForm.apiPaths.profile, newApiPathDefaults.profile ?? '')} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, profile: cleanPath(event.target.value) } })} placeholder={newApiPathDefaults.profile} /></label>
+              <label>NewAPI 分组路径<input value={pathValue(settingsForm.apiPaths.groups, newApiPathDefaults.groups ?? '')} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, groups: cleanPath(event.target.value) } })} placeholder={newApiPathDefaults.groups} /><span className="field-hint">只读取当前登录用户可用且有固定倍率的分组。</span></label>
               <label>NewAPI 令牌路径<input value={pathValue(settingsForm.apiPaths.keys, newApiPathDefaults.keys ?? '')} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, keys: cleanPath(event.target.value) } })} placeholder={newApiPathDefaults.keys} /><span className="field-hint">只展示令牌记录名称，不读取或保存令牌原文。</span></label>
-              <label>NewAPI 模型路径<input value={pathValue(settingsForm.apiPaths.channels, newApiPathDefaults.channels ?? '')} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, channels: cleanPath(event.target.value) } })} placeholder={newApiPathDefaults.channels} /><span className="field-hint">模型列表仅用于确认能力；没有可靠分组倍率时不会进入价格榜。</span></label>
+              <label>NewAPI 定价路径<input value={pathValue(settingsForm.apiPaths.channels, newApiPathDefaults.channels ?? '')} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, channels: cleanPath(event.target.value) } })} placeholder={newApiPathDefaults.channels} /><span className="field-hint">用于价格榜与模型分类；动态计费模型不换算为固定价格。</span></label>
+              <label>NewAPI 会话刷新路径<input value={pathValue(settingsForm.apiPaths.authRefresh, newApiPathDefaults.authRefresh ?? '')} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, authRefresh: cleanPath(event.target.value) } })} placeholder={newApiPathDefaults.authRefresh} /></label>
             </> : <>
             <label>用户信息路径<input value={pathValue(settingsForm.apiPaths.profile, defaultStationApiPaths.profile)} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, profile: cleanPath(event.target.value) } })} placeholder={defaultStationApiPaths.profile} /></label>
             <label>余额路径<input value={settingsForm.apiPaths.balance ?? ''} onChange={(event) => setSettingsForm({ ...settingsForm, apiPaths: { ...settingsForm.apiPaths, balance: cleanPath(event.target.value) } })} placeholder="/api/credits" /><span className="field-hint">支持相对路径，或同站 HTTPS 完整地址；不同站点地址不会保存。</span></label>
@@ -5778,11 +5798,16 @@ function App() {
             {settingsHasSavedLoginCredentials && <button type="button" className="outline-button" onClick={() => void authorizeStation(true)} disabled={isBrowserPreview || authorizing || saving} title="仅在同源登录页填入已保存账号密码，不会自动提交"><KeyRound size={15} /> 使用保存账号密码授权</button>}
             <span className="field-hint">{isBrowserPreview ? '浏览器预览不执行网页登录授权；请打开桌面快捷入口完成真实登录。' : settingsForm.id ? '会覆盖当前站点的登录令牌和 Cookie；如果登录账号是管理员，同一 JWT 会用于“我的站点”账号管理。' : '在隔离窗口完成站点登录；如果登录账号是管理员，同一 JWT 会用于“我的站点”账号管理。'}</span>
           </div>
-          <div className="diagnostic-block">
+          <div className="auth-credentials-block">
             <div className="section-heading compact-section"><div><span className="eyebrow">LOGIN CREDENTIALS</span><h2>网页登录账号密码</h2></div>{settingsHasSavedLoginCredentials && !settingsForm.clearSavedLoginCredentials && <span className="status-chip ready"><CheckCircle2 size={13} /> 已加密保存</span>}</div>
             <label>登录账号 <span className="optional">可选</span><input value={settingsForm.loginAccount} onChange={(event) => setSettingsForm({ ...settingsForm, loginAccount: event.target.value, clearSavedLoginCredentials: false })} placeholder={settingsHasSavedLoginCredentials ? '留空则保留已保存账号' : '邮箱、用户名或手机号'} autoComplete="username" /></label>
             <label>登录密码 <span className="optional">可选</span><input type="password" value={settingsForm.loginPassword} onChange={(event) => setSettingsForm({ ...settingsForm, loginPassword: event.target.value, clearSavedLoginCredentials: false })} placeholder={settingsHasSavedLoginCredentials ? '留空则保留已保存密码' : '与登录账号同时填写'} autoComplete="new-password" /></label>
-            {settingsHasSavedLoginCredentials && <div className="auth-actions"><span className="field-hint">密码原文不会回显。{settingsForm.clearSavedLoginCredentials ? '保存配置后会清除已保存账号密码。' : '可使用上方按钮在同源登录页填入，仍需你自行提交登录。'}</span><button type="button" className="text-button" onClick={() => setSettingsForm({ ...settingsForm, loginAccount: '', loginPassword: '', clearSavedLoginCredentials: !settingsForm.clearSavedLoginCredentials })}>{settingsForm.clearSavedLoginCredentials ? '撤销清除' : '清除已保存凭据'}</button></div>}
+            <div className="auth-keepalive-row">
+              <label className="auth-keepalive-toggle"><input type="checkbox" checked={settingsForm.autoReauthEnabled} disabled={!settingsCanConfigureAutoReauth} onChange={(event) => setSettingsForm({ ...settingsForm, autoReauthEnabled: event.target.checked })} /><span>令牌失效时自动重新登录</span></label>
+              <span className="field-hint">先尝试刷新令牌；仅 HTTPS 同源登录页会自动提交。验证码、2FA 与风控页会转为人工授权。</span>
+              {settingsStation?.autoReauthStatus && <span className={`auth-keepalive-status ${settingsStation.autoReauthStatus.state}`}>{autoReauthStatusLabel(settingsStation.autoReauthStatus)}</span>}
+            </div>
+            {settingsHasSavedLoginCredentials && <div className="auth-actions"><span className="field-hint">密码原文不会回显。{settingsForm.clearSavedLoginCredentials ? '保存配置后会清除已保存账号密码并关闭自动重新登录。' : '可使用上方按钮在同源登录页填入，仍需你自行提交登录。'}</span><button type="button" className="text-button" onClick={() => setSettingsForm({ ...settingsForm, loginAccount: '', loginPassword: '', clearSavedLoginCredentials: !settingsForm.clearSavedLoginCredentials, autoReauthEnabled: settingsForm.clearSavedLoginCredentials ? settingsForm.autoReauthEnabled : false })}>{settingsForm.clearSavedLoginCredentials ? '撤销清除' : '清除已保存凭据'}</button></div>}
           </div>
           <label>站点登录 JWT <span className="optional">备用</span><input type="password" value={settingsForm.accessToken} onChange={(event) => setSettingsForm({ ...settingsForm, accessToken: event.target.value })} placeholder={settingsForm.id ? '留空则保留原令牌' : '粘贴 access token'} autoComplete="off" /></label>
           <label>刷新令牌 <span className="optional">可选</span><input type="password" value={settingsForm.refreshToken} onChange={(event) => setSettingsForm({ ...settingsForm, refreshToken: event.target.value })} placeholder={settingsForm.id ? '留空则保留原令牌' : '用于自动续期'} autoComplete="off" /></label>

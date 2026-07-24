@@ -1,15 +1,16 @@
 import { app, BrowserWindow, ipcMain, nativeImage, net, session, Tray } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, saveDismissedGroupChangeEventIds } from './storage'
+import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, updateStationAutoReauthStatus, saveDismissedGroupChangeEventIds, type StoredStation } from './storage'
 import { diagnoseStation } from './station-diagnostics'
 import { hasUsableAdminCredential, isJwtExpiringSoon, resolveWebAuthTokens, Sub2ApiClient } from './sub2api-client'
+import { NewApiClient } from './newapi-client'
 import { createStationReadClient, usesSub2ApiContract } from './station-adapter'
-import { collectWebAuthApiBaseUrls, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthLaunchTarget, tryRestoreWebAuthSession } from './web-auth'
+import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from './web-auth'
 import { classifySub2ApiError, createEmptySnapshot, normalizeStationApiPaths, normalizeStationBaseUrl, resolveStationApiRequestUrl, sameNumberSet } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { buildProfitIntervalReport } from '../shared/time-cost-ledger'
-import type { AccountGroupMutation, AccountUpstreamMapping, ProfitArchiveDayCoverage, ProfitIntervalQuery, StationDiagnostics, StationInput, StationMappingPreview, StationSnapshot, TimeCostLedger, UsageLedgerCoverage, WebAuthInput, WindowMode } from '../shared/types'
+import type { AccountGroupMutation, AccountUpstreamMapping, ProfitArchiveDayCoverage, ProfitIntervalQuery, StationAutoReauthStatus, StationDiagnostics, StationInput, StationMappingPreview, StationSnapshot, TimeCostLedger, UsageLedgerCoverage, WebAuthInput, WindowMode } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let bubbleWindow: BrowserWindow | null = null
@@ -22,11 +23,26 @@ const snapshots = new Map<string, StationSnapshot>()
 const pollers = new Map<string, NodeJS.Timeout>()
 const sourceKeyFingerprints = new Map<string, Map<string, string>>()
 const accountCredentialFingerprints = new Map<string, Map<number, string>>()
+const autoReauthAttempts = new Map<string, Promise<void>>()
+let autoReauthReservation: string | undefined
+const autoReauthFailureCooldownMs = 5 * 60_000
 
 app.setName('AIZZZWatch')
 app.setAppUserModelId('com.aizzzwatch.desktop')
 app.setPath('userData', process.env.AIZZZWATCH_USER_DATA_DIR?.trim() || join(app.getPath('appData'), 'AIZZZWatch'))
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+function nativeAssetPath(filename: 'icon.icns' | 'icon.ico'): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'assets', filename)
+    : join(app.getAppPath(), 'assets', filename)
+}
+
+function createPlatformIcon() {
+  const iconName = process.platform === 'win32' ? 'icon.ico' : 'icon.icns'
+  const icon = nativeImage.createFromPath(nativeAssetPath(iconName))
+  return icon.isEmpty() ? nativeImage.createEmpty() : icon
+}
 
 function rendererLaunchQuery(mode?: WindowMode): Record<string, string> {
   // The packaged renderer uses a stable file URL; give its HTML document a
@@ -125,6 +141,17 @@ function sendSnapshots(): void {
   bubbleWindow?.webContents.send('stations:snapshot-updated', [...snapshots.values()])
 }
 
+function sendStationsUpdated(stations: StoredStation[]): void {
+  const publicStationList = publicStations(stations)
+  mainWindow?.webContents.send('stations:updated', publicStationList)
+  bubbleWindow?.webContents.send('stations:updated', publicStationList)
+}
+
+async function setStationAutoReauthStatus(id: string, state: StationAutoReauthStatus['state']): Promise<void> {
+  const stations = await updateStationAutoReauthStatus(id, { state, at: new Date().toISOString() })
+  sendStationsUpdated(stations)
+}
+
 function createPostMutationRefreshFailureSnapshot(stationId: string, stationName: string, error: unknown): StationSnapshot {
   const previous = snapshots.get(stationId) ?? createEmptySnapshot(stationId, stationName)
   const classified = classifySub2ApiError(error)
@@ -139,6 +166,74 @@ function createPostMutationRefreshFailureSnapshot(stationId: string, stationName
   }
 }
 
+function isHttpsStation(station: Pick<StoredStation, 'baseUrl'>): boolean {
+  try {
+    return new URL(station.baseUrl).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function isSessionReauthorizationNeeded(snapshot: Pick<StationSnapshot, 'errorCode' | 'errorMessage'>): boolean {
+  if (snapshot.errorCode === 'UNAUTHORIZED') return true
+  if (snapshot.errorCode !== 'FORBIDDEN') return false
+  return /session|cookie|jwt|token|\u4f1a\u8bdd|\u91cd\u65b0\u6388\u6743|\u767b\u5f55/i.test(snapshot.errorMessage ?? '')
+}
+
+function isAutoReauthCoolingDown(station: Pick<StoredStation, 'autoReauthStatus'>): boolean {
+  const status = station.autoReauthStatus
+  if (status?.state !== 'failed') return false
+  const attemptedAt = new Date(status.at).getTime()
+  return Number.isFinite(attemptedAt) && Date.now() - attemptedAt < autoReauthFailureCooldownMs
+}
+
+function webAuthInputFromStoredStation(station: StoredStation): WebAuthInput {
+  return {
+    id: station.id,
+    name: station.name,
+    baseUrl: station.baseUrl,
+    apiBaseUrl: station.apiBaseUrl,
+    stationRole: station.stationRole,
+    adapterType: station.adapterType,
+    detectedAdapterType: station.detectedAdapterType,
+    rechargeRatio: station.rechargeRatio,
+    lowBalanceThreshold: station.lowBalanceThreshold,
+    apiPaths: station.apiPaths,
+    adminCredentialType: station.adminCredentialType,
+    pollingIntervalMs: station.pollingIntervalMs,
+    useSavedLoginCredentials: true
+  }
+}
+
+function scheduleStationAutoReauth(station: StoredStation): void {
+  if (!station.autoReauthEnabled || !isHttpsStation(station) || isAutoReauthCoolingDown(station)) return
+  if (autoReauthAttempts.has(station.id) || autoReauthReservation || (authWindow && !authWindow.isDestroyed())) return
+  const credentials = stationLoginCredentials(station)
+  if (!credentials.loginAccount || !credentials.loginPassword) return
+
+  autoReauthReservation = station.id
+  const attempt = (async () => {
+    try {
+      await setStationAutoReauthStatus(station.id, 'pending')
+      await beginWebAuth(webAuthInputFromStoredStation(station), {
+        autoSubmitSavedLogin: true,
+        onManualInterventionRequired: () => {
+          void setStationAutoReauthStatus(station.id, 'manual-required')
+        }
+      })
+      await setStationAutoReauthStatus(station.id, 'success')
+      await refreshStation(station.id, false).catch(() => undefined)
+    } catch {
+      await setStationAutoReauthStatus(station.id, 'failed').catch(() => undefined)
+    }
+  })()
+  autoReauthAttempts.set(station.id, attempt)
+  void attempt.finally(() => {
+    autoReauthAttempts.delete(station.id)
+    if (autoReauthReservation === station.id) autoReauthReservation = undefined
+  })
+}
+
 async function refreshStation(id: string, allowTokenRefresh = true): Promise<StationSnapshot> {
   const stations = await listStations()
   const station = stations.find((item) => item.id === id)
@@ -146,8 +241,9 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
   let tokens = stationTokens(station)
   let client = createStationReadClient({ ...station, ...tokens, fetchImpl: electronFetch })
   const rotateStationTokens = async (): Promise<boolean> => {
-    if (!(client instanceof Sub2ApiClient)) return false
-    if (!station.refreshToken) return false
+    if (!(client instanceof Sub2ApiClient) && !(client instanceof NewApiClient)) return false
+    if (client instanceof Sub2ApiClient && !tokens.refreshToken) return false
+    if (client instanceof NewApiClient && !tokens.sessionCookie) return false
     try {
       const tokenPair = await client.refreshAccessToken()
       await saveStation({
@@ -156,6 +252,7 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
         baseUrl: station.baseUrl,
         accessToken: tokenPair.accessToken,
         refreshToken: tokenPair.refreshToken,
+        sessionCookie: 'sessionCookie' in tokenPair ? tokenPair.sessionCookie : undefined,
         pollingIntervalMs: station.pollingIntervalMs
       })
       const refreshedStations = await listStations()
@@ -169,16 +266,19 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
     }
   }
 
-  if (client instanceof Sub2ApiClient && allowTokenRefresh && tokens.refreshToken && isJwtExpiringSoon(tokens.accessToken)) {
+  const canRefreshSession = (client instanceof Sub2ApiClient && Boolean(tokens.refreshToken))
+    || (client instanceof NewApiClient && Boolean(tokens.sessionCookie))
+  if (allowTokenRefresh && canRefreshSession && isJwtExpiringSoon(tokens.accessToken)) {
     await rotateStationTokens()
   }
   let next = await client.fetchSnapshot(snapshots.get(id))
-  if (client instanceof Sub2ApiClient && allowTokenRefresh && next.errorCode === 'UNAUTHORIZED' && station.refreshToken) {
+  if (allowTokenRefresh && canRefreshSession && next.errorCode === 'UNAUTHORIZED') {
     const refreshed = await rotateStationTokens()
     if (refreshed) {
       next = await client.fetchSnapshot(snapshots.get(id))
     }
   }
+  if (allowTokenRefresh && isSessionReauthorizationNeeded(next)) scheduleStationAutoReauth(station)
   let usageDetail: Awaited<ReturnType<Sub2ApiClient['fetchAdminUsageDetail']>> | undefined
   if (client instanceof Sub2ApiClient && next.health === 'healthy' && hasUsableAdminCredential({ ...station, ...tokens })) {
     try {
@@ -328,6 +428,7 @@ function createWindow(): void {
     minWidth: 760,
     minHeight: 540,
     title: 'AIZZZWatch',
+    icon: createPlatformIcon(),
     show: false,
     backgroundColor: '#F4F6F8',
     webPreferences: {
@@ -389,30 +490,20 @@ function isSameOrigin(url: string, stationBaseUrl: string): boolean {
   }
 }
 
-async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBaseUrl: string, credentials: { loginAccount: string; loginPassword: string }): Promise<boolean> {
+type SavedLoginFillResult = 'filled' | 'submitted' | 'manual-required' | 'unavailable'
+
+interface WebAuthFlowOptions {
+  autoSubmitSavedLogin?: boolean
+  onManualInterventionRequired?: () => void
+}
+
+async function hasWebAuthSecurityChallenge(loginWindow: BrowserWindow, stationBaseUrl: string): Promise<boolean> {
   if (loginWindow.isDestroyed() || !isSameOrigin(loginWindow.webContents.getURL(), stationBaseUrl)) return false
   const script = `(() => {
-    const credentials = ${JSON.stringify(credentials)}
-    const visible = (element) => Boolean(element && !element.disabled && element.offsetParent !== null)
-    const password = [...document.querySelectorAll('input[type="password"]')].find(visible)
-    if (!password) return false
-    const form = password.closest('form') || document
-    const account = [...form.querySelectorAll('input')].find((element) => {
-      if (!visible(element) || element === password) return false
-      const type = (element.getAttribute('type') || 'text').toLowerCase()
-      const hint = [element.name, element.id, element.autocomplete, element.placeholder].filter(Boolean).join(' ').toLowerCase()
-      return type === 'email' || /email|mail|user|account|login|phone|mobile/.test(hint)
-    })
-    if (!account) return false
-    const assign = (element, value) => {
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-      if (!setter) return false
-      setter.call(element, value)
-      element.dispatchEvent(new Event('input', { bubbles: true }))
-      element.dispatchEvent(new Event('change', { bubbles: true }))
-      return true
-    }
-    return assign(account, credentials.loginAccount) && assign(password, credentials.loginPassword)
+    const form = document.querySelector('form') || document
+    const pageText = [document.body?.innerText, form.textContent].filter(Boolean).join(' ').toLowerCase()
+    return Boolean(document.querySelector('[data-sitekey], iframe[src*="captcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="totp" i]'))
+      || /captcha|\\u9a8c\\u8bc1\\u7801|\\u4eba\\u673a\\u9a8c\\u8bc1|verify you are human|two[ -]?factor|\\u4e8c\\u6b21\\u9a8c\\u8bc1|\\u5b89\\u5168\\u9a8c\\u8bc1/.test(pageText)
   })()`
   try {
     return Boolean(await loginWindow.webContents.executeJavaScript(script, true))
@@ -421,7 +512,54 @@ async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBase
   }
 }
 
-async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publicStations>> {
+async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBaseUrl: string, credentials: { loginAccount: string; loginPassword: string }, autoSubmit = false): Promise<SavedLoginFillResult> {
+  if (loginWindow.isDestroyed() || !isSameOrigin(loginWindow.webContents.getURL(), stationBaseUrl)) return 'unavailable'
+  const script = `(() => {
+    const credentials = ${JSON.stringify(credentials)}
+    const visible = (element) => Boolean(element && !element.disabled && element.offsetParent !== null)
+    const password = [...document.querySelectorAll('input[type="password"]')].find(visible)
+    if (!password) return 'unavailable'
+    const form = password.closest('form') || document
+    const account = [...form.querySelectorAll('input')].find((element) => {
+      if (!visible(element) || element === password) return false
+      const type = (element.getAttribute('type') || 'text').toLowerCase()
+      const hint = [element.name, element.id, element.autocomplete, element.placeholder].filter(Boolean).join(' ').toLowerCase()
+      return type === 'email' || /email|mail|user|account|login|phone|mobile/.test(hint)
+    })
+    if (!account) return 'unavailable'
+    const assign = (element, value) => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      if (!setter) return false
+      setter.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+      element.dispatchEvent(new Event('change', { bubbles: true }))
+      return true
+    }
+    if (!assign(account, credentials.loginAccount) || !assign(password, credentials.loginPassword)) return 'unavailable'
+    if (!${JSON.stringify(autoSubmit)}) return 'filled'
+    const pageText = [document.body?.innerText, form.textContent].filter(Boolean).join(' ').toLowerCase()
+    const hasChallenge = Boolean(document.querySelector('[data-sitekey], iframe[src*="captcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="totp" i]'))
+      || /captcha|\u9a8c\u8bc1\u7801|\u4eba\u673a\u9a8c\u8bc1|verify you are human|two[ -]?factor|\u4e8c\u6b21\u9a8c\u8bc1|\u5b89\u5168\u9a8c\u8bc1/.test(pageText)
+    if (hasChallenge) return 'manual-required'
+    const submit = [...form.querySelectorAll('button, input[type="submit"]')].find((element) => {
+      if (!visible(element)) return false
+      const type = (element.getAttribute('type') || '').toLowerCase()
+      const label = [element.textContent, element.getAttribute('value'), element.getAttribute('aria-label'), element.getAttribute('title')].filter(Boolean).join(' ').toLowerCase()
+      return type === 'submit' || /login|sign in|\u767b\u5f55|\u767b\u5165/.test(label)
+    })
+    if (!submit) return 'manual-required'
+    submit.click()
+    return 'submitted'
+  })()`
+  try {
+    const result = await loginWindow.webContents.executeJavaScript(script, true)
+    return result === 'filled' || result === 'submitted' || result === 'manual-required' ? result : 'unavailable'
+  } catch {
+    return 'unavailable'
+  }
+}
+
+async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {}): Promise<ReturnType<typeof publicStations>> {
   const name = input.name.trim()
   if (!name) throw new Error('站点名称不能为空')
   const baseUrl = input.baseUrl.trim()
@@ -429,6 +567,7 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
   const normalizedBaseUrl = normalizeStationBaseUrl(baseUrl, input.adapterType === 'auto' ? input.detectedAdapterType : input.adapterType)
   const authLaunchTarget = resolveWebAuthLaunchTarget(normalizedBaseUrl)
   if (authWindow && !authWindow.isDestroyed()) {
+    if (!authWindow.isVisible()) authWindow.show()
     authWindow.focus()
     throw new Error('已有授权窗口打开')
   }
@@ -451,7 +590,7 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
     width: 520,
     height: 760,
     title: `登录 ${name}`,
-    show: true,
+    show: !options.autoSubmitSavedLogin,
     webPreferences: {
       sandbox: true,
       nodeIntegration: false,
@@ -464,18 +603,32 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
   return new Promise<ReturnType<typeof publicStations>>((resolve, reject) => {
     let settled = false
     let poller: NodeJS.Timeout | undefined
+    let automaticAuthTimeout: NodeJS.Timeout | undefined
     let requestedClientLoginRoute = false
     let savedLoginFilled = false
+    let manualInterventionRequired = false
+    const requestManualIntervention = (): void => {
+      if (!options.autoSubmitSavedLogin || manualInterventionRequired) return
+      manualInterventionRequired = true
+      if (automaticAuthTimeout) clearTimeout(automaticAuthTimeout)
+      options.onManualInterventionRequired?.()
+      if (!loginWindow.isDestroyed()) {
+        loginWindow.show()
+        loginWindow.focus()
+      }
+    }
     const fillSavedLogin = (): void => {
       if (!savedLoginCredentials || savedLoginFilled) return
-      void fillSavedLoginCredentials(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl, savedLoginCredentials).then((filled) => {
-        savedLoginFilled = filled
+      void fillSavedLoginCredentials(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl, savedLoginCredentials, Boolean(options.autoSubmitSavedLogin)).then((result) => {
+        if (result !== 'unavailable') savedLoginFilled = true
+        if (result === 'manual-required') requestManualIntervention()
       })
     }
     const finish = async (callback: () => void): Promise<void> => {
       if (settled) return
       settled = true
       if (poller) clearInterval(poller)
+      if (automaticAuthTimeout) clearTimeout(automaticAuthTimeout)
       await closeAuthWindow()
       callback()
     }
@@ -491,28 +644,43 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
           inputApiBaseUrl: explicitApiBaseUrl,
           pageApiBaseUrl: probe.pageApiBaseUrl
         })
+        const newApiAuth = isNewApiWebAuthContract(input)
+        const newApiAuthRefreshPath = newApiAuth ? input.apiPaths?.authRefresh : undefined
         const cookieSets = await Promise.all(apiBaseUrls.map(async (apiBaseUrl) => {
-          const cookies = await session.fromPartition(partition).cookies.get({ url: apiBaseUrl }).catch(() => [])
+          const cookieUrl = resolveWebAuthCookieUrl(apiBaseUrl, newApiAuth, newApiAuthRefreshPath)
+          const cookies = await session.fromPartition(partition).cookies.get({ url: cookieUrl }).catch(() => [])
           return { apiBaseUrl, cookies }
         }))
         const resolvedTokens = resolveWebAuthTokens(probe as Record<string, string | undefined>, cookieSets.flatMap((item) => item.cookies))
-        let resolvedApiBaseUrl = resolveWebAuthApiBaseUrl({
-          normalizedBaseUrl,
-          inputApiBaseUrl: explicitApiBaseUrl,
-          pageApiBaseUrl: probe.pageApiBaseUrl
-        })
+        let resolvedApiBaseUrl = newApiAuth
+          ? (explicitApiBaseUrl ?? normalizedBaseUrl).replace(/\/api\/v1\/?$/i, '')
+          : resolveWebAuthApiBaseUrl({
+              normalizedBaseUrl,
+              inputApiBaseUrl: explicitApiBaseUrl,
+              pageApiBaseUrl: probe.pageApiBaseUrl
+            })
+        let restoredSessionCookie: string | undefined
         if (!resolvedTokens.accessToken) {
           for (const { apiBaseUrl, cookies } of cookieSets) {
-            const restored = await tryRestoreWebAuthSession({
-              fetchImpl: electronFetch,
-              apiBaseUrl,
-              authClientId: probe.authClientId,
-              cookies,
-              userAgent: loginWindow.webContents.getUserAgent()
-            })
+            const restored = newApiAuth
+              ? await tryRestoreNewApiSession({
+                  fetchImpl: electronFetch,
+                  apiBaseUrl,
+                  authRefreshPath: newApiAuthRefreshPath,
+                  cookies,
+                  userAgent: loginWindow.webContents.getUserAgent()
+                })
+              : await tryRestoreWebAuthSession({
+                  fetchImpl: electronFetch,
+                  apiBaseUrl,
+                  authClientId: probe.authClientId,
+                  cookies,
+                  userAgent: loginWindow.webContents.getUserAgent()
+                })
             if (!restored?.accessToken) continue
             resolvedTokens.accessToken = restored.accessToken
             resolvedTokens.refreshToken = resolvedTokens.refreshToken || restored.refreshToken
+            restoredSessionCookie = restored.sessionCookie
             resolvedApiBaseUrl = resolvedApiBaseUrl || apiBaseUrl
             break
           }
@@ -521,7 +689,8 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
         const saveApiBaseUrl = resolvedApiBaseUrl
         const cookieSource = cookieSets.find((item) => item.apiBaseUrl === (saveApiBaseUrl || normalizedBaseUrl))
           ?? cookieSets.find((item) => item.cookies.length > 0)
-        const sessionCookie = cookieSource?.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+        const sessionCookie = restoredSessionCookie
+          ?? cookieSource?.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
         const userAgent = loginWindow.webContents.getUserAgent()
         const stations = await saveStation({
           id: input.id,
@@ -560,7 +729,15 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
       }
       fillSavedLogin()
       void capture()
-      if (!poller) poller = setInterval(() => void capture(), 700)
+      if (!poller) poller = setInterval(() => {
+        if (!savedLoginFilled) fillSavedLogin()
+        else if (options.autoSubmitSavedLogin && !manualInterventionRequired) {
+          void hasWebAuthSecurityChallenge(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl).then((hasChallenge) => {
+            if (hasChallenge) requestManualIntervention()
+          })
+        }
+        void capture()
+      }, 700)
     })
     loginWindow.webContents.on('did-navigate-in-page', fillSavedLogin)
     loginWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
@@ -570,13 +747,18 @@ async function beginWebAuth(input: WebAuthInput): Promise<ReturnType<typeof publ
     loginWindow.on('closed', () => {
       void finish(() => reject(new Error('AUTH_CANCELLED')))
     })
+    if (options.autoSubmitSavedLogin) {
+      automaticAuthTimeout = setTimeout(() => {
+        void finish(() => reject(new Error('AUTO_AUTH_TIMEOUT')))
+      }, 45_000)
+    }
     void loginWindow.loadURL(authLaunchTarget.loadUrl)
   })
 }
 
 function createTray(): void {
-  tray = new Tray(nativeImage.createEmpty())
-  tray.setTitle('AW')
+  tray = new Tray(createPlatformIcon())
+  if (process.platform === 'darwin') tray.setTitle('AW')
   tray.setToolTip('AIZZZWatch')
   tray.on('click', () => {
     if (mode === 'bubble' && bubbleWindow) {

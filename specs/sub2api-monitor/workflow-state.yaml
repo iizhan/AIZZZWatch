@@ -6,7 +6,7 @@ feature:
 
 requirement_status: confirmed
 scope_status: locked
-active_milestone: open_source_release_v1
+active_milestone: newapi_compatibility_v1
 task_lane: controlled
 confirmation_state: awaiting_user_acceptance
 task_lane_history:
@@ -16,11 +16,11 @@ task_lane_history:
 project_profile:
   status: fresh
   profile_version: 1
-  last_checked_at: "2026-07-22"
-  evidence_state: implemented_mvp
+  last_checked_at: "2026-07-23"
+  evidence_state: fresh
   changed_evidence: []
   loaded_sections: [stack, architecture, commands, security, testing]
-  refreshed_sections: [stack, modules, entry_points, commands, evidence, profit_archive, internal_user_exclusion]
+  refreshed_sections: [stack, modules, entry_points, commands, evidence, profit_archive, internal_user_exclusion, encrypted_password_keepalive]
   reused_decisions: []
   invalidation_reason: null
 
@@ -28,12 +28,19 @@ artifact_versions:
   requirement: v2
   impact: v2
   plan: v2
-  verification: v50
+  verification: v51
 
 latest_increment:
-  version: v1
-  name: "开源发布正式实施包"
+  version: "NewAPI 兼容正式实施包 v1"
+  name: "NewAPI 来源站比价兼容"
   status: awaiting_user_acceptance
+
+active_increment:
+  version: "NewAPI 兼容正式实施包 v1"
+  lane: controlled
+  status: awaiting_user_acceptance
+  profile_refresh: "2026-07-23: refreshed changed main/preload/renderer evidence and inspected local NewAPI API source without reading local station credentials."
+  source_contract: "NewAPI /api/user/self, /api/user/self/groups, /api/pricing, and /api/token are read-only source-station inputs; token plaintext is excluded."
 
 confirmation_gates:
   requirement_impact: { required: true, status: approved, approved_version: v2 }
@@ -64,6 +71,7 @@ confirmation_history:
   - { gate: design_plan, version: "正式实施包 v1", choice: confirmed, date: "2026-07-23" }
   - { gate: design_plan, version: "保存登录凭据与 Sub2API 密钥路径 正式实施包 v1", choice: confirmed, date: "2026-07-23" }
   - { gate: design_plan, version: "开源发布正式实施包 v1", choice: confirmed, date: "2026-07-23" }
+  - { gate: design_plan, version: "NewAPI 兼容正式实施包 v1", choice: confirmed, date: "2026-07-23" }
 
 work_items:
   - { id: ITEM-001, title: "多站连接与安全配置", status: verifying }
@@ -186,6 +194,15 @@ role_reviews:
 
 session_reflections:
   - status: completed_pending_acceptance
+    summary: "NewAPI 来源站兼容已完成：按当前用户权限读取余额、可用分组、固定模型定价与令牌分组，并支持网页授权后的 HttpOnly refresh Cookie 轮换保存。"
+    user_choices: ["确认执行 NewAPI 兼容正式实施包 v1"]
+    choice_rationale: ["用户要求参考本地 NewAPI 源码，支持 NewAPI 站点作为三方来源站进行比价。"]
+    worked_well: ["以 /api/user/self/groups 约束当前用户可用分组，避免全局分组误入价格榜", "令牌原文、JWT、Cookie 和 UA 始终不跨主进程边界"]
+    should_change: ["收集不同二开站的脱敏路径/字段样本后，再扩展已确认的同源路径覆盖"]
+    user_feedback: ["参考下newapi的代码支持下newapi的站点"]
+    acceptance_status: awaiting_user_acceptance
+    dissatisfaction_categories: []
+  - status: completed_pending_acceptance
     summary: "lcodex 新版兼容已完成：根页内登录、sessionStorage 凭据、根域管理接口与版本化价格路径均已适配。"
     user_choices: ["确认需求与影响 v1", "确认执行 lcodex 兼容正式实施包 v1"]
     choice_rationale: ["站点二开改版影响授权入口、会话和读取接口，需要受控兼容。"]
@@ -298,6 +315,7 @@ evolution_updates:
 
 validation_status: awaiting_user_acceptance
 verification_evidence:
+  - "NewAPI 兼容正式实施包 v1: npm run verify 通过 12 个测试文件 / 177 条；git diff --check 与 Profile capture fresh 通过；浏览器预览实际切换 NewAPI 后确认五个路径、来源价格榜能力和管理员能力边界；未发起真实网页登录或远程写入"
   - "接口适配中心 v1: npm run verify 通过 12 个测试文件 / 161 条；macOS arm64 package、严格签名、git diff --check 和 Profile fresh 通过；本地构建文件可见自动化被浏览器安全策略阻断"
   - "价格榜最近涨降时间 v2: typecheck、定向 51 项测试、完整 145 项测试、生产构建、macOS 打包与严格签名通过；本地文件预览被浏览器安全策略拦截，保留真机可见验收风险"
   - "价格榜最近涨降时间 v1: typecheck、定向 51 项测试、完整 145 项测试、生产构建、macOS 打包与严格签名通过；Electron 可见路径确认真实历史行和无历史行的紧凑呈现"
@@ -343,6 +361,8 @@ verification_evidence:
   - "用户自用排除经营核算 v1: typecheck、11 test files / 153 tests、生产构建、macOS 打包、严格签名和差异检查通过；本地构建文件 URL 被浏览器策略阻断，保留用户桌面端可见验收"
   - "精确上游关联与公益核算 v1: npm run verify 通过 12 文件 / 165 tests；macOS package、严格签名和 diff 检查通过；新包单实例启动后因 macOS 锁屏未完成可见点击验证"
 handoff_notes:
+  - "NewAPI 默认读取 /api/user/self、/api/user/self/groups、/api/pricing、/api/token/?p=0&size=100；可在站点设置中按二开站同源路径覆盖。仅固定计费模型进入模型价格展示，动态表达式不伪造固定价格。"
+  - "NewAPI 网页授权从 HttpOnly new_api_refresh Cookie 在主进程恢复 access token；服务端返回轮换 Cookie 时会加密保存更新后的 Cookie。"
   - "需求修订 v2 已确认：网页登录授权、refresh token、管理员 API Key x-api-key；普通账号分组严格取 /groups/available。"
   - "下一步使用真实 Sub2API 站点做只读联调。"
   - "浏览器预览不执行网页登录授权；真实授权请使用桌面快捷入口。"
@@ -373,6 +393,7 @@ handoff_notes:
   - "内部自用用户仅按站点 ID + 顶层数字 user_id 本地标记；收益归档未返回 user_id 的记录不猜测归属，需重新归档含该字段的日期后才能精确排除。"
   - "自动上游关联只允许唯一 Key 指纹匹配；API 地址、子域名和倍率仅作诊断，不能推断成本来源。公益分组仅影响本机经营核算，原始账本与远端配置不变。"
 residual_risks:
+  - "不同 NewAPI 二开站可能调整用户、分组、定价、令牌或会话刷新路径/字段；需要脱敏响应样本后通过站点设置的五个路径联调。"
   - "不同 Sub2API 版本和 feature flag 可能需要适配。"
   - "最终发布包中的 Tray 行为仍需复测。"
   - "真实站点管理员 usage 字段和桌面端内部自用用户交互尚待用户验收。"
