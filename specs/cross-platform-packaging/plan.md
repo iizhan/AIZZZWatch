@@ -74,7 +74,7 @@
 
 ### Phase 4：Windows CI 原生验证增量
 
-- `TASK-PKG-005`：新增最小权限的 `Package Windows EXE` 工作流，在 `windows-latest` 使用 Node 22 执行 `npm ci`、`npm run package:win`。
+- `TASK-PKG-005`：新增最小权限的 `Package Windows EXE` 工作流，在 `windows-latest` 使用 Node 22 执行 `npm ci`、`npm run package:win`；脚本显式传递 `--publish never`，阻止 electron-builder 的 CI 隐式发布。
 - `TASK-PKG-006`：仅上传 `release/*.exe` 为 7 天 Artifact；不创建 Release、不传递 secrets。
 - `TASK-PKG-007`：同步 README 与受控规格，说明默认分支的手动入口及当前分支一次性自动触发原因。
 - `TASK-PKG-008`：推送当前功能分支，收集 GitHub 原生构建输出和 Artifact 结果；Artifact 成功后仍记录安装/托盘/卸载为待实机验收项。

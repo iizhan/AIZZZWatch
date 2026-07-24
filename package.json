@@ -11,7 +11,7 @@
     "build:icon": "bash scripts/build-icon.sh",
     "package:mac": "npm run build && npm run build:icon && node scripts/package-mac.mjs",
     "package:dmg": "npm run build && electron-builder --mac dmg --arm64",
-    "package:win": "npm run build && electron-builder --win nsis --x64",
+    "package:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

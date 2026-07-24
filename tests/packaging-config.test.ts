@@ -23,7 +23,7 @@ describe('cross-platform packaging configuration', () => {
   it('keeps the existing mac app package and adds DMG and Windows NSIS commands', () => {
     expect(manifest.scripts['package:mac']).toContain('scripts/package-mac.mjs')
     expect(manifest.scripts['package:dmg']).toBe('npm run build && electron-builder --mac dmg --arm64')
-    expect(manifest.scripts['package:win']).toBe('npm run build && electron-builder --win nsis --x64')
+    expect(manifest.scripts['package:win']).toBe('npm run build && electron-builder --win nsis --x64 --publish never')
     expect(manifest.devDependencies['electron-builder']).toMatch(/^\^26\./)
   })
 
