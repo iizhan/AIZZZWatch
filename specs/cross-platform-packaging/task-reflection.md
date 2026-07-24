@@ -4,15 +4,15 @@
 
 - Feature: `cross-platform-packaging`
 - Date: `2026-07-24`
-- Reflection Status: `completed_awaiting_acceptance`
+- Reflection Status: `published_with_known_risk`
 - Requirement / Impact / Plan / Verification Versions: `v3 / v3 / v3 / v2`
-- User Acceptance: pending
+- User Acceptance: 用户于 `2026-07-24` 明确接受 v0.1.1 的 Windows 可见验收缺口并授权发布
 
 ## Task Outcome
 
 - objective: 在不依赖本机 Windows 虚拟机的情况下，实际生成 Windows x64 NSIS EXE。
 - delivered: GitHub Actions 原生 Windows 构建、7 天 EXE Artifact、`--publish never` 保护、配置测试、README 与完整验证记录。
-- not delivered: Windows 安装、启动、系统托盘、窗口模式、卸载、代码签名、MSI 与 Release。
+- not delivered: Windows 安装、启动、系统托盘、窗口模式、卸载、代码签名与 MSI；公开 Release 已按用户确认的已知风险豁免完成。
 
 ## User Choices
 
@@ -20,8 +20,8 @@
    why it mattered: 降低 WiX 依赖和跨平台构建复杂度。
 2. choice: 允许使用 GitHub Windows Runner 生成 EXE Artifact。
    why it mattered: 本地 VM 路径不可访问，但仍可获得原生 Windows 构建证据。
-3. choice: 不创建 GitHub Release。
-   why it mattered: 保持 Artifact 临时下载与正式发布分离。
+3. choice: 在明确记录 Windows 可见验收缺口与未签名风险后发布 GitHub Release v0.1.1。
+   why it mattered: 用户接受当前版本的已知风险，但该批准不适用于后续版本。
 
 ## Verification Summary
 

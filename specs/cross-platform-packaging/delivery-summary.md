@@ -7,7 +7,7 @@
 - Related Request: `支持 Windows，并可打包 macOS DMG 与 Windows EXE 安装包。`
 - Requirement / Impact / Plan Version: `v3 / v3 / v3`
 - Verification Version: `v2`
-- Delivery Status: `awaiting_user_acceptance`
+- Delivery Status: `published_with_known_risk`
 
 ## 本次完成
 
@@ -15,7 +15,8 @@
 - 新增最小权限的 GitHub Actions Windows 构建：`windows-latest` 执行 `npm ci` 和 `npm run package:win`，仅上传 7 天 EXE Artifact；不创建 Release、不使用 secrets。
 - `package:win` 显式加上 `--publish never`，避免 electron-builder 在 CI 中隐式尝试发布。
 - 已在 GitHub 原生 Windows Runner 完成一次成功构建：Run #2，提交 `aeb59b6`，用时 1 分 45 秒。
-- 未纳入：MSI、代码签名、公证、自动更新、GitHub Release、Windows ARM64、macOS Intel。
+- 未纳入：MSI、代码签名、公证、自动更新、Windows ARM64、macOS Intel。
+- 发布后：用户已为 v0.1.1 明确豁免 Windows 可见验收缺口；公开 [GitHub Release v0.1.1](https://github.com/iizhan/AIZZZWatch/releases/tag/v0.1.1) 已创建并标记 Latest，包含 macOS DMG 与 Windows EXE。
 
 ## 关键改动
 

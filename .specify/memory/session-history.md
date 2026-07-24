@@ -1007,3 +1007,11 @@
 - 验证：`npm run verify` 通过（13 个文件、180 条）；`npm run package:dmg` 生成 `release/AIZZZWatch-0.1.0-arm64.dmg`；DMG checksum、挂载内容、平台图标资源和严格 ad-hoc 签名均通过；`git diff --check` 通过。
 - 不满意分类与证据：`verification_gap`；Mac 无 Wine，Windows EXE 尚未原生构建/安装验证；尝试隔离启动 DMG 时，被运行中的旧实例通过单实例机制接管，旧窗口截图未被计入新包证据。
 - 剩余风险：Windows 产物不得在 Windows x64 完成构建、安装、系统托盘、窗口模式和卸载验证前发布；两个平台均未配置正式代码签名或公证。
+
+# 2026-07-24 v0.1.1 风险豁免发布
+
+- 确认版本：用户确认“确认按已知风险发布 v0.1.1”；验收状态 `awaiting_user_acceptance`。
+- 完成：发布分支已合并至 `main`，推送 `v0.1.1` 标签，并创建公开 Latest [GitHub Release](https://github.com/iizhan/AIZZZWatch/releases/tag/v0.1.1)。发布资产为 macOS arm64 DMG 与 Windows x64 NSIS EXE；Release 页面、标签提交 `f67a4ed`、说明、公开资产名称和大小均已核验。
+- 验证：此前 `npm run verify`（13 个测试文件、181 条）及 DMG/Windows CI 验证均通过；发布后通过 GitHub 页面与 Releases API 复核公开状态 `draft: false`、`prerelease: false`、Latest 和两项二进制资产。GitHub 将 EXE 资产文件名规范化为 `AIZZZWatch.Setup.0.1.1.exe`，公开说明已同步。
+- 不满意分类与证据：`verification_gap`；Windows 安装、启动、系统托盘、完整/紧凑/气泡窗口和卸载仍没有可见桌面验收，已在公开 Release 中明确披露，且用户仅对 v0.1.1 作出了风险豁免。
+- 剩余风险：两平台安装包未正式签名；不得将当前风险豁免或 GitHub Windows CI 构建结果当作后续版本或 Windows 可见验收的替代品。

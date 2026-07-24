@@ -27,13 +27,14 @@
 
 - [x] 创建 `release/0.1.1`
 - [x] 运行 `bash .specify/scripts/bash/release-doctor.sh 0.1.1`（`2026-07-24` 通过）
-- [ ] 复核版本号与发布说明
-- [ ] 创建标签 `v0.1.1`
-- [ ] 合并到 `main`
-- [ ] 推送主干与 tag
+- [x] 复核版本号、发布说明与两个 SHA-256
+- [x] 创建并推送标签 `v0.1.1`
+- [x] 合并到 `main`
+- [x] 推送 `main`、`release/0.1.1` 与 tag
+- [x] 创建公开 [GitHub Release v0.1.1](https://github.com/iizhan/AIZZZWatch/releases/tag/v0.1.1)，标记为 Latest
 
 ## 发布后检查
 
-- [ ] 关键路径抽样验证
-- [ ] 记录遗留风险
+- [x] 关键路径抽样验证：公开发布页、标签 `v0.1.1`、提交 `f67a4ed`、Release Notes、两个安装包及公开 API 资产清单均已复核
+- [x] 记录遗留风险：未签名；Windows 安装、托盘、窗口形态与卸载尚未完成可见验收
 - [ ] 清理已完成的临时分支

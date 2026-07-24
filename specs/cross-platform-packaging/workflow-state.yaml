@@ -6,10 +6,10 @@ feature:
 
 requirement_status: confirmed
 scope_status: locked
-active_milestone: executing
+active_milestone: awaiting-user-acceptance
 task_lane: controlled
 # clarification | requirement_impact_pending | plan_pending | executing | verifying | awaiting_user_acceptance | accepted | revision_requested
-confirmation_state: approved_risk_waiver_release
+confirmation_state: awaiting_user_acceptance
 task_lane_history:
   - lane: controlled
     reason: "跨平台原生安装包、构建配置、资源与验证环境变更。"
@@ -133,15 +133,19 @@ capability_routes:
     purpose: "推送当前功能分支后启动一次 GitHub windows-latest 原生构建并上传临时 Artifact"
     approval: "Windows CI 打包增量 v3"
     rollback: "删除工作流文件；不创建 Release 或远端标签"
+  - capability: "external side effect"
+    purpose: "创建公开 GitHub Release 并上传已校验的 macOS DMG 与 Windows EXE"
+    approval: "确认按已知风险发布 v0.1.1"
+    rollback: "在 GitHub 删除 Release；保留标签供后续重新发布"
 
 branch_flow:
   feature_branch: "featuew/cross-platform-packaging"
   source_branch: "featuew/newapi-station-compatibility"
-  release_branch: null
-  release_version: null
-  tag_name: null
+  release_branch: "release/0.1.1"
+  release_version: "0.1.1"
+  tag_name: "v0.1.1"
   merge_target: main
-  status: verified_stacked_feature
+  status: published_with_known_risk
 
 role_reviews: []
 
@@ -155,6 +159,15 @@ session_reflections:
     user_feedback: []
     acceptance_status: pending
     dissatisfaction_categories: ["verification_gap"]
+  - status: published_with_known_risk
+    summary: "v0.1.1 已公开发布为 Latest；macOS DMG 与 Windows x64 EXE 已上传并通过公开页面及 Releases API 核验。"
+    user_choices: ["确认按已知风险发布 v0.1.1"]
+    choice_rationale: ["用户接受 Windows 可见验收仍未完成的当前版本风险，豁免不外溢到后续版本"]
+    worked_well: ["本地 DMG 与 GitHub Windows 原生 EXE 均以 SHA-256、公开说明和资产清单交叉核验"]
+    should_change: ["补做 Windows x64 的安装、托盘、窗口形态和卸载可见验收"]
+    user_feedback: []
+    acceptance_status: pending_post_release_acceptance
+    dissatisfaction_categories: ["verification_gap"]
   - status: awaiting_user_acceptance
     summary: "GitHub windows-latest 已成功生成 Windows x64 NSIS EXE Artifact；安装、托盘、窗口模式和卸载仍待 Windows 可见验收。"
     user_choices: ["Windows x64 NSIS EXE", "GitHub Windows Runner", "不创建 Release"]
@@ -167,7 +180,10 @@ session_reflections:
 
 reflection_artifacts: ["specs/cross-platform-packaging/task-reflection.md"]
 delivery_artifacts: ["specs/cross-platform-packaging/delivery-summary.md"]
-release_artifacts: []
+release_artifacts:
+  - "https://github.com/iizhan/AIZZZWatch/releases/tag/v0.1.1"
+  - "AIZZZWatch-0.1.1-arm64.dmg sha256:34d687f7494f6b56b423418eafd9bad299fa2b183364f96bb099deb7bc9ebd99"
+  - "AIZZZWatch.Setup.0.1.1.exe sha256:23e3e157d69f1f1530897f777944363d764c136311c59dd485fc8a1f6bb974d1"
 
 memory_candidates:
   - status: proposed_only
@@ -200,10 +216,11 @@ verification_evidence:
   - "GitHub Actions Run #2 succeeded on windows-latest in 1m45s for aeb59b6; one 78.7 MB EXE Artifact was uploaded with SHA-256 001eb19d1e2873c7ba73234b7a87f13557547ad1b22c6c7ab6b0992be26bffe5."
   - "GitHub Actions Run #3 succeeded on windows-latest for 22ea9d7; one Windows x64 NSIS EXE was downloaded and hashed as 23e3e157d69f1f1530897f777944363d764c136311c59dd485fc8a1f6bb974d1."
   - "User accepted the v0.1.1 Windows visible-validation gap as a version-scoped release risk waiver on 2026-07-24."
+  - "GitHub Release v0.1.1 is public and Latest; the page, tag f67a4ed, two binary assets, public asset sizes and Release Notes hashes were checked on 2026-07-24."
 handoff_notes:
-  - "Do not release the Windows installer until a Windows x64 environment has built, installed, launched, exercised tray/window modes, and uninstalled it."
+  - "v0.1.1 was released under a version-scoped user risk waiver; do not reuse that waiver for future releases."
   - "The visible macOS app smoke was not accepted as evidence because a running old instance received the single-instance handoff."
-  - "Windows CI Artifact: https://github.com/iizhan/AIZZZWatch/actions/runs/30065500320/artifacts/8586100313 (7-day retention); do not create a GitHub Release."
+  - "Public release: https://github.com/iizhan/AIZZZWatch/releases/tag/v0.1.1; the GitHub CI Artifact remains temporary evidence only."
 residual_risks:
   - "Windows CI run passed, but installation, tray, window modes and uninstall remain unverified until a Windows user exercises the EXE."
   - "No isolated visible launch proof from the new DMG while an old AIZZZWatch instance was running."

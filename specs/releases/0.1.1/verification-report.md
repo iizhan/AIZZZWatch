@@ -1,11 +1,11 @@
-# 验证报告 v1：v0.1.1 发布准备
+# 验证报告 v2：v0.1.1 发布完成
 
 ## 关联版本
 
 - 正式实施包：`v0.1.1 发布正式实施包 v1`
 - 发布分支：`release/0.1.1`
 - 校验提交：`22ea9d79b5f68860834f55f99e99d2f36e124853`
-- 结果状态：`verified_with_risk`
+- 结果状态：`verified_with_risk`（由 v1 发布准备报告补充公开发布核验）
 
 ## 事项与影响证据矩阵
 
@@ -20,7 +20,7 @@
 ## 安装包哈希
 
 - `AIZZZWatch-0.1.1-arm64.dmg`：`34d687f7494f6b56b423418eafd9bad299fa2b183364f96bb099deb7bc9ebd99`
-- `AIZZZWatch Setup 0.1.1.exe`：`23e3e157d69f1f1530897f777944363d764c136311c59dd485fc8a1f6bb974d1`
+- `AIZZZWatch.Setup.0.1.1.exe`：`23e3e157d69f1f1530897f777944363d764c136311c59dd485fc8a1f6bb974d1`
 
 ## 差异与安全自查
 
@@ -34,3 +34,9 @@
 Windows CI 的构建成功不能替代可见桌面验收。按照项目 Profile，Windows 安装、系统托盘、完整/紧凑/气泡窗口与卸载仍未完成，不能表述为已验证。
 
 用户已于 `2026-07-24` 以“确认按已知风险发布 v0.1.1”明确豁免上述当前版本的发布阻断项。因此，本次允许创建公开 GitHub Release、标签并合并 `main`，但 Release Notes 必须继续保留 Windows 可见验收缺口与未签名提示；该豁免不构成后续版本的通用发布批准。
+
+## 发布后公开核验
+
+- 公开 Release：[v0.1.1](https://github.com/iizhan/AIZZZWatch/releases/tag/v0.1.1)，状态为 `draft: false`、`prerelease: false`、Latest。
+- 标签对应提交：`f67a4edc523fe308103483db5b6569ebf5f17649`；主干已合并发布分支。
+- GitHub Releases API 返回的二进制资产仅为 `AIZZZWatch-0.1.1-arm64.dmg`（100,844,007 bytes）与 `AIZZZWatch.Setup.0.1.1.exe`（82,496,065 bytes）；另外两项为 GitHub 自动生成的源码包。GitHub 将上传文件名中的空格规范化为点号，公开说明已同步为实际文件名。
