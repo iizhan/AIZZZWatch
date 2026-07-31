@@ -9,9 +9,20 @@ import (
 )
 
 var (
-	ErrGroupNotFound = infraerrors.NotFound("GROUP_NOT_FOUND", "group not found")
-	ErrGroupExists   = infraerrors.Conflict("GROUP_EXISTS", "group name already exists")
+	ErrGroupNotFound           = infraerrors.NotFound("GROUP_NOT_FOUND", "group not found")
+	ErrGroupExists             = infraerrors.Conflict("GROUP_EXISTS", "group name already exists")
+	ErrGroupRateCASUnsupported = infraerrors.InternalServer(
+		"GROUP_RATE_CAS_UNSUPPORTED",
+		"group rate compare-and-swap is unavailable",
+	)
 )
+
+// GroupRateCASRepository is the narrow atomic write capability used by
+// controlled automation. Keeping it separate avoids widening gateway-facing
+// GroupRepository test doubles.
+type GroupRateCASRepository interface {
+	CompareAndSwapRateMultiplier(ctx context.Context, id int64, expected, next float64) (bool, error)
+}
 
 type GroupRepository interface {
 	Create(ctx context.Context, group *Group) error
@@ -218,6 +229,27 @@ func (s *GroupService) Update(ctx context.Context, id int64, req UpdateGroupRequ
 	}
 
 	return group, nil
+}
+
+// CompareAndSwapRateMultiplier atomically updates only the group multiplier
+// when the persisted value still matches the caller's preview.
+func (s *GroupService) CompareAndSwapRateMultiplier(ctx context.Context, id int64, expected, next float64) (*Group, bool, error) {
+	casRepo, ok := s.groupRepo.(GroupRateCASRepository)
+	if !ok {
+		return nil, false, ErrGroupRateCASUnsupported
+	}
+	swapped, err := casRepo.CompareAndSwapRateMultiplier(ctx, id, expected, next)
+	if err != nil || !swapped {
+		return nil, swapped, err
+	}
+	if s.authCacheInvalidator != nil {
+		s.authCacheInvalidator.InvalidateAuthCacheByGroupID(ctx, id)
+	}
+	group, err := s.groupRepo.GetByID(ctx, id)
+	if err != nil {
+		return nil, true, fmt.Errorf("reload group after rate compare-and-swap: %w", err)
+	}
+	return group, true, nil
 }
 
 // Delete 删除分组

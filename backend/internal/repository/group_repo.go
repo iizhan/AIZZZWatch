@@ -356,6 +356,27 @@ func (r *groupRepository) Update(ctx context.Context, groupIn *service.Group) er
 	return nil
 }
 
+func (r *groupRepository) CompareAndSwapRateMultiplier(ctx context.Context, id int64, expected, next float64) (bool, error) {
+	result, err := r.sql.ExecContext(ctx, `
+UPDATE groups
+SET rate_multiplier = $3, updated_at = NOW()
+WHERE id = $1 AND ABS(rate_multiplier - $2) < 0.000000005`, id, expected, next)
+	if err != nil {
+		return false, fmt.Errorf("compare and swap group rate multiplier: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read group rate compare-and-swap result: %w", err)
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventGroupChanged, nil, &id, nil); err != nil {
+		logger.LegacyPrintf("repository.group", "[SchedulerOutbox] enqueue group rate CAS failed: group=%d err=%v", id, err)
+	}
+	return true, nil
+}
+
 func (r *groupRepository) Delete(ctx context.Context, id int64) error {
 	_, err := r.client.Group.Delete().Where(group.IDEQ(id)).Exec(ctx)
 	if err != nil {

@@ -6,6 +6,7 @@ import ops from './ops'
 import settings from './settings'
 import audit from './audit'
 import promptAudit from './promptAudit'
+import watch from './watch'
 
 export default {
   ...overview,
@@ -16,4 +17,5 @@ export default {
   ...settings,
   ...audit,
   ...promptAudit,
+  ...watch,
 }

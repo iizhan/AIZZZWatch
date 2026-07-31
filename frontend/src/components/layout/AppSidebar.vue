@@ -757,6 +757,23 @@ const adminNavItems = computed((): NavItem[] => {
     { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
     { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
     {
+      path: '/admin/intelligent-ops',
+      label: t('nav.intelligentOperations'),
+      icon: ChartIcon,
+      hideInSimpleMode: true,
+      expandOnly: true,
+      children: [
+        { path: '/admin/intelligent-ops/overview', label: t('nav.operationsOverview'), icon: DashboardIcon },
+        { path: '/admin/intelligent-ops/sources', label: t('nav.upstreamSources'), icon: ServerIcon },
+        { path: '/admin/intelligent-ops/pricing', label: t('nav.aggregatedPricing'), icon: PriceTagIcon },
+        { path: '/admin/intelligent-ops/mappings', label: t('nav.accountMappings'), icon: ChannelIcon },
+        { path: '/admin/intelligent-ops/operations', label: t('nav.costProfit'), icon: ChartIcon },
+        { path: '/admin/intelligent-ops/auto-pricing', label: t('nav.autoPricing'), icon: PriceTagIcon },
+        { path: '/admin/intelligent-ops/keepalive', label: t('nav.keepaliveCenter'), icon: SignalIcon },
+        { path: '/admin/intelligent-ops/integration', label: t('nav.integrationDiagnostics'), icon: ShieldIcon },
+      ],
+    },
+    {
       path: '/admin/channels',
       label: t('nav.channelManagement'),
       icon: ChannelIcon,

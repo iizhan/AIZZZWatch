@@ -778,6 +778,8 @@ var ProviderSet = wire.NewSet(
 	NewChannelService,
 	NewModelPricingResolver,
 	NewContentModerationService,
+	NewWatchService,
+	NewWatchSourceService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
@@ -785,6 +787,8 @@ var ProviderSet = wire.NewSet(
 	ProvideBalanceNotifyService,
 	ProvideChannelMonitorService,
 	ProvideChannelMonitorRunner,
+	ProvideWatchSourceRunner,
+	ProvideWatchPricingRuleRunner,
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
@@ -842,4 +846,18 @@ func ProvideChannelMonitorRunner(svc *ChannelMonitorService, settingService *Set
 	svc.SetScheduler(r)
 	r.Start()
 	return r
+}
+
+// ProvideWatchSourceRunner starts the bounded external source polling loop.
+func ProvideWatchSourceRunner(svc *WatchSourceService) *WatchSourceRunner {
+	runner := NewWatchSourceRunner(svc)
+	runner.Start()
+	return runner
+}
+
+// ProvideWatchPricingRuleRunner starts the disabled-by-default pricing rule loop.
+func ProvideWatchPricingRuleRunner(svc *WatchService) *WatchPricingRuleRunner {
+	runner := NewWatchPricingRuleRunner(svc)
+	runner.Start()
+	return runner
 }

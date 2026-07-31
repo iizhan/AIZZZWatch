@@ -452,6 +452,115 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/admin/watch',
+    redirect: '/admin/intelligent-ops/overview'
+  },
+  {
+    path: '/admin/intelligent-ops',
+    redirect: '/admin/intelligent-ops/overview'
+  },
+  {
+    path: '/admin/intelligent-ops/overview',
+    name: 'AdminIntelligentOperationsOverview',
+    component: () => import('@/views/admin/watch/WatchOverviewView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Operations Overview',
+      titleKey: 'admin.watch.overviewTitle',
+      descriptionKey: 'admin.watch.overviewDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/sources',
+    name: 'AdminIntelligentOperationsSources',
+    component: () => import('@/views/admin/watch/WatchSourcesView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Upstream Sources',
+      titleKey: 'admin.watch.sourcesTitle',
+      descriptionKey: 'admin.watch.sourcesDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/pricing',
+    name: 'AdminIntelligentOperationsPricing',
+    component: () => import('@/views/admin/watch/WatchPricingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Aggregated Pricing',
+      titleKey: 'admin.watch.pricingTitle',
+      descriptionKey: 'admin.watch.pricingDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/mappings',
+    name: 'AdminIntelligentOperationsMappings',
+    component: () => import('@/views/admin/watch/WatchMappingsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Account Mappings',
+      titleKey: 'admin.watch.mappingsTitle',
+      descriptionKey: 'admin.watch.mappingsDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/operations',
+    name: 'AdminIntelligentOperationsProfit',
+    component: () => import('@/views/admin/watch/WatchOperationsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Cost & Profit',
+      titleKey: 'admin.watch.operationsTitle',
+      descriptionKey: 'admin.watch.operationsDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/auto-pricing',
+    name: 'AdminIntelligentOperationsAutoPricing',
+    component: () => import('@/views/admin/watch/WatchAutoPricingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Auto Pricing',
+      titleKey: 'admin.watch.autoPricingTitle',
+      descriptionKey: 'admin.watch.autoPricingDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/changes',
+    name: 'AdminIntelligentOperationsChanges',
+    redirect: '/admin/intelligent-ops/pricing'
+  },
+  {
+    path: '/admin/intelligent-ops/keepalive',
+    name: 'AdminIntelligentOperationsKeepalive',
+    component: () => import('@/views/admin/watch/WatchKeepaliveView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Keepalive Center',
+      titleKey: 'admin.watch.keepaliveTitle',
+      descriptionKey: 'admin.watch.keepaliveDescription'
+    }
+  },
+  {
+    path: '/admin/intelligent-ops/integration',
+    name: 'AdminIntelligentOperationsIntegration',
+    component: () => import('@/views/admin/watch/WatchIntegrationView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: 'Integration Diagnostics',
+      titleKey: 'admin.watch.integrationTitle',
+      descriptionKey: 'admin.watch.integrationDescription'
+    }
+  },
+  {
     path: '/admin/channels',
     redirect: '/admin/channels/pricing'
   },

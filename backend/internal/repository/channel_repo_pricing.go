@@ -72,6 +72,39 @@ func (r *channelRepository) UpdateModelPricing(ctx context.Context, pricing *ser
 	return nil
 }
 
+func (r *channelRepository) CompareAndSwapModelPrice(ctx context.Context, channelID, pricingID int64, component string, expected, next float64) (bool, error) {
+	column := ""
+	switch component {
+	case "input":
+		column = "input_price"
+	case "output":
+		column = "output_price"
+	case "per_request":
+		column = "per_request_price"
+	default:
+		return false, fmt.Errorf("unsupported model price component: %s", component)
+	}
+	query := fmt.Sprintf(`
+UPDATE channel_model_pricing
+SET %s = $4, updated_at = NOW()
+WHERE id = $1 AND channel_id = $2 AND %s IS NOT NULL AND ABS(%s - $3) < 0.000000005`, column, column, column)
+	result, err := r.db.ExecContext(ctx, query, pricingID, channelID, expected, next)
+	if err != nil {
+		return false, fmt.Errorf("compare and swap channel model price: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read channel model price compare-and-swap result: %w", err)
+	}
+	if rows == 0 {
+		return false, nil
+	}
+	if _, err := r.db.ExecContext(ctx, `UPDATE channels SET updated_at=NOW() WHERE id=$1`, channelID); err != nil {
+		return true, fmt.Errorf("touch channel after model price compare-and-swap: %w", err)
+	}
+	return true, nil
+}
+
 func (r *channelRepository) DeleteModelPricing(ctx context.Context, id int64) error {
 	_, err := r.db.ExecContext(ctx, `DELETE FROM channel_model_pricing WHERE id = $1`, id)
 	if err != nil {

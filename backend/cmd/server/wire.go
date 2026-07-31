@@ -109,6 +109,8 @@ func provideCleanup(
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	channelMonitorRunner *service.ChannelMonitorRunner,
+	watchSourceRunner *service.WatchSourceRunner,
+	watchPricingRuleRunner *service.WatchPricingRuleRunner,
 	quotaFlusher *service.UserPlatformQuotaUsageFlusher,
 	upstreamBillingProbe *service.UpstreamBillingProbeService,
 	ollamaCloudUsage *service.OllamaCloudUsageService,
@@ -317,6 +319,18 @@ func provideCleanup(
 			{"ChannelMonitorRunner", func() error {
 				if channelMonitorRunner != nil {
 					channelMonitorRunner.Stop()
+				}
+				return nil
+			}},
+			{"WatchSourceRunner", func() error {
+				if watchSourceRunner != nil {
+					watchSourceRunner.Stop()
+				}
+				return nil
+			}},
+			{"WatchPricingRuleRunner", func() error {
+				if watchPricingRuleRunner != nil {
+					watchPricingRuleRunner.Stop()
 				}
 				return nil
 			}},

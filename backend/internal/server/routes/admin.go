@@ -116,6 +116,53 @@ func RegisterAdminRoutes(
 
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
+
+		// Watch 聚合检测与排价预览
+		registerWatchRoutes(admin, h)
+	}
+}
+
+func registerWatchRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Watch == nil {
+		return
+	}
+	watch := admin.Group("/watch")
+	{
+		watch.GET("/overview", h.Admin.Watch.GetOverview)
+		watch.GET("/operations", h.Admin.Watch.GetOperations)
+		watch.GET("/integration/accounts", h.Admin.Watch.ListIntegrationAccountHealth)
+		watch.GET("/pricing/board", h.Admin.Watch.ListPricingBoard)
+		watch.GET("/pricing/history", h.Admin.Watch.GetPricingHistory)
+		watch.POST("/pricing/preview", h.Admin.Watch.PreviewPricing)
+		watch.POST("/pricing/apply", h.Admin.Watch.ApplyPricing)
+		watch.POST("/pricing/:id/rollback", h.Admin.Watch.RollbackPricing)
+		watch.GET("/pricing-rules", h.Admin.Watch.ListPricingRules)
+		watch.POST("/pricing-rules", h.Admin.Watch.CreatePricingRule)
+		watch.PUT("/pricing-rules/:id", h.Admin.Watch.UpdatePricingRule)
+		watch.DELETE("/pricing-rules/:id", h.Admin.Watch.DeletePricingRule)
+		watch.POST("/pricing-rules/:id/run", h.Admin.Watch.RunPricingRule)
+		watch.GET("/audits", h.Admin.Watch.ListPriceAudits)
+		watch.GET("/sources", h.Admin.Watch.ListSources)
+		watch.POST("/sources", h.Admin.Watch.CreateSource)
+		watch.POST("/sources/export", h.Admin.Watch.ExportSources)
+		watch.POST("/sources/import/preview", h.Admin.Watch.PreviewImportSources)
+		watch.POST("/sources/import/apply", h.Admin.Watch.ApplyImportSources)
+		watch.GET("/sources/:id", h.Admin.Watch.GetSource)
+		watch.PUT("/sources/:id", h.Admin.Watch.UpdateSource)
+		watch.DELETE("/sources/:id", h.Admin.Watch.DeleteSource)
+		watch.POST("/sources/:id/interactive-auth/start", h.Admin.Watch.StartSourceInteractiveAuth)
+		watch.GET("/sources/:id/interactive-auth/status", h.Admin.Watch.GetSourceInteractiveAuth)
+		watch.POST("/sources/:id/interactive-auth/complete", h.Admin.Watch.CompleteSourceInteractiveAuth)
+		watch.POST("/sources/:id/diagnose", h.Admin.Watch.CheckSource)
+		watch.POST("/sources/:id/refresh", h.Admin.Watch.CheckSource)
+		watch.POST("/sources/:id/keepalive", h.Admin.Watch.KeepaliveSource)
+		watch.GET("/sources/:id/checks", h.Admin.Watch.ListSourceChecks)
+		watch.GET("/changes", h.Admin.Watch.ListPriceChanges)
+		watch.GET("/account-mappings", h.Admin.Watch.ListAccountMappings)
+		watch.POST("/account-mappings/scan", h.Admin.Watch.ScanAccountMappings)
+		watch.POST("/account-mappings/batch-confirm", h.Admin.Watch.ConfirmAccountMappingBatch)
+		watch.PUT("/account-mappings/:account_id", h.Admin.Watch.SaveAccountMapping)
+		watch.DELETE("/account-mappings/:account_id", h.Admin.Watch.DeleteAccountMapping)
 	}
 }
 

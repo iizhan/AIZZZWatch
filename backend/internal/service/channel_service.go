@@ -23,7 +23,17 @@ var (
 		"GROUP_ALREADY_IN_CHANNEL",
 		"one or more groups already belong to another channel",
 	)
+	ErrChannelPriceCASUnsupported = infraerrors.InternalServer(
+		"CHANNEL_PRICE_CAS_UNSUPPORTED",
+		"channel price compare-and-swap is unavailable",
+	)
 )
+
+// ChannelPriceCASRepository is the narrow atomic model-price write capability
+// used by controlled automation.
+type ChannelPriceCASRepository interface {
+	CompareAndSwapModelPrice(ctx context.Context, channelID, pricingID int64, component string, expected, next float64) (bool, error)
+}
 
 // ChannelRepository 渠道数据访问接口
 type ChannelRepository interface {
@@ -776,6 +786,53 @@ func (s *ChannelService) GetByID(ctx context.Context, id int64) (*Channel, error
 	}
 	ch.normalizeBillingModelSource()
 	return ch, nil
+}
+
+func (s *ChannelService) GetChannelIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
+	return s.repo.GetChannelIDByGroupID(ctx, groupID)
+}
+
+// CompareAndSwapModelPrice updates one flat price component without replacing
+// the rest of the channel configuration.
+func (s *ChannelService) CompareAndSwapModelPrice(ctx context.Context, channelID int64, platform, model, component string, expected, next float64) (*Channel, bool, error) {
+	channel, err := s.repo.GetByID(ctx, channelID)
+	if err != nil {
+		return nil, false, err
+	}
+	pricingID := int64(0)
+	for _, pricing := range channel.ModelPricing {
+		if platform != "" && !strings.EqualFold(strings.TrimSpace(platform), strings.TrimSpace(pricing.Platform)) {
+			continue
+		}
+		for _, configuredModel := range pricing.Models {
+			if strings.EqualFold(strings.TrimSpace(model), strings.TrimSpace(configuredModel)) {
+				pricingID = pricing.ID
+				break
+			}
+		}
+		if pricingID > 0 {
+			break
+		}
+	}
+	if pricingID == 0 {
+		return nil, false, nil
+	}
+	casRepo, ok := s.repo.(ChannelPriceCASRepository)
+	if !ok {
+		return nil, false, ErrChannelPriceCASUnsupported
+	}
+	swapped, err := casRepo.CompareAndSwapModelPrice(ctx, channelID, pricingID, component, expected, next)
+	if err != nil || !swapped {
+		return nil, swapped, err
+	}
+	s.invalidateCache()
+	s.invalidateAuthCacheForGroups(ctx, channel.GroupIDs)
+	updated, err := s.repo.GetByID(ctx, channelID)
+	if err != nil {
+		return nil, true, fmt.Errorf("reload channel after price compare-and-swap: %w", err)
+	}
+	updated.normalizeBillingModelSource()
+	return updated, true, nil
 }
 
 // Update 更新渠道

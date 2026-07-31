@@ -492,7 +492,9 @@ export interface PaginationConfig {
 
 // ==================== API Key & Group Types ====================
 
-export type GroupPlatform = 'anthropic' | 'openai' | 'gemini' | 'antigravity' | 'grok' | 'composite'
+export const GROUP_PLATFORMS = ['anthropic', 'openai', 'gemini', 'antigravity', 'grok', 'composite'] as const
+
+export type GroupPlatform = typeof GROUP_PLATFORMS[number]
 
 export type SubscriptionType = 'standard' | 'subscription'
 
