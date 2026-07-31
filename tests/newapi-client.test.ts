@@ -109,4 +109,79 @@ describe('NewApiClient', () => {
       headers: expect.objectContaining({ Cookie: 'new_api_refresh=opaque', Authorization: 'Bearer old-token', Origin: 'https://newapi.example.com' })
     }))
   })
+
+  it('reads a legacy OneAPI station with its verified Cookie session and no Bearer header', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(ok({ quota: 100 }))
+      .mockResolvedValueOnce(ok({ default: { ratio: 1 } }))
+      .mockResolvedValueOnce(ok([], { group_ratio: { default: 1 } }))
+      .mockResolvedValueOnce(ok([]))
+
+    const result = await new NewApiClient({
+      id: 'nihao',
+      name: 'nihao',
+      baseUrl: 'https://nihao.dog',
+      sessionCookie: 'oneapi_session=opaque-cookie',
+      sessionAuthMode: 'cookie-session',
+      newApiSelectedUserId: '42',
+      fetchImpl: fetchMock
+    }).fetchSnapshot()
+
+    expect(result.health).toBe('healthy')
+    for (const [, init] of fetchMock.mock.calls) {
+      const headers = (init as RequestInit).headers as Record<string, string>
+      expect(headers.Cookie).toBe('oneapi_session=opaque-cookie')
+      expect(headers.Authorization).toBeUndefined()
+      expect(headers['New-Api-User']).toBe('42')
+    }
+  })
+
+  it('does not call the unsupported refresh endpoint for a legacy OneAPI Cookie session', async () => {
+    const fetchMock = vi.fn()
+    const client = new NewApiClient({
+      id: 'nihao',
+      name: 'nihao',
+      baseUrl: 'https://nihao.dog',
+      sessionCookie: 'oneapi_session=opaque-cookie',
+      sessionAuthMode: 'cookie-session',
+      fetchImpl: fetchMock
+    })
+
+    await expect(client.refreshAccessToken()).rejects.toThrow('不支持刷新访问令牌')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('does not forward an invalid selected-user context to NewAPI', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(ok({ quota: 100 }))
+      .mockResolvedValueOnce(ok({ default: { ratio: 1 } }))
+      .mockResolvedValueOnce(ok([], { group_ratio: { default: 1 } }))
+      .mockResolvedValueOnce(ok([]))
+
+    await new NewApiClient({
+      id: 'nihao-invalid-user', name: 'nihao', baseUrl: 'https://nihao.dog',
+      sessionCookie: 'oneapi_session=opaque-cookie', sessionAuthMode: 'cookie-session',
+      newApiSelectedUserId: 'bad\r\nheader', fetchImpl: fetchMock
+    }).fetchSnapshot()
+
+    for (const [, init] of fetchMock.mock.calls) {
+      const headers = (init as RequestInit).headers as Record<string, string>
+      expect(headers['New-Api-User']).toBeUndefined()
+    }
+  })
+
+  it('rejects malformed stored Cookie data before making a NewAPI request', async () => {
+    const fetchMock = vi.fn()
+    const result = await new NewApiClient({
+      id: 'bad-cookie',
+      name: 'bad-cookie',
+      baseUrl: 'https://nihao.dog',
+      sessionCookie: 'oneapi_session=bad\r\nheader',
+      sessionAuthMode: 'cookie-session',
+      fetchImpl: fetchMock
+    }).fetchSnapshot()
+
+    expect(result).toMatchObject({ health: 'forbidden', errorCode: 'UNAUTHORIZED' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

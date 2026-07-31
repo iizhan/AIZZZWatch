@@ -32,7 +32,23 @@ export interface WebAuthRestoreResult {
   refreshToken?: string
   /** Main-process only Cookie header after NewAPI rotates its HttpOnly refresh Cookie. */
   sessionCookie?: string
+  /** The station explicitly does not implement the standard NewAPI refresh endpoint. */
+  authRefreshUnsupported?: boolean
 }
+
+/**
+ * OneAPI-compatible deployments can select an account context in the page.
+ * This field is main-process-only and contains only the decimal `uid` value
+ * used by the station's documented `New-Api-User` request header.
+ */
+export interface NewApiCookieSessionVerification {
+  verified: boolean
+  selectedUserId?: string
+}
+
+const maxWebAuthAccessTokenLength = 16 * 1024
+const maxWebAuthCookieHeaderLength = 16 * 1024
+const maxWebAuthCookiePairLength = 4 * 1024
 
 export interface WebAuthLaunchTarget {
   loadUrl: string
@@ -105,6 +121,16 @@ export function resolveNewApiRefreshUrl(apiBaseUrl: string, authRefreshPath?: st
   }
 }
 
+export function resolveNewApiProfileUrl(apiBaseUrl: string, profilePath?: string): string | undefined {
+  const normalized = normalizeNewApiBaseCandidate(apiBaseUrl)
+  if (!normalized) return undefined
+  try {
+    return resolveStationApiRequestUrl(normalized, resolveStationApiPath('/api/user/self', profilePath))
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Chromium only returns a cookie when the queried URL is within the cookie's
  * path. NewAPI scopes its HttpOnly refresh cookie to its refresh endpoint.
@@ -172,8 +198,35 @@ export function resolveWebAuthApiPaths(normalizedBaseUrl: string, paths?: Statio
   return applyLcodexApiPathDefaults(normalizedBaseUrl, paths ?? {})
 }
 
-export function buildCookieHeader(cookies: Array<{ name: string; value: string }>): string {
-  return cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+/**
+ * Cookies originate from the temporary Chromium authorization partition, but
+ * they still cross a trust boundary before becoming a main-process request
+ * header. Reject malformed or oversized data rather than forwarding it.
+ */
+export function buildBoundedCookieHeader(cookies: Array<{ name: string; value: string }>): string | undefined {
+  if (cookies.length === 0 || cookies.length > 32) return undefined
+  const pairs: string[] = []
+  for (const cookie of cookies) {
+    const name = typeof cookie.name === 'string' ? cookie.name : ''
+    const value = typeof cookie.value === 'string' ? cookie.value : ''
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name) || !value || /[;\r\n\u0000-\u001F\u007F]/.test(value)) return undefined
+    const pair = `${name}=${value}`
+    if (pair.length > maxWebAuthCookiePairLength) return undefined
+    pairs.push(pair)
+  }
+  const header = pairs.join('; ')
+  return header.length > 0 && header.length <= maxWebAuthCookieHeaderLength ? header : undefined
+}
+
+export function isBoundedCookieHeader(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.trim() || value.length > maxWebAuthCookieHeaderLength) return false
+  const cookies = value.split(';').map((part) => part.trim()).map((part) => {
+    const separator = part.indexOf('=')
+    return separator > 0 ? { name: part.slice(0, separator), value: part.slice(separator + 1) } : undefined
+  })
+  if (cookies.some((cookie) => !cookie)) return false
+  const normalized = buildBoundedCookieHeader(cookies as Array<{ name: string; value: string }>)
+  return normalized !== undefined
 }
 
 function rotatedNewApiSessionCookie(headers: Headers, cookies: Array<{ name: string; value: string }>): string | undefined {
@@ -238,6 +291,8 @@ export async function tryRestoreWebAuthSession(input: {
   const apiBaseUrl = normalizeBaseCandidate(input.apiBaseUrl)
   if (!apiBaseUrl || !input.authClientId?.trim()) return undefined
   if (input.cookies.length === 0) return undefined
+  const cookieHeader = buildBoundedCookieHeader(input.cookies)
+  if (!cookieHeader) return undefined
 
   const response = await input.fetchImpl(`${apiBaseUrl}/auth/session/restore`, {
     method: 'POST',
@@ -246,7 +301,7 @@ export async function tryRestoreWebAuthSession(input: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
       'X-Sub2API-Auth-Client': input.authClientId.trim(),
-      Cookie: buildCookieHeader(input.cookies),
+      Cookie: cookieHeader,
       'User-Agent': input.userAgent
     },
     body: JSON.stringify({})
@@ -291,14 +346,21 @@ export async function tryRestoreNewApiSession(input: {
   authRefreshPath?: string
   cookies: Array<{ name: string; value: string }>
   userAgent: string
+  /** Use the isolated BrowserWindow partition instead of constructing a Cookie header. */
+  useSessionCredentials?: boolean
 }): Promise<WebAuthRestoreResult | undefined> {
   const refreshUrl = resolveNewApiRefreshUrl(input.apiBaseUrl, input.authRefreshPath)
-  if (!refreshUrl || input.cookies.length === 0) return undefined
+  if (!refreshUrl || (!input.useSessionCredentials && input.cookies.length === 0)) return undefined
   let origin: string
   try {
     origin = new URL(refreshUrl).origin
   } catch {
     return undefined
+  }
+  let cookieHeader: string | undefined
+  if (!input.useSessionCredentials) {
+    cookieHeader = buildBoundedCookieHeader(input.cookies)
+    if (!cookieHeader) return undefined
   }
   const response = await input.fetchImpl(refreshUrl, {
     method: 'POST',
@@ -308,11 +370,13 @@ export async function tryRestoreNewApiSession(input: {
       'Content-Type': 'application/json',
       Origin: origin,
       Referer: `${origin}/`,
-      Cookie: buildCookieHeader(input.cookies),
+      ...(cookieHeader ? { Cookie: cookieHeader } : {}),
       'User-Agent': input.userAgent
     },
+    ...(input.useSessionCredentials ? { credentials: 'include' } : {}),
     body: '{}'
   })
+  if (response.status === 404) return { authRefreshUnsupported: true }
   if (!response.ok) return undefined
   const raw = await response.text().catch(() => '')
   if (!raw.trim()) return undefined
@@ -323,12 +387,144 @@ export async function tryRestoreNewApiSession(input: {
     return undefined
   }
   const envelope = parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : undefined
-  if (!envelope || envelope.success === false) return undefined
-  const payload = envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data)
-    ? envelope.data as Record<string, unknown>
-    : envelope
-  const accessToken = cleanString(payload.access_token ?? payload.accessToken)
+  if (!envelope || envelope.success !== true || !envelope.data || typeof envelope.data !== 'object' || Array.isArray(envelope.data)) return undefined
+  const accessToken = cleanString((envelope.data as Record<string, unknown>).access_token)
   return accessToken
     ? { accessToken, sessionCookie: rotatedNewApiSessionCookie(response.headers, input.cookies) }
     : undefined
+}
+
+/**
+ * Legacy OneAPI deployments authenticate browser requests with a Cookie and
+ * expose no refresh-token endpoint. Verify only the fixed profile endpoint in
+ * the isolated BrowserWindow partition. The profile body never leaves this
+ * helper. A deployment may require its documented numeric selected-user
+ * context; it is read and returned only as a bounded main-process value.
+ */
+export async function tryVerifyNewApiCookieSession(input: {
+  loginWindow: WebAuthWindowLike
+  apiBaseUrl: string
+  profilePath?: string
+}): Promise<NewApiCookieSessionVerification> {
+  if (!isNewApiCookieSessionPage(input)) return { verified: false }
+  const profileUrl = resolveNewApiProfileUrl(input.apiBaseUrl, input.profilePath)
+  if (!profileUrl) return { verified: false }
+  let result: { verified?: unknown; selectedUserId?: unknown } | null | undefined
+  try {
+    result = await input.loginWindow.webContents.executeJavaScript(`(() => {
+      const profileUrl = ${JSON.stringify(profileUrl)}
+      const expectedOrigin = ${JSON.stringify(new URL(profileUrl).origin)}
+      if (window.location.protocol !== 'https:' || window.location.origin !== expectedOrigin) return { verified: false }
+      let selectedUserId
+      try {
+        const candidate = window.localStorage.getItem('uid') || ''
+        selectedUserId = /^\\d{1,20}$/.test(candidate) ? candidate : undefined
+      } catch {
+        selectedUserId = undefined
+      }
+      return window.fetch(profileUrl, {
+        method: 'GET',
+        credentials: 'include',
+        redirect: 'manual',
+        headers: {
+          Accept: 'application/json',
+          ...(selectedUserId ? { 'New-Api-User': selectedUserId } : {})
+        }
+      }).then(async (response) => {
+        if (!response.ok || response.type === 'opaqueredirect') return { verified: false }
+        if (!/application\\/json/i.test(response.headers.get('content-type') || '')) return { verified: false }
+        const payload = await response.json().catch(() => undefined)
+        const validEnvelope = Boolean(payload && typeof payload === 'object' && !Array.isArray(payload)
+          && payload.success === true
+          && payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data))
+        return validEnvelope ? { verified: true, ...(selectedUserId ? { selectedUserId } : {}) } : { verified: false }
+      }).catch(() => ({ verified: false }))
+    })()`, true) as { verified?: unknown; selectedUserId?: unknown } | null | undefined
+  } catch {
+    return { verified: false }
+  }
+  const selectedUserId = cleanString(result?.selectedUserId)
+  return {
+    verified: result?.verified === true,
+    ...(selectedUserId && /^\d{1,20}$/.test(selectedUserId) ? { selectedUserId } : {})
+  }
+}
+
+/**
+ * Keeps Cookie-session capture tied to a logged-in HTTPS page. The caller can
+ * distinguish an in-progress login page from a logged-in page whose session
+ * cannot be persisted, without reading profile data or Cookie values.
+ */
+export function isNewApiCookieSessionPage(input: Pick<Parameters<typeof tryVerifyNewApiCookieSession>[0], 'loginWindow' | 'apiBaseUrl' | 'profilePath'>): boolean {
+  const profileUrl = resolveNewApiProfileUrl(input.apiBaseUrl, input.profilePath)
+  if (!profileUrl) return false
+  try {
+    const currentUrl = new URL(input.loginWindow.webContents.getURL())
+    const targetUrl = new URL(profileUrl)
+    const currentPath = currentUrl.pathname.replace(/\/+$/, '') || '/'
+    return currentUrl.protocol === 'https:'
+      && targetUrl.protocol === 'https:'
+      && currentUrl.origin === targetUrl.origin
+      && !['/login', '/sign-in', '/otp'].includes(currentPath)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Some NewAPI deployments only complete their refresh flow from the logged-in
+ * browser page. Keep that fallback bound to the current HTTPS origin and return
+ * only the whitelisted access token to the main process.
+ */
+export async function tryRestoreNewApiSessionFromPage(input: {
+  loginWindow: WebAuthWindowLike
+  apiBaseUrl: string
+  authRefreshPath?: string
+}): Promise<WebAuthRestoreResult | undefined> {
+  const refreshUrl = resolveNewApiRefreshUrl(input.apiBaseUrl, input.authRefreshPath)
+  if (!refreshUrl) return undefined
+
+  let currentUrl: URL
+  let targetUrl: URL
+  try {
+    currentUrl = new URL(input.loginWindow.webContents.getURL())
+    targetUrl = new URL(refreshUrl)
+  } catch {
+    return undefined
+  }
+  const currentPath = currentUrl.pathname.replace(/\/+$/, '') || '/'
+  if (currentUrl.protocol !== 'https:' || targetUrl.protocol !== 'https:' || currentUrl.origin !== targetUrl.origin) return undefined
+  if (['/login', '/sign-in', '/otp'].includes(currentPath)) return undefined
+
+  let result: { accessToken?: unknown } | null | undefined
+  try {
+    result = await input.loginWindow.webContents.executeJavaScript(`(() => {
+    const refreshUrl = ${JSON.stringify(targetUrl.toString())}
+    const expectedOrigin = ${JSON.stringify(targetUrl.origin)}
+    if (window.location.protocol !== 'https:' || window.location.origin !== expectedOrigin) return undefined
+    return window.fetch(refreshUrl, {
+      method: 'POST',
+      credentials: 'include',
+      redirect: 'manual',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    }).then(async (response) => {
+      if (!response.ok || response.type === 'opaqueredirect') return undefined
+      if (!/application\\/json/i.test(response.headers.get('content-type') || '')) return undefined
+      const payload = await response.json()
+      const data = payload && typeof payload === 'object' && payload.success === true && payload.data && typeof payload.data === 'object' && !Array.isArray(payload.data)
+        ? payload.data
+        : undefined
+      const accessToken = data && typeof data.access_token === 'string' ? data.access_token.trim() : ''
+      return accessToken && accessToken.length <= ${maxWebAuthAccessTokenLength} ? { accessToken } : undefined
+    }).catch(() => undefined)
+    })()`, true) as { accessToken?: unknown } | null | undefined
+  } catch {
+    return undefined
+  }
+  const accessToken = cleanString(result?.accessToken)
+  return accessToken && accessToken.length <= maxWebAuthAccessTokenLength ? { accessToken } : undefined
 }

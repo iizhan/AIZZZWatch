@@ -1,12 +1,13 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 let userDataPath: string
 
-async function importStorage() {
+async function importStorage(options: { failRename?: boolean } = {}) {
   vi.resetModules()
+  vi.doUnmock('node:fs')
   vi.doMock('electron', () => ({
     app: {
       getPath: vi.fn(() => userDataPath)
@@ -17,6 +18,18 @@ async function importStorage() {
       decryptString: vi.fn((value: Buffer) => value.toString('utf8'))
     }
   }))
+  if (options.failRename) {
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs')
+      return {
+        ...actual,
+        promises: {
+          ...actual.promises,
+          rename: vi.fn().mockRejectedValue(Object.assign(new Error('backup rename failed'), { code: 'EACCES' }))
+        }
+      }
+    })
+  }
   return import('../src/main/storage')
 }
 
@@ -27,6 +40,7 @@ describe('station storage', () => {
 
   afterEach(async () => {
     vi.doUnmock('electron')
+    vi.doUnmock('node:fs')
     vi.resetModules()
     await rm(userDataPath, { recursive: true, force: true })
   })
@@ -176,6 +190,21 @@ describe('station storage', () => {
     })
   })
 
+  it('applies Krill defaults without replacing an operator-provided path', async () => {
+    const { saveStation } = await importStorage()
+    const [station] = await saveStation({
+      name: 'Krill', baseUrl: 'https://www.krill-ai.net/api/v1', adapterType: 'sub2api',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10,
+      apiPaths: { profile: '/custom/profile' }
+    })
+
+    expect(station.apiPaths).toMatchObject({
+      profile: '/custom/profile',
+      balance: '/api/credits',
+      groups: '/api/my/channels'
+    })
+  })
+
   it('upgrades a legacy NewAPI model probe path without replacing manual paths', async () => {
     const { saveStation } = await importStorage()
     const [created] = await saveStation({
@@ -209,6 +238,78 @@ describe('station storage', () => {
     expect(stationLoginCredentials(station)).toEqual({ loginAccount: 'member@example.com', loginPassword: 'password-test' })
   })
 
+  it('keeps the Cookie-session compatibility mode local while encrypting its Cookie value', async () => {
+    const { publicStations, saveStation, stationTokens } = await importStorage()
+    const [station] = await saveStation({
+      name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi',
+      sessionCookie: 'oneapi_session=opaque-cookie', sessionAuthMode: 'cookie-session', newApiSelectedUserId: '42',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+
+    expect(station.sessionAuthMode).toBe('cookie-session')
+    expect(station.sessionCookie).not.toBe('oneapi_session=opaque-cookie')
+    expect(station.newApiSelectedUserId).not.toBe('42')
+    expect(stationTokens(station).sessionCookie).toBe('oneapi_session=opaque-cookie')
+    expect(stationTokens(station).newApiSelectedUserId).toBe('42')
+    expect(publicStations([station])[0]).toMatchObject({ hasSessionCookie: true })
+    expect(publicStations([station])[0]).not.toHaveProperty('sessionCookie')
+    expect(publicStations([station])[0]).not.toHaveProperty('sessionAuthMode')
+  })
+
+  it('replaces a prior NewAPI Bearer session when Cookie-session authorization succeeds', async () => {
+    const { saveStation, stationTokens } = await importStorage()
+    const [tokenStation] = await saveStation({
+      name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi',
+      accessToken: 'old-access-token', refreshToken: 'old-refresh-token', sessionCookie: 'old_session=opaque', sessionAuthMode: 'refresh-token',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [cookieStation] = await saveStation({
+      id: tokenStation.id, name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi',
+      sessionCookie: 'oneapi_session=verified-cookie', sessionAuthMode: 'cookie-session',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+
+    expect(cookieStation.sessionAuthMode).toBe('cookie-session')
+    expect(stationTokens(cookieStation)).toMatchObject({
+      accessToken: undefined,
+      refreshToken: undefined,
+      sessionCookie: 'oneapi_session=verified-cookie'
+    })
+  })
+
+  it('returns a Cookie-session NewAPI station to the standard contract when a JWT is pasted', async () => {
+    const { saveStation, stationTokens } = await importStorage()
+    const [cookieStation] = await saveStation({
+      name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi',
+      sessionCookie: 'oneapi_session=verified-cookie', sessionAuthMode: 'cookie-session', newApiSelectedUserId: '42',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [tokenStation] = await saveStation({
+      id: cookieStation.id, name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi', accessToken: 'manual-access-token',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+
+    expect(tokenStation.sessionAuthMode).toBe('refresh-token')
+    expect(stationTokens(tokenStation).accessToken).toBe('manual-access-token')
+    expect(stationTokens(tokenStation).newApiSelectedUserId).toBeUndefined()
+  })
+
+  it('clears a prior selected-user context when a fresh Cookie authorization has none', async () => {
+    const { saveStation, stationTokens } = await importStorage()
+    const [priorStation] = await saveStation({
+      name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi',
+      sessionCookie: 'oneapi_session=prior-cookie', sessionAuthMode: 'cookie-session', newApiSelectedUserId: '42',
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    const [reauthorizedStation] = await saveStation({
+      id: priorStation.id, name: 'OneAPI', baseUrl: 'https://nihao.dog', adapterType: 'newapi',
+      sessionCookie: 'oneapi_session=fresh-cookie', sessionAuthMode: 'cookie-session', newApiSelectedUserId: undefined,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+
+    expect(stationTokens(reauthorizedStation).newApiSelectedUserId).toBeUndefined()
+  })
+
   it('clears both saved web login credential fields together', async () => {
     const { publicStations, saveStation, stationLoginCredentials } = await importStorage()
     const [created] = await saveStation({
@@ -238,6 +339,19 @@ describe('station storage', () => {
     expect(station).not.toHaveProperty('loginPassword')
   })
 
+  it('reclassifies an interrupted persisted keepalive instead of resuming an in-flight login after restart', async () => {
+    const { listStations, recoverInterruptedAutoReauthStatuses, saveStation, updateStationAutoReauthStatus } = await importStorage()
+    const [created] = await saveStation({
+      name: 'Restart-safe station', baseUrl: 'https://relay.example.com/api/v1', loginAccount: 'member@example.com', loginPassword: 'password-test', autoReauthEnabled: true,
+      pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {}
+    })
+    await updateStationAutoReauthStatus(created.id, { state: 'pending', at: '2026-07-25T01:00:00.000Z', reason: 'session-expired', attempts: 2 })
+
+    const recovered = await recoverInterruptedAutoReauthStatuses()
+    expect(recovered[0].autoReauthStatus).toMatchObject({ state: 'interrupted', reason: 'application-restarted', attempts: 2 })
+    await expect(listStations()).resolves.toMatchObject([{ autoReauthStatus: { state: 'interrupted', reason: 'application-restarted' } }])
+  })
+
   it('requires saved credentials before enabling automatic reauthorization and disables it when credentials are cleared', async () => {
     const { publicStations, saveStation } = await importStorage()
     await expect(saveStation({
@@ -257,26 +371,40 @@ describe('station storage', () => {
     expect(publicStations([cleared])[0]).toMatchObject({ hasSavedLoginCredentials: false, autoReauthEnabled: false })
   })
 
-  it('normalizes a root API base URL back to the versioned API root when the station uses relative API paths', async () => {
-    const { saveStation } = await importStorage()
+  it('preserves an explicitly configured same-origin API root for a custom mapping', async () => {
+    const { listStations, saveStation } = await importStorage()
     const [saved] = await saveStation({
-      name: '鲨鱼辣椒',
-      baseUrl: 'https://shayulajiao.xyz/api/v1',
-      apiBaseUrl: 'https://shayulajiao.xyz',
+      name: 'Krill',
+      baseUrl: 'https://www.krill-ai.net',
+      apiBaseUrl: 'https://www.krill-ai.net/api',
       pollingIntervalMs: 30_000,
       rechargeRatio: 1,
       lowBalanceThreshold: 10,
       apiPaths: {
-        groups: '/groups/available?timezone=Asia%2FShanghai',
-        keys: '/keys?page=1&page_size=100&status=active&sort_by=created_at&sort_order=desc&timezone=Asia%2FShanghai'
-      }
+        profile: '/user/profile',
+        groups: '/groups/available'
+      },
+      readMapping: { version: 1, template: 'custom', capabilities: {} }
     })
 
-    expect(saved.baseUrl).toBe('https://shayulajiao.xyz/api/v1')
-    expect(saved.apiBaseUrl).toBe('https://shayulajiao.xyz/api/v1')
+    expect(saved.baseUrl).toBe('https://www.krill-ai.net/api/v1')
+    expect(saved.apiBaseUrl).toBe('https://www.krill-ai.net/api')
+
+    const [reloaded] = await listStations()
+    expect(reloaded.apiBaseUrl).toBe('https://www.krill-ai.net/api')
+
+    const [updated] = await saveStation({
+      id: saved.id,
+      name: saved.name,
+      baseUrl: saved.baseUrl,
+      pollingIntervalMs: saved.pollingIntervalMs,
+      rechargeRatio: saved.rechargeRatio,
+      lowBalanceThreshold: saved.lowBalanceThreshold
+    })
+    expect(updated.apiBaseUrl).toBe('https://www.krill-ai.net/api')
   })
 
-  it('restores a nested versioned API base when an older custom base is only its prefix', async () => {
+  it('keeps an explicitly configured nested API root instead of inferring a different default', async () => {
     const { saveStation } = await importStorage()
     const [saved] = await saveStation({
       name: 'aihub',
@@ -288,7 +416,7 @@ describe('station storage', () => {
       apiPaths: { groups: '/groups/available' }
     })
 
-    expect(saved.apiBaseUrl).toBe('https://aihub.top/api/api/v1')
+    expect(saved.apiBaseUrl).toBe('https://aihub.top/api')
   })
 
   it('persists an explicit station role without requiring credentials', async () => {
@@ -493,5 +621,149 @@ describe('station storage', () => {
     expect(ledger.usageCoverage).toMatchObject([{ accountStationId: 'mine', state: 'complete', acceptedEntries: 1 }])
     expect(JSON.stringify(ledger)).not.toContain('Bearer')
     expect(JSON.stringify(ledger)).not.toContain('must-not-persist')
+  })
+
+  it('returns only the rate changes newly persisted by a snapshot write', async () => {
+    const { recordTimeCostLedgerSnapshot } = await importStorage()
+    const station = { id: 'source', name: 'Source', rechargeRatio: 1 }
+    const baseline = {
+      stationId: 'source', stationName: 'Source', health: 'healthy' as const, currency: 'USD' as const,
+      groups: [{ id: 7, name: 'OpenAI', platform: 'openai', rateMultiplier: 0.02, pricingAvailable: false }],
+      accounts: [], priceCapability: 'available' as const, lastSuccessAt: '2026-07-27T10:00:00.000Z'
+    }
+    const first = await recordTimeCostLedgerSnapshot(station, baseline)
+    const changed = await recordTimeCostLedgerSnapshot(station, {
+      ...baseline,
+      groups: [{ ...baseline.groups[0], rateMultiplier: 0.03 }],
+      lastSuccessAt: '2026-07-27T10:05:00.000Z'
+    })
+
+    expect(first.newGroupChangeEvents).toEqual([])
+    expect(changed.newGroupChangeEvents).toMatchObject([{
+      kind: 'rate-up', previousRate: 0.02, nextRate: 0.03, occurredAt: '2026-07-27T10:05:00.000Z'
+    }])
+    expect(changed.preferences.groupChangeEvents).toHaveLength(1)
+  })
+})
+
+const stationBase = { pollingIntervalMs: 30_000, rechargeRatio: 1, lowBalanceThreshold: 10, apiPaths: {} }
+
+describe('station storage durability', () => {
+  beforeEach(async () => {
+    userDataPath = await mkdtemp(join(tmpdir(), 'aizzzwatch-storage-durability-'))
+  })
+
+  afterEach(async () => {
+    vi.doUnmock('electron')
+    vi.resetModules()
+    await rm(userDataPath, { recursive: true, force: true })
+  })
+
+  it('serializes concurrent saveStation calls so no station update is lost', async () => {
+    const { saveStation, listStations, stationTokens } = await importStorage()
+    await saveStation({ name: 'A', baseUrl: 'https://a.example.com', accessToken: 'old-A', ...stationBase })
+    await saveStation({ name: 'B', baseUrl: 'https://b.example.com', accessToken: 'old-B', ...stationBase })
+    const [stationA, stationB] = await listStations()
+
+    // Mirrors stations:refresh's Promise.all(...map(refreshStation)), where
+    // each station independently rotates its access token via saveStation().
+    await Promise.all([
+      saveStation({ id: stationA.id, name: 'A', baseUrl: stationA.baseUrl, accessToken: 'rotated-A', ...stationBase }),
+      saveStation({ id: stationB.id, name: 'B', baseUrl: stationB.baseUrl, accessToken: 'rotated-B', ...stationBase })
+    ])
+
+    const after = await listStations()
+    expect(after.map((station) => stationTokens(station).accessToken)).toEqual(['rotated-A', 'rotated-B'])
+  })
+
+  it('applies every save in a burst of interleaved concurrent writes', async () => {
+    const { saveStation, listStations, stationTokens } = await importStorage()
+    await saveStation({ name: 'A', baseUrl: 'https://a.example.com', accessToken: 'seed', ...stationBase })
+    await saveStation({ name: 'B', baseUrl: 'https://b.example.com', accessToken: 'seed', ...stationBase })
+    const [stationA, stationB] = await listStations()
+
+    await Promise.all(Array.from({ length: 5 }, (_, i) => [
+      saveStation({ id: stationA.id, name: 'A', baseUrl: stationA.baseUrl, accessToken: `A-${i}`, ...stationBase }),
+      saveStation({ id: stationB.id, name: 'B', baseUrl: stationB.baseUrl, accessToken: `B-${i}`, ...stationBase })
+    ]).flat())
+
+    const after = await listStations()
+    expect(after).toHaveLength(2)
+    expect(stationTokens(after.find((station) => station.name === 'A')!).accessToken).toBe('A-4')
+    expect(stationTokens(after.find((station) => station.name === 'B')!).accessToken).toBe('B-4')
+  })
+
+  it('never leaves stations.json partially written if a save is interrupted before rename', async () => {
+    const { saveStation, listStations } = await importStorage()
+    await saveStation({ name: 'A', baseUrl: 'https://a.example.com', accessToken: 'tok', ...stationBase })
+    const file = join(userDataPath, 'stations.json')
+    const before = await readFile(file, 'utf8')
+
+    // A crash between the temp-file write and the rename must never be
+    // observable: the real file only ever contains a complete document.
+    await writeFile(`${file}.deadbeef.tmp`, '{"garbage')
+
+    const recovered = await listStations()
+    expect(recovered).toHaveLength(1)
+    expect(await readFile(file, 'utf8')).toBe(before)
+  })
+
+  it('backs up a corrupted stations.json instead of silently discarding it', async () => {
+    const { saveStation, listStations } = await importStorage()
+    await saveStation({ name: 'A', baseUrl: 'https://a.example.com', accessToken: 'tok', ...stationBase })
+    const file = join(userDataPath, 'stations.json')
+    const good = await readFile(file, 'utf8')
+    const truncated = good.slice(0, Math.floor(good.length / 2))
+    await writeFile(file, truncated)
+
+    expect(await listStations()).toHaveLength(0)
+
+    // The next ordinary save must not permanently erase the corrupted
+    // original — it should already be preserved as a backup by this point.
+    await saveStation({ name: 'C', baseUrl: 'https://c.example.com', ...stationBase })
+
+    const backups = (await readdir(userDataPath)).filter((entry) => entry.startsWith('stations.json.corrupt-'))
+    expect(backups).toHaveLength(1)
+    expect(await readFile(join(userDataPath, backups[0]), 'utf8')).toBe(truncated)
+  })
+
+  it('backs up a corrupted ui-preferences.json instead of silently discarding it', async () => {
+    const { saveHiddenGroupKeys, getUiPreferences } = await importStorage()
+    await saveHiddenGroupKeys(['group-a'])
+    const file = join(userDataPath, 'ui-preferences.json')
+    const good = await readFile(file, 'utf8')
+    const truncated = good.slice(0, Math.floor(good.length / 2))
+    await writeFile(file, truncated)
+
+    expect((await getUiPreferences()).hiddenGroupKeys).toEqual([])
+
+    const backups = (await readdir(userDataPath)).filter((entry) => entry.startsWith('ui-preferences.json.corrupt-'))
+    expect(backups).toHaveLength(1)
+    expect(await readFile(join(userDataPath, backups[0]), 'utf8')).toBe(truncated)
+  })
+
+  it('blocks station writes when a corrupted stations file cannot be moved aside', async () => {
+    const storage = await importStorage()
+    await storage.saveStation({ name: 'A', baseUrl: 'https://a.example.com', accessToken: 'tok', ...stationBase })
+    const file = join(userDataPath, 'stations.json')
+    const truncated = (await readFile(file, 'utf8')).slice(0, 24)
+    await writeFile(file, truncated)
+
+    const guardedStorage = await importStorage({ failRename: true })
+    await expect(guardedStorage.listStations()).rejects.toThrow('无法备份')
+    await expect(guardedStorage.saveStation({ name: 'B', baseUrl: 'https://b.example.com', ...stationBase })).rejects.toThrow('无法备份')
+    expect(await readFile(file, 'utf8')).toBe(truncated)
+  })
+
+  it.each(['[]', 'null', 'true'])('backs up a parseable but invalid UI preferences document (%s)', async (invalidDocument) => {
+    const { saveHiddenGroupKeys, getUiPreferences } = await importStorage()
+    await saveHiddenGroupKeys(['group-a'])
+    const file = join(userDataPath, 'ui-preferences.json')
+    await writeFile(file, invalidDocument)
+
+    expect((await getUiPreferences()).hiddenGroupKeys).toEqual([])
+    const backups = (await readdir(userDataPath)).filter((entry) => entry.startsWith('ui-preferences.json.corrupt-'))
+    expect(backups).toHaveLength(1)
+    expect(await readFile(join(userDataPath, backups[0]), 'utf8')).toBe(invalidDocument)
   })
 })

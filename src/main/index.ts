@@ -1,16 +1,18 @@
-import { app, BrowserWindow, ipcMain, nativeImage, net, session, Tray } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, net, Notification as NativeNotification, session, Tray } from 'electron'
 import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, updateStationAutoReauthStatus, saveDismissedGroupChangeEventIds, type StoredStation } from './storage'
+import { getDataCenterSummary, getUiPreferences, listStations, publicStations, recordProfitUsageArchiveDay, recordTimeCostLedgerSnapshot, recoverInterruptedAutoReauthStatuses, removeStation, saveAccountCostProfiles, saveAccountUpstreamMappings, saveGroupChangeEvents, saveHiddenGroupKeys, saveInternalUserProfiles, saveManualGroupTags, saveOperatingExcludedGroupKeys, saveStation, stationLoginCredentials, stationTokens, updateStationAutoReauthStatus, saveDismissedGroupChangeEventIds, type StoredStation } from './storage'
 import { diagnoseStation } from './station-diagnostics'
 import { hasUsableAdminCredential, isJwtExpiringSoon, resolveWebAuthTokens, Sub2ApiClient } from './sub2api-client'
 import { NewApiClient } from './newapi-client'
+import { autoReauthRetryDelaysMs, SerializedStationAutoReauthQueue } from './auto-reauth-queue'
+import { StationRefreshEpochs } from './station-refresh-epochs'
 import { createStationReadClient, usesSub2ApiContract } from './station-adapter'
-import { collectWebAuthApiBaseUrls, isNewApiWebAuthContract, isWebAuthLoginRouteNotFound, readWebAuthProbeSnapshot, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreWebAuthSession } from './web-auth'
-import { classifySub2ApiError, createEmptySnapshot, normalizeStationApiPaths, normalizeStationBaseUrl, resolveStationApiRequestUrl, sameNumberSet } from '../shared/sub2api'
+import { buildBoundedCookieHeader, collectWebAuthApiBaseUrls, isNewApiCookieSessionPage, isNewApiWebAuthContract, isWebAuthLoginRouteNotFound, readWebAuthProbeSnapshot, resolveNewApiProfileUrl, resolveWebAuthApiBaseUrl, resolveWebAuthApiPaths, resolveWebAuthCookieUrl, resolveWebAuthLaunchTarget, tryRestoreNewApiSession, tryRestoreNewApiSessionFromPage, tryRestoreWebAuthSession, tryVerifyNewApiCookieSession } from './web-auth'
+import { classifySub2ApiError, createEmptySnapshot, isTrustedStationReadApiBase, normalizeStationApiPaths, normalizeStationBaseUrl, resolveSameOriginHttpsApiBaseUrl, resolveStationApiRequestUrl, sameNumberSet } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
-import { buildProfitIntervalReport } from '../shared/time-cost-ledger'
-import type { AccountGroupMutation, AccountUpstreamMapping, ProfitArchiveDayCoverage, ProfitIntervalQuery, StationAutoReauthStatus, StationDiagnostics, StationInput, StationMappingPreview, StationSnapshot, TimeCostLedger, UsageLedgerCoverage, WebAuthInput, WindowMode } from '../shared/types'
+import { archiveCoverageForQuery, archiveDates, buildProfitIntervalReport, dayArchiveQuery } from '../shared/time-cost-ledger'
+import type { AccountGroupMutation, AccountUpstreamMapping, GroupChangeEvent, ProfitArchiveDayCoverage, ProfitIntervalQuery, StationAutoReauthReason, StationAutoReauthStatus, StationDiagnostics, StationInput, StationMappingPreview, StationSnapshot, WebAuthInput, WindowMode } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let bubbleWindow: BrowserWindow | null = null
@@ -21,11 +23,12 @@ let mode: WindowMode = 'full'
 let alwaysOnTop = false
 const snapshots = new Map<string, StationSnapshot>()
 const pollers = new Map<string, NodeJS.Timeout>()
+const stationRefreshesInFlight = new Map<string, Promise<StationSnapshot>>()
+const stationRefreshEpochs = new StationRefreshEpochs()
 const sourceKeyFingerprints = new Map<string, Map<string, string>>()
 const accountCredentialFingerprints = new Map<string, Map<number, string>>()
-const autoReauthAttempts = new Map<string, Promise<void>>()
-let autoReauthReservation: string | undefined
-const autoReauthFailureCooldownMs = 5 * 60_000
+const autoReauthQueue = new SerializedStationAutoReauthQueue()
+const autoReauthRetryTimers = new Map<string, NodeJS.Timeout>()
 
 app.setName('AIZZZWatch')
 app.setAppUserModelId('com.aizzzwatch.desktop')
@@ -141,14 +144,51 @@ function sendSnapshots(): void {
   bubbleWindow?.webContents.send('stations:snapshot-updated', [...snapshots.values()])
 }
 
+function sendPreferencesUpdated(): void {
+  mainWindow?.webContents.send('preferences:updated')
+  bubbleWindow?.webContents.send('preferences:updated')
+}
+
+function isRateChangeEvent(event: GroupChangeEvent): boolean {
+  if (event.kind !== 'rate-up' && event.kind !== 'rate-down') return false
+  const previousRate = event.previousRate
+  const nextRate = event.nextRate
+  if (typeof previousRate !== 'number' || typeof nextRate !== 'number' || !Number.isFinite(previousRate) || !Number.isFinite(nextRate)) return false
+  const delta = nextRate - previousRate
+  return event.kind === 'rate-up' ? delta >= 0.0005 : delta <= -0.0005
+}
+
+function showGroupChangeNotification(events: GroupChangeEvent[]): void {
+  const rateChanges = events.filter(isRateChangeEvent)
+  const rateUp = rateChanges.filter((event) => event.kind === 'rate-up').length
+  const rateDown = rateChanges.filter((event) => event.kind === 'rate-down').length
+  if ((rateUp === 0 && rateDown === 0) || !NativeNotification.isSupported()) return
+  const parts = [rateUp > 0 ? `${rateUp} 个涨价` : undefined, rateDown > 0 ? `${rateDown} 个降价` : undefined]
+    .filter((item): item is string => Boolean(item))
+  const notification = new NativeNotification({
+    title: 'AIZZZWatch 分组倍率变动',
+    body: `发现 ${parts.join('、')}，点击查看对应记录。`,
+    silent: false
+  })
+  notification.on('click', () => {
+    revealMainWindow()
+    const filter = rateUp > 0 && rateDown > 0 ? 'all' : rateUp > 0 ? 'rate-up' : 'rate-down'
+    mainWindow?.webContents.send('preferences:open-group-changes', { filter })
+  })
+  notification.show()
+}
+
 function sendStationsUpdated(stations: StoredStation[]): void {
   const publicStationList = publicStations(stations)
   mainWindow?.webContents.send('stations:updated', publicStationList)
   bubbleWindow?.webContents.send('stations:updated', publicStationList)
 }
 
-async function setStationAutoReauthStatus(id: string, state: StationAutoReauthStatus['state']): Promise<void> {
-  const stations = await updateStationAutoReauthStatus(id, { state, at: new Date().toISOString() })
+async function setStationAutoReauthStatus(
+  id: string,
+  status: Omit<StationAutoReauthStatus, 'at'> & { at?: string }
+): Promise<void> {
+  const stations = await updateStationAutoReauthStatus(id, { ...status, at: status.at ?? new Date().toISOString() })
   sendStationsUpdated(stations)
 }
 
@@ -180,13 +220,6 @@ function isSessionReauthorizationNeeded(snapshot: Pick<StationSnapshot, 'errorCo
   return /session|cookie|jwt|token|\u4f1a\u8bdd|\u91cd\u65b0\u6388\u6743|\u767b\u5f55/i.test(snapshot.errorMessage ?? '')
 }
 
-function isAutoReauthCoolingDown(station: Pick<StoredStation, 'autoReauthStatus'>): boolean {
-  const status = station.autoReauthStatus
-  if (status?.state !== 'failed') return false
-  const attemptedAt = new Date(status.at).getTime()
-  return Number.isFinite(attemptedAt) && Date.now() - attemptedAt < autoReauthFailureCooldownMs
-}
-
 function webAuthInputFromStoredStation(station: StoredStation): WebAuthInput {
   return {
     id: station.id,
@@ -205,47 +238,162 @@ function webAuthInputFromStoredStation(station: StoredStation): WebAuthInput {
   }
 }
 
-function scheduleStationAutoReauth(station: StoredStation): void {
-  if (!station.autoReauthEnabled || !isHttpsStation(station) || isAutoReauthCoolingDown(station)) return
-  if (autoReauthAttempts.has(station.id) || autoReauthReservation || (authWindow && !authWindow.isDestroyed())) return
+function canQueueStationAutoReauth(station: StoredStation): boolean {
+  if (!station.autoReauthEnabled || !isHttpsStation(station)) return false
   const credentials = stationLoginCredentials(station)
-  if (!credentials.loginAccount || !credentials.loginPassword) return
+  return Boolean(credentials.loginAccount && credentials.loginPassword)
+}
 
-  autoReauthReservation = station.id
-  const attempt = (async () => {
-    try {
-      await setStationAutoReauthStatus(station.id, 'pending')
-      await beginWebAuth(webAuthInputFromStoredStation(station), {
-        autoSubmitSavedLogin: true,
-        onManualInterventionRequired: () => {
-          void setStationAutoReauthStatus(station.id, 'manual-required')
-        }
-      })
-      await setStationAutoReauthStatus(station.id, 'success')
-      await refreshStation(station.id, false).catch(() => undefined)
-    } catch {
-      await setStationAutoReauthStatus(station.id, 'failed').catch(() => undefined)
+function classifyAutoReauthFailure(error: unknown): { kind: 'retry' | 'manual' | 'credentials-invalid' | 'interrupted'; reason: StationAutoReauthReason } {
+  const message = error instanceof Error ? error.message : ''
+  if (message === 'AUTH_CANCELLED') return { kind: 'interrupted', reason: 'manual-priority' }
+  if (/AUTO_AUTH_TIMEOUT|AUTH_LOGIN_ROUTE_NOT_FOUND|unavailable/i.test(message)) return { kind: 'manual', reason: 'login-contract-changed' }
+  if (/password|credential|invalid login|incorrect/i.test(message)) return { kind: 'credentials-invalid', reason: 'credentials-invalid' }
+  if (/timed? ?out|ERR_TIMED_OUT/i.test(message)) return { kind: 'retry', reason: 'timeout' }
+  if (/ERR_(?:INTERNET_DISCONNECTED|CONNECTION|NAME_NOT_RESOLVED)|ENOTFOUND|ECONN|network/i.test(message)) return { kind: 'retry', reason: 'network-error' }
+  return { kind: 'manual', reason: 'unknown' }
+}
+
+function scheduleAutoReauthRetry(station: StoredStation, reason: Extract<StationAutoReauthReason, 'network-error' | 'timeout'>, attempts: number): void {
+  if (attempts >= autoReauthRetryDelaysMs.length) {
+    void setStationAutoReauthStatus(station.id, { state: 'interrupted', reason, attempts }).catch(() => undefined)
+    return
+  }
+  const delay = autoReauthRetryDelaysMs[attempts]
+  const nextRetryAt = new Date(Date.now() + delay).toISOString()
+  void setStationAutoReauthStatus(station.id, { state: 'retry-scheduled', reason, attempts: attempts + 1, nextRetryAt }).catch(() => undefined)
+  const priorTimer = autoReauthRetryTimers.get(station.id)
+  if (priorTimer) clearTimeout(priorTimer)
+  const timer = setTimeout(() => {
+    autoReauthRetryTimers.delete(station.id)
+    void listStations().then((stations) => {
+      const next = stations.find((item) => item.id === station.id)
+      if (next) queueStationAutoReauth(next)
+    })
+  }, delay)
+  autoReauthRetryTimers.set(station.id, timer)
+}
+
+async function runStationAutoReauth(station: StoredStation): Promise<void> {
+  let manualInterventionRequired = false
+  const attempts = station.autoReauthStatus?.state === 'retry-scheduled' ? station.autoReauthStatus.attempts ?? 0 : 0
+  try {
+    await setStationAutoReauthStatus(station.id, { state: 'pending', reason: 'session-expired', attempts })
+    await beginWebAuth(webAuthInputFromStoredStation(station), {
+      autoSubmitSavedLogin: true,
+      onManualInterventionRequired: () => {
+        manualInterventionRequired = true
+        void setStationAutoReauthStatus(station.id, { state: 'manual-required', reason: 'manual-challenge', attempts })
+      },
+      onCredentialsInvalid: () => {
+        void setStationAutoReauthStatus(station.id, { state: 'credentials-invalid', reason: 'credentials-invalid', attempts })
+      }
+    })
+    await setStationAutoReauthStatus(station.id, { state: 'success', reason: 'session-expired', attempts: 0 })
+    await refreshStation(station.id, false).catch(() => undefined)
+  } catch (error) {
+    if (manualInterventionRequired) return
+    const failure = classifyAutoReauthFailure(error)
+    if (failure.kind === 'retry') {
+      scheduleAutoReauthRetry(station, failure.reason as Extract<StationAutoReauthReason, 'network-error' | 'timeout'>, attempts)
+      return
     }
-  })()
-  autoReauthAttempts.set(station.id, attempt)
-  void attempt.finally(() => {
-    autoReauthAttempts.delete(station.id)
-    if (autoReauthReservation === station.id) autoReauthReservation = undefined
+    const state = failure.kind === 'credentials-invalid' ? 'credentials-invalid' : failure.kind === 'interrupted' ? 'interrupted' : 'manual-required'
+    await setStationAutoReauthStatus(station.id, { state, reason: failure.reason, attempts }).catch(() => undefined)
+  }
+}
+
+function drainAutoReauthQueue(): void {
+  if (autoReauthQueue.activeStationId || (authWindow && !authWindow.isDestroyed())) return
+  const stationId = autoReauthQueue.reserveNext()
+  if (!stationId) return
+  void listStations().then(async (stations) => {
+    const station = stations.find((item) => item.id === stationId)
+    if (autoReauthQueue.isActiveCancelled(stationId) || !station || !canQueueStationAutoReauth(station)) {
+      autoReauthQueue.complete(stationId)
+      drainAutoReauthQueue()
+      return
+    }
+    try {
+      await runStationAutoReauth(station)
+    } finally {
+      autoReauthQueue.complete(stationId)
+      drainAutoReauthQueue()
+    }
+  }).catch(() => {
+    autoReauthQueue.complete(stationId)
+    drainAutoReauthQueue()
   })
 }
 
-async function refreshStation(id: string, allowTokenRefresh = true): Promise<StationSnapshot> {
+function queueStationAutoReauth(station: StoredStation): void {
+  if (!canQueueStationAutoReauth(station) || autoReauthRetryTimers.has(station.id)) return
+  if (!autoReauthQueue.enqueue(station.id)) return
+  drainAutoReauthQueue()
+}
+
+async function interruptAutoReauthForManualLogin(manualStationId?: string): Promise<void> {
+  if (manualStationId) {
+    const retryTimer = autoReauthRetryTimers.get(manualStationId)
+    if (retryTimer) clearTimeout(retryTimer)
+    autoReauthRetryTimers.delete(manualStationId)
+    autoReauthQueue.cancel(manualStationId)
+  }
+  const activeStationId = autoReauthQueue.activeStationId
+  if (!activeStationId) return
+  autoReauthQueue.cancel(activeStationId)
+  await setStationAutoReauthStatus(activeStationId, { state: 'interrupted', reason: 'manual-priority' }).catch(() => undefined)
+  await closeAuthWindow()
+}
+
+/**
+ * Background pollers run on independent per-station intervals, and IPC
+ * callers can request a refresh (single station or all of them) at any time.
+ * Without this, an overlapping poller tick and an explicit refresh request
+ * for the same station would each run their own full fetch — snapshot,
+ * admin data, admin console, usage detail — concurrently against the same
+ * station, doubling load for no benefit since both would resolve to the
+ * same answer. Concurrent calls for the same (id, allowTokenRefresh) share
+ * one in-flight fetch instead.
+ */
+async function refreshStation(id: string, allowTokenRefresh = true, force = false): Promise<StationSnapshot> {
+  const key = `${id}:${allowTokenRefresh}`
+  if (!force) {
+    const inFlight = stationRefreshesInFlight.get(key)
+    if (inFlight) return inFlight
+  }
+  const refreshEpoch = stationRefreshEpochs.begin(id)
+  const promise = refreshStationOnce(id, allowTokenRefresh, refreshEpoch).catch((error) => {
+    // A newer explicit refresh supersedes this request. Do not let a delayed
+    // transport error overwrite its result with a stale error snapshot.
+    if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) {
+      return snapshots.get(id) ?? createEmptySnapshot(id, id)
+    }
+    throw error
+  }).finally(() => {
+    // Only clear this call's own entry: a forced call must not delete a
+    // concurrent, still-relevant in-flight promise that other callers are
+    // sharing under the same key.
+    if (stationRefreshesInFlight.get(key) === promise) stationRefreshesInFlight.delete(key)
+  })
+  stationRefreshesInFlight.set(key, promise)
+  return promise
+}
+
+async function refreshStationOnce(id: string, allowTokenRefresh: boolean, refreshEpoch: number): Promise<StationSnapshot> {
   const stations = await listStations()
   const station = stations.find((item) => item.id === id)
   if (!station) throw new Error('找不到站点')
   let tokens = stationTokens(station)
   let client = createStationReadClient({ ...station, ...tokens, fetchImpl: electronFetch })
   const rotateStationTokens = async (): Promise<boolean> => {
+    if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return false
     if (!(client instanceof Sub2ApiClient) && !(client instanceof NewApiClient)) return false
     if (client instanceof Sub2ApiClient && !tokens.refreshToken) return false
-    if (client instanceof NewApiClient && !tokens.sessionCookie) return false
+    if (client instanceof NewApiClient && (!tokens.sessionCookie || station.sessionAuthMode === 'cookie-session')) return false
     try {
       const tokenPair = await client.refreshAccessToken()
+      if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return false
       await saveStation({
         id: station.id,
         name: station.name,
@@ -255,6 +403,7 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
         sessionCookie: 'sessionCookie' in tokenPair ? tokenPair.sessionCookie : undefined,
         pollingIntervalMs: station.pollingIntervalMs
       })
+      if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return false
       const refreshedStations = await listStations()
       const refreshedStation = refreshedStations.find((item) => item.id === id)
       if (!refreshedStation) return false
@@ -267,10 +416,11 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
   }
 
   const canRefreshSession = (client instanceof Sub2ApiClient && Boolean(tokens.refreshToken))
-    || (client instanceof NewApiClient && Boolean(tokens.sessionCookie))
+    || (client instanceof NewApiClient && Boolean(tokens.sessionCookie) && station.sessionAuthMode !== 'cookie-session')
   if (allowTokenRefresh && canRefreshSession && isJwtExpiringSoon(tokens.accessToken)) {
     await rotateStationTokens()
   }
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return snapshots.get(id) ?? createEmptySnapshot(id, station.name)
   let next = await client.fetchSnapshot(snapshots.get(id))
   if (allowTokenRefresh && canRefreshSession && next.errorCode === 'UNAUTHORIZED') {
     const refreshed = await rotateStationTokens()
@@ -278,11 +428,13 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
       next = await client.fetchSnapshot(snapshots.get(id))
     }
   }
-  if (allowTokenRefresh && isSessionReauthorizationNeeded(next)) scheduleStationAutoReauth(station)
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
+  if (allowTokenRefresh && isSessionReauthorizationNeeded(next)) queueStationAutoReauth(station)
   let usageDetail: Awaited<ReturnType<Sub2ApiClient['fetchAdminUsageDetail']>> | undefined
   if (client instanceof Sub2ApiClient && next.health === 'healthy' && hasUsableAdminCredential({ ...station, ...tokens })) {
     try {
       const admin = await client.fetchAdminData()
+      if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
       next.accounts = admin.accounts
       accountCredentialFingerprints.set(id, new Map([...client.getAdminAccountCredentials() ?? []].map(([accountId, value]) => [accountId, credentialFingerprint(value)])))
     } catch {
@@ -295,8 +447,10 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
       // Admin console pages are optional and may vary across stations.
     }
     usageDetail = await client.fetchAdminUsageDetail()
+    if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
   }
   const sourceCredentials = client instanceof Sub2ApiClient ? client.getSourceKeyCredentials() : undefined
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
   if (next.sourceKeyReadState === 'available') {
     sourceKeyFingerprints.set(id, new Map([...(sourceCredentials ?? [])].map(([keyId, value]) => [keyId, credentialFingerprint(value)])))
   } else if (next.sourceKeyReadState === 'not-configured') {
@@ -305,9 +459,19 @@ async function refreshStation(id: string, allowTokenRefresh = true): Promise<Sta
     sourceKeyFingerprints.delete(id)
   }
   snapshots.set(id, next)
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
   updateUpstreamKeyLinks(stations)
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
   await persistVerifiedUpstreamKeyLinks()
-  if (next.health === 'healthy') await recordTimeCostLedgerSnapshot(station, next, usageDetail)
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
+  const recorded = next.health === 'healthy'
+    ? await recordTimeCostLedgerSnapshot(station, next, usageDetail)
+    : undefined
+  if (!stationRefreshEpochs.isCurrent(id, refreshEpoch)) return next
+  if (recorded) {
+    sendPreferencesUpdated()
+    showGroupChangeNotification(recorded.newGroupChangeEvents)
+  }
   sendSnapshots()
   return next
 }
@@ -382,6 +546,7 @@ function createBubbleWindow(): void {
       sandbox: true
     }
   })
+  bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   if (process.env.ELECTRON_RENDERER_URL) {
     void bubbleWindow.loadURL(`${process.env.ELECTRON_RENDERER_URL}?mode=bubble`)
   } else {
@@ -421,6 +586,20 @@ function applyWindowMode(nextMode: WindowMode): void {
   mainWindow.webContents.send('window:mode', { mode, alwaysOnTop })
 }
 
+/**
+ * The default session is shared by the main and bubble windows, which only
+ * ever load this app's own bundled renderer. The renderer's only use of the
+ * browser permission model is desktop notifications for group-rate-change
+ * alerts, while the main process owns their delivery; everything else is denied
+ * by default rather than left to Electron's permissive built-in behavior.
+ */
+function applyDefaultSessionPermissionGuards(): void {
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    callback(permission === 'notifications')
+  })
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => permission === 'notifications')
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1080,
@@ -439,6 +618,7 @@ function createWindow(): void {
     }
   })
 
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   if (process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
@@ -495,20 +675,27 @@ type SavedLoginFillResult = 'filled' | 'submitted' | 'manual-required' | 'unavai
 interface WebAuthFlowOptions {
   autoSubmitSavedLogin?: boolean
   onManualInterventionRequired?: () => void
+  onCredentialsInvalid?: () => void
 }
 
-async function hasWebAuthSecurityChallenge(loginWindow: BrowserWindow, stationBaseUrl: string): Promise<boolean> {
-  if (loginWindow.isDestroyed() || !isSameOrigin(loginWindow.webContents.getURL(), stationBaseUrl)) return false
+type AutoLoginIntervention = 'none' | 'manual-required' | 'credentials-invalid'
+
+async function inspectAutoLoginIntervention(loginWindow: BrowserWindow, stationBaseUrl: string): Promise<AutoLoginIntervention> {
+  if (loginWindow.isDestroyed() || !isSameOrigin(loginWindow.webContents.getURL(), stationBaseUrl)) return 'none'
   const script = `(() => {
     const form = document.querySelector('form') || document
     const pageText = [document.body?.innerText, form.textContent].filter(Boolean).join(' ').toLowerCase()
-    return Boolean(document.querySelector('[data-sitekey], iframe[src*="captcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="totp" i]'))
-      || /captcha|\\u9a8c\\u8bc1\\u7801|\\u4eba\\u673a\\u9a8c\\u8bc1|verify you are human|two[ -]?factor|\\u4e8c\\u6b21\\u9a8c\\u8bc1|\\u5b89\\u5168\\u9a8c\\u8bc1/.test(pageText)
+    if (Boolean(document.querySelector('[data-sitekey], iframe[src*="captcha" i], iframe[src*="hcaptcha" i], iframe[src*="turnstile" i], input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="totp" i]'))
+      || /captcha|\\u9a8c\\u8bc1\\u7801|\\u4eba\\u673a\\u9a8c\\u8bc1|verify you are human|two[ -]?factor|\\u4e8c\\u6b21\\u9a8c\\u8bc1|\\u5b89\\u5168\\u9a8c\\u8bc1/.test(pageText)) return 'manual-required'
+    const isLoginRoute = /\\/(?:login|sign-in|signin)\\/?$/i.test(window.location.pathname)
+    if (isLoginRoute && /invalid credentials|incorrect password|password is incorrect|login failed|\\u8d26\\u53f7\\u6216\\u5bc6\\u7801|\\u5bc6\\u7801\\u9519\\u8bef|\\u767b\\u5f55\\u5931\\u8d25/.test(pageText)) return 'credentials-invalid'
+    return 'none'
   })()`
   try {
-    return Boolean(await loginWindow.webContents.executeJavaScript(script, true))
+    const result = await loginWindow.webContents.executeJavaScript(script, true)
+    return result === 'manual-required' || result === 'credentials-invalid' ? result : 'none'
   } catch {
-    return false
+    return 'none'
   }
 }
 
@@ -560,11 +747,10 @@ async function fillSavedLoginCredentials(loginWindow: BrowserWindow, stationBase
 }
 
 async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {}): Promise<ReturnType<typeof publicStations>> {
-  const name = input.name.trim()
-  if (!name) throw new Error('站点名称不能为空')
   const baseUrl = input.baseUrl.trim()
   if (!baseUrl) throw new Error('站点地址不能为空')
   const normalizedBaseUrl = normalizeStationBaseUrl(baseUrl, input.adapterType === 'auto' ? input.detectedAdapterType : input.adapterType)
+  const name = input.name.trim() || new URL(normalizedBaseUrl).hostname
   const newApiAuth = isNewApiWebAuthContract(input)
   const authLaunchTarget = resolveWebAuthLaunchTarget(normalizedBaseUrl, newApiAuth)
   if (authWindow && !authWindow.isDestroyed()) {
@@ -600,13 +786,26 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
     }
   })
   authWindow = loginWindow
+  const authorizationSession = session.fromPartition(partition)
+  // The login window renders an arbitrary remote station's page. It has no
+  // legitimate reason to open child windows or request device/notification
+  // permissions, and denying by default avoids an untracked popup holding
+  // onto the authorization partition's cookies after this window closes.
+  loginWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  authorizationSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
+  authorizationSession.setPermissionCheckHandler(() => false)
 
   return new Promise<ReturnType<typeof publicStations>>((resolve, reject) => {
     let settled = false
+    let captureInProgress = false
     let poller: NodeJS.Timeout | undefined
     let automaticAuthTimeout: NodeJS.Timeout | undefined
     let requestedClientLoginRoute = false
     let authRouteFallbackUsed = false
+    let lastSessionRestoreAttemptAt = 0
+    let lastNewApiPageRecoveryAttemptAt = 0
+    let lastNewApiCookieSessionAttemptAt = 0
+    let newApiSessionCapturePending = false
     const missingAuthRoutePaths: string[] = []
     let savedLoginFilled = false
     let manualInterventionRequired = false
@@ -619,6 +818,12 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
         loginWindow.show()
         loginWindow.focus()
       }
+    }
+    const requestCredentialsUpdate = (): void => {
+      if (!options.autoSubmitSavedLogin || settled) return
+      if (automaticAuthTimeout) clearTimeout(automaticAuthTimeout)
+      options.onCredentialsInvalid?.()
+      void finish(() => reject(new Error('AUTO_AUTH_CREDENTIALS_INVALID')))
     }
     const fillSavedLogin = (): void => {
       if (!savedLoginCredentials || savedLoginFilled) return
@@ -636,7 +841,8 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
       callback()
     }
     const capture = async (): Promise<void> => {
-      if (loginWindow.isDestroyed()) return
+      if (loginWindow.isDestroyed() || captureInProgress) return
+      captureInProgress = true
       try {
         const probe = await readWebAuthProbeSnapshot(loginWindow)
         const loginPageUrl = loginWindow.webContents.getURL()
@@ -650,7 +856,7 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
         const newApiAuthRefreshPath = newApiAuth ? input.apiPaths?.authRefresh : undefined
         const cookieSets = await Promise.all(apiBaseUrls.map(async (apiBaseUrl) => {
           const cookieUrl = resolveWebAuthCookieUrl(apiBaseUrl, newApiAuth, newApiAuthRefreshPath)
-          const cookies = await session.fromPartition(partition).cookies.get({ url: cookieUrl }).catch(() => [])
+          const cookies = await authorizationSession.cookies.get({ url: cookieUrl }).catch(() => [])
           return { apiBaseUrl, cookies }
         }))
         const resolvedTokens = resolveWebAuthTokens(probe as Record<string, string | undefined>, cookieSets.flatMap((item) => item.cookies))
@@ -662,15 +868,25 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
               pageApiBaseUrl: probe.pageApiBaseUrl
             })
         let restoredSessionCookie: string | undefined
-        if (!resolvedTokens.accessToken) {
+        let newApiSelectedUserId: string | undefined
+        let verifiedCookieSession = false
+        let hasUnsupportedNewApiRefresh = false
+        // The 700ms poller below re-runs capture() continuously while a
+        // login is in progress. Without this cooldown, every tick would fire
+        // a session-restore POST against every candidate API base URL (up to
+        // four) at the station, hammering it several times per second for as
+        // long as the login window stays open with no token yet.
+        if (!resolvedTokens.accessToken && Date.now() - lastSessionRestoreAttemptAt >= 2_000) {
+          lastSessionRestoreAttemptAt = Date.now()
           for (const { apiBaseUrl, cookies } of cookieSets) {
             const restored = newApiAuth
               ? await tryRestoreNewApiSession({
-                  fetchImpl: electronFetch,
+                  fetchImpl: (url, init) => authorizationSession.fetch(url, init),
                   apiBaseUrl,
                   authRefreshPath: newApiAuthRefreshPath,
                   cookies,
-                  userAgent: loginWindow.webContents.getUserAgent()
+                  userAgent: loginWindow.webContents.getUserAgent(),
+                  useSessionCredentials: true
                 })
               : await tryRestoreWebAuthSession({
                   fetchImpl: electronFetch,
@@ -679,20 +895,79 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
                   cookies,
                   userAgent: loginWindow.webContents.getUserAgent()
                 })
+            if (restored?.authRefreshUnsupported) hasUnsupportedNewApiRefresh = true
             if (!restored?.accessToken) continue
             resolvedTokens.accessToken = restored.accessToken
             resolvedTokens.refreshToken = resolvedTokens.refreshToken || restored.refreshToken
-            restoredSessionCookie = restored.sessionCookie
+            const cookieUrl = resolveWebAuthCookieUrl(apiBaseUrl, true, newApiAuthRefreshPath)
+            const currentCookies = await authorizationSession.cookies.get({ url: cookieUrl }).catch(() => cookies)
+            restoredSessionCookie = buildBoundedCookieHeader(currentCookies) || restored.sessionCookie
             resolvedApiBaseUrl = resolvedApiBaseUrl || apiBaseUrl
             break
           }
         }
-        if (!resolvedTokens.accessToken) return
+        if (!resolvedTokens.accessToken && newApiAuth && !hasUnsupportedNewApiRefresh && Date.now() - lastNewApiPageRecoveryAttemptAt >= 2_000) {
+          const pageRecoveryApiBaseUrl = apiBaseUrls.find((apiBaseUrl) => {
+            const refreshUrl = resolveWebAuthCookieUrl(apiBaseUrl, true, newApiAuthRefreshPath)
+            return isSameOrigin(loginPageUrl, refreshUrl)
+          })
+          if (pageRecoveryApiBaseUrl) {
+            lastNewApiPageRecoveryAttemptAt = Date.now()
+            const restored = await tryRestoreNewApiSessionFromPage({
+              loginWindow,
+              apiBaseUrl: pageRecoveryApiBaseUrl,
+              authRefreshPath: newApiAuthRefreshPath
+            })
+            if (restored?.accessToken) {
+              resolvedTokens.accessToken = restored.accessToken
+              const cookieUrl = resolveWebAuthCookieUrl(pageRecoveryApiBaseUrl, true, newApiAuthRefreshPath)
+              const currentCookies = await authorizationSession.cookies.get({ url: cookieUrl }).catch(() => [])
+              restoredSessionCookie = buildBoundedCookieHeader(currentCookies) || undefined
+              resolvedApiBaseUrl = pageRecoveryApiBaseUrl
+            }
+          }
+        }
+        if (!resolvedTokens.accessToken && newApiAuth && Date.now() - lastNewApiCookieSessionAttemptAt >= 2_000) {
+          const cookieSessionApiBaseUrl = apiBaseUrls.find((apiBaseUrl) => {
+            const profileUrl = resolveNewApiProfileUrl(apiBaseUrl, input.apiPaths?.profile)
+            return profileUrl !== undefined && isSameOrigin(loginPageUrl, profileUrl)
+          })
+          if (cookieSessionApiBaseUrl) {
+            lastNewApiCookieSessionAttemptAt = Date.now()
+            const cookieSessionPage = isNewApiCookieSessionPage({ loginWindow, apiBaseUrl: cookieSessionApiBaseUrl, profilePath: input.apiPaths?.profile })
+            const verification = cookieSessionPage
+              ? await tryVerifyNewApiCookieSession({
+                  loginWindow,
+                  apiBaseUrl: cookieSessionApiBaseUrl,
+                  profilePath: input.apiPaths?.profile
+                })
+              : { verified: false }
+            const profileUrl = resolveNewApiProfileUrl(cookieSessionApiBaseUrl, input.apiPaths?.profile)
+            if (verification.verified && profileUrl) {
+              const currentCookies = await authorizationSession.cookies.get({ url: profileUrl }).catch(() => [])
+              const boundedCookieHeader = buildBoundedCookieHeader(currentCookies)
+              if (boundedCookieHeader) {
+                verifiedCookieSession = true
+                restoredSessionCookie = boundedCookieHeader
+                newApiSelectedUserId = verification.selectedUserId
+                resolvedApiBaseUrl = cookieSessionApiBaseUrl
+                if (!loginWindow.isDestroyed()) loginWindow.setTitle(`登录 ${name} — 正在保存会话`)
+              } else {
+                newApiSessionCapturePending = true
+                if (!loginWindow.isDestroyed()) loginWindow.setTitle(`登录 ${name} — 网页会话已验证，但没有可安全保存的 Cookie`)
+              }
+            } else if (cookieSessionPage) {
+              newApiSessionCapturePending = true
+              if (!loginWindow.isDestroyed()) loginWindow.setTitle(`登录 ${name} — 网页会话验证失败`)
+            }
+          }
+        }
+        if (!resolvedTokens.accessToken && !verifiedCookieSession) return
         const saveApiBaseUrl = resolvedApiBaseUrl
         const cookieSource = cookieSets.find((item) => item.apiBaseUrl === (saveApiBaseUrl || normalizedBaseUrl))
           ?? cookieSets.find((item) => item.cookies.length > 0)
         const sessionCookie = restoredSessionCookie
-          ?? cookieSource?.cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+          ?? buildBoundedCookieHeader(cookieSource?.cookies ?? [])
         const userAgent = loginWindow.webContents.getUserAgent()
         const stations = await saveStation({
           id: input.id,
@@ -710,11 +985,15 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
           accessToken: resolvedTokens.accessToken,
           refreshToken: resolvedTokens.refreshToken,
           sessionCookie,
+          sessionAuthMode: newApiAuth ? (verifiedCookieSession ? 'cookie-session' : 'refresh-token') : undefined,
+          newApiSelectedUserId,
           userAgent
         })
         await finish(() => resolve(publicStations(stations)))
       } catch (error) {
         await finish(() => reject(error instanceof Error ? error : new Error('网页登录授权失败')))
+      } finally {
+        captureInProgress = false
       }
     }
     const tryFallbackAuthRoute = async (): Promise<boolean> => {
@@ -766,8 +1045,9 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
         if (!poller) poller = setInterval(() => {
           if (!savedLoginFilled) fillSavedLogin()
           else if (options.autoSubmitSavedLogin && !manualInterventionRequired) {
-            void hasWebAuthSecurityChallenge(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl).then((hasChallenge) => {
-              if (hasChallenge) requestManualIntervention()
+            void inspectAutoLoginIntervention(loginWindow, savedCredentialsBaseUrl ?? normalizedBaseUrl).then((intervention) => {
+              if (intervention === 'manual-required') requestManualIntervention()
+              if (intervention === 'credentials-invalid') requestCredentialsUpdate()
             })
           }
           void capture()
@@ -777,12 +1057,14 @@ async function beginWebAuth(input: WebAuthInput, options: WebAuthFlowOptions = {
       })
     })
     loginWindow.webContents.on('did-navigate-in-page', fillSavedLogin)
-    loginWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-      if (errorCode === -3) return
+    loginWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, _validatedUrl, isMainFrame) => {
+      // A captcha iframe, blocked analytics script, or any other sub-frame
+      // resource failing to load must not abort the whole login flow.
+      if (!isMainFrame || errorCode === -3) return
       void finish(() => reject(new Error(`网页登录页面加载失败 (${errorCode}): ${errorDescription}`)))
     })
     loginWindow.on('closed', () => {
-      void finish(() => reject(new Error('AUTH_CANCELLED')))
+      void finish(() => reject(new Error(newApiSessionCapturePending ? 'AUTH_NEWAPI_SESSION_NOT_CAPTURED' : 'AUTH_CANCELLED')))
     })
     if (options.autoSubmitSavedLogin) {
       automaticAuthTimeout = setTimeout(() => {
@@ -847,72 +1129,20 @@ function validateProfitIntervalQuery(input: unknown): ProfitIntervalQuery {
   }
 }
 
-function shanghaiDate(value: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(value))
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]))
-  return `${values.year}-${values.month}-${values.day}`
-}
-
-function archiveDates(query: ProfitIntervalQuery): string[] {
-  const dates: string[] = []
-  const endDate = shanghaiDate(query.endAt)
-  let cursor = new Date(`${shanghaiDate(query.startAt)}T00:00:00+08:00`)
-  while (shanghaiDate(cursor.toISOString()) !== endDate) {
-    dates.push(shanghaiDate(cursor.toISOString()))
-    cursor.setUTCDate(cursor.getUTCDate() + 1)
-  }
-  return dates
-}
-
-function dayArchiveQuery(query: ProfitIntervalQuery, date: string): ProfitIntervalQuery {
-  const start = new Date(`${date}T00:00:00+08:00`)
-  const end = new Date(start)
-  end.setUTCDate(end.getUTCDate() + 1)
-  return {
-    ...query,
-    startAt: start.toISOString(),
-    endAt: end.toISOString(),
-    accountId: undefined,
-    sellingGroupId: undefined
-  }
-}
-
-function archiveCoverageForQuery(ledger: TimeCostLedger, query: ProfitIntervalQuery): UsageLedgerCoverage {
-  const dates = archiveDates(query)
-  const coverageByDate = new Map(ledger.profitUsageCoverage
-    .filter((item) => item.accountStationId === query.stationId)
-    .map((item) => [item.date, item]))
-  const covered = dates.map((date) => coverageByDate.get(date)).filter((item): item is ProfitArchiveDayCoverage => Boolean(item))
-  const missing = dates.length - covered.length
-  const pageLimited = covered.filter((item) => item.state === 'page-limit')
-  const interrupted = covered.filter((item) => item.state === 'incomplete' || item.state === 'unavailable')
-  const state: UsageLedgerCoverage['state'] = missing > 0 || interrupted.length > 0
-    ? 'incomplete'
-    : pageLimited.length > 0
-      ? 'page-limit'
-      : covered.length > 0 ? 'complete' : 'unavailable'
-  const details = [
-    `完整 ${covered.filter((item) => item.state === 'complete').length} 天`,
-    pageLimited.length > 0 ? `部分 ${pageLimited.length} 天` : undefined,
-    interrupted.length > 0 ? `失败 ${interrupted.length} 天` : undefined,
-    missing > 0 ? `未归档 ${missing} 天` : undefined
-  ].filter(Boolean).join(' · ')
-  return {
-    accountStationId: query.stationId,
-    fetchedAt: covered.map((item) => item.fetchedAt).sort((left, right) => right.localeCompare(left))[0] ?? new Date().toISOString(),
-    state,
-    pagesFetched: covered.reduce((total, item) => total + item.pagesFetched, 0),
-    recordsSeen: covered.reduce((total, item) => total + item.recordsSeen, 0),
-    acceptedEntries: covered.reduce((total, item) => total + item.acceptedEntries, 0),
-    detail: details || '尚未归档'
-  }
-}
-
 function registerIpc(): void {
   ipcMain.handle('auth:login', async (_event, input: WebAuthInput) => {
-    const stations = await beginWebAuth(input)
-    await startPolling()
-    return stations
+    await interruptAutoReauthForManualLogin(input.id)
+    try {
+      await beginWebAuth(input)
+      const reauthorizedStation = input.id ? (await listStations()).find((station) => station.id === input.id) : undefined
+      if (reauthorizedStation?.autoReauthEnabled) {
+        await setStationAutoReauthStatus(reauthorizedStation.id, { state: 'success', reason: 'session-expired', attempts: 0 })
+      }
+      await startPolling()
+      return publicStations(await listStations())
+    } finally {
+      drainAutoReauthQueue()
+    }
   })
   ipcMain.handle('stations:list', async () => publicStations(await listStations()))
   ipcMain.handle('stations:save', async (_event, input: StationInput) => {
@@ -920,21 +1150,29 @@ function registerIpc(): void {
     await startPolling()
     return publicStations(stations)
   })
-  ipcMain.handle('stations:diagnose', async (_event, input: Pick<StationInput, 'id' | 'name' | 'baseUrl' | 'apiBaseUrl' | 'adapterType' | 'accessToken' | 'refreshToken' | 'adminToken' | 'adminCredentialType' | 'apiPaths'>): Promise<StationDiagnostics> => {
+  ipcMain.handle('stations:diagnose', async (_event, input: Pick<StationInput, 'id' | 'name' | 'baseUrl' | 'apiBaseUrl' | 'adapterType' | 'accessToken' | 'refreshToken' | 'adminToken' | 'adminCredentialType' | 'apiPaths'> & { useSavedCredentials?: boolean }): Promise<StationDiagnostics> => {
     const stored = input.id ? (await listStations()).find((station) => station.id === input.id) : undefined
-    const storedTokens = stored ? stationTokens(stored) : undefined
+    const useSavedCredentials = input.useSavedCredentials === true
+    if (useSavedCredentials && stored && !isSameOrigin(input.baseUrl, stored.baseUrl)) {
+      throw new Error('站点地址已变更；保存的登录会话只能用于原 HTTPS 同源站点。请先保存新地址后再做详细诊断。')
+    }
+    if (useSavedCredentials && stored && input.apiBaseUrl?.trim() && !isTrustedStationReadApiBase(stored.baseUrl, input.apiBaseUrl)) {
+      throw new Error('接口根地址必须与已保存站点同源，不能使用保存的登录会话跨站诊断。')
+    }
+    const storedTokens = stored && useSavedCredentials ? stationTokens(stored) : undefined
     return diagnoseStation({
-      ...stored,
+      ...(useSavedCredentials ? stored : undefined),
       ...input,
-      accessToken: input.accessToken?.trim() || storedTokens?.accessToken,
-      refreshToken: input.refreshToken?.trim() || storedTokens?.refreshToken,
-      adminToken: input.adminToken?.trim() || storedTokens?.adminToken,
+      accessToken: useSavedCredentials ? input.accessToken?.trim() || storedTokens?.accessToken : undefined,
+      refreshToken: useSavedCredentials ? input.refreshToken?.trim() || storedTokens?.refreshToken : undefined,
+      adminToken: useSavedCredentials ? input.adminToken?.trim() || storedTokens?.adminToken : undefined,
       sessionCookie: storedTokens?.sessionCookie,
       userAgent: storedTokens?.userAgent,
+      useSavedCredentials,
       fetchImpl: electronFetch
     })
   })
-  ipcMain.handle('stations:preview-mapping', async (_event, input: Pick<StationInput, 'id' | 'apiPaths' | 'readMapping'>): Promise<StationMappingPreview> => {
+  ipcMain.handle('stations:preview-mapping', async (_event, input: Pick<StationInput, 'id' | 'apiBaseUrl' | 'apiPaths' | 'readMapping'>): Promise<StationMappingPreview> => {
     if (!input || typeof input !== 'object' || Array.isArray(input) || typeof input.id !== 'string' || !input.id.trim()) {
       throw new Error('读取映射检测参数无效')
     }
@@ -942,8 +1180,13 @@ function registerIpc(): void {
     if (!stored) throw new Error('请先保存站点基础信息，再检测读取映射')
     const storedTokens = stationTokens(stored)
     const hasReadMappingInput = Object.prototype.hasOwnProperty.call(input, 'readMapping')
+    const hasApiBaseUrlInput = Object.prototype.hasOwnProperty.call(input, 'apiBaseUrl')
+    const apiBaseUrl = hasApiBaseUrlInput
+      ? resolveSameOriginHttpsApiBaseUrl(stored.baseUrl, input.apiBaseUrl)
+      : stored.apiBaseUrl
     const station = {
       ...stored,
+      apiBaseUrl,
       apiPaths: normalizeStationApiPaths(input.apiPaths ?? stored.apiPaths),
       readMapping: hasReadMappingInput ? normalizeStationReadMapping(input.readMapping) : stored.readMapping,
       accessToken: storedTokens.accessToken,
@@ -954,7 +1197,9 @@ function registerIpc(): void {
       fetchImpl: electronFetch
     }
     if (!usesSub2ApiContract(station)) throw new Error('NewAPI 当前使用内置只读适配器，不开放 Sub2API 字段映射')
-    if (Object.keys(station.readMapping?.capabilities ?? {}).length > 0 && new URL(station.apiBaseUrl ?? station.baseUrl).protocol !== 'https:') {
+    if (station.readMapping?.template === 'custom') {
+      resolveSameOriginHttpsApiBaseUrl(stored.baseUrl, station.apiBaseUrl)
+    } else if (Object.keys(station.readMapping?.capabilities ?? {}).length > 0 && new URL(station.apiBaseUrl ?? station.baseUrl).protocol !== 'https:') {
       throw new Error('自定义读取映射仅允许 HTTPS 站点')
     }
     for (const path of Object.values(station.apiPaths)) {
@@ -964,6 +1209,7 @@ function registerIpc(): void {
   })
   ipcMain.handle('stations:remove', async (_event, id: string) => {
     const stations = await removeStation(id)
+    stationRefreshEpochs.invalidate(id)
     snapshots.delete(id)
     sourceKeyFingerprints.delete(id)
     accountCredentialFingerprints.delete(id)
@@ -972,10 +1218,15 @@ function registerIpc(): void {
   })
   ipcMain.handle('stations:refresh', async (_event, id?: string) => {
     const result = id
-      ? [await refreshStation(id)]
-      : await Promise.all((await listStations()).map((station) => refreshStation(station.id)))
+      ? [await refreshStation(id, true, true)]
+      : await Promise.all((await listStations()).map((station) => refreshStation(station.id, true, true)))
     await schedulePollingTimers()
     return result
+  })
+  ipcMain.handle('stations:keepalive-check', async (_event, id: string) => {
+    if (typeof id !== 'string' || !id.trim()) throw new Error('站点标识无效')
+    await refreshStation(id, true, true)
+    return publicStations(await listStations())
   })
   ipcMain.handle('stations:snapshots', () => [...snapshots.values()])
   ipcMain.handle('preferences:get', () => getUiPreferences())
@@ -1029,7 +1280,10 @@ function registerIpc(): void {
   ipcMain.handle('profit:archive', async (_event, input: unknown, options: unknown) => {
     const query = validateProfitIntervalQuery(input)
     const dates = archiveDates(query)
-    if (dates.length > 7) throw new Error('单次最多归档 7 天，请缩短日期范围后继续')
+    // A maximal 7-day hourly window can straddle a day boundary on both ends
+    // and so touch up to 8 calendar days; the cap must accommodate the
+    // largest range validateProfitIntervalQuery still allows.
+    if (dates.length > 8) throw new Error('单次最多归档 8 天，请缩短日期范围后继续')
     const stations = await listStations()
     const station = stations.find((item) => item.id === query.stationId)
     const tokens = station ? stationTokens(station) : undefined
@@ -1073,7 +1327,10 @@ function registerIpc(): void {
     if (nextGroupIds.some((id) => !validGroupIds.has(id))) throw new Error('目标分组不存在或已停用')
     await client.updateAccountGroups({ ...mutation, nextGroupIds })
     try {
-      return await refreshStation(mutation.stationId)
+      // The write above must be reflected in this refresh; sharing a
+      // same-key in-flight fetch that started before the mutation would
+      // return stale group data instead of the value just written.
+      return await refreshStation(mutation.stationId, true, true)
     } catch (error) {
       const fallback = createPostMutationRefreshFailureSnapshot(station.id, station.name, error)
       snapshots.set(station.id, fallback)
@@ -1090,8 +1347,11 @@ if (!hasSingleInstanceLock) {
     revealMainWindow()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     registerIpc()
+    applyDefaultSessionPermissionGuards()
+    const stations = await recoverInterruptedAutoReauthStatuses()
+    sendStationsUpdated(stations)
     createWindow()
     createTray()
     // Polling belongs to the application lifecycle, not window events: a
@@ -1104,6 +1364,8 @@ if (!hasSingleInstanceLock) {
 
   app.on('before-quit', () => {
     clearPollers()
+    for (const timer of autoReauthRetryTimers.values()) clearTimeout(timer)
+    autoReauthRetryTimers.clear()
     void closeAuthWindow()
     bubbleWindow?.destroy()
     tray?.destroy()

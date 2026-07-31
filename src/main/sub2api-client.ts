@@ -14,6 +14,7 @@ import {
   normalizeRecordCollection,
   normalizeSourceKeys,
   pickProfileBalance,
+  resolveStationReadApiBases,
   resolveStationApiPath,
   resolveStationProfilePath,
   resolveStationApiRequestUrl,
@@ -299,6 +300,7 @@ export function resolveWebAuthTokens(
 export class Sub2ApiClient {
   private latestSourceKeyCredentials: Map<string, string> | undefined
   private latestAccountCredentials: Map<number, string> | undefined
+  private activeReadApiBase: string | undefined
 
   constructor(private readonly station: ClientStation) {}
 
@@ -311,7 +313,12 @@ export class Sub2ApiClient {
   }
 
   private apiBase(): string {
-    return this.station.apiBaseUrl ?? this.station.baseUrl
+    return this.activeReadApiBase ?? this.station.apiBaseUrl ?? this.station.baseUrl
+  }
+
+  private readApiBases(): string[] {
+    if (this.activeReadApiBase) return [this.activeReadApiBase]
+    return resolveStationReadApiBases(this.station.baseUrl, this.station.apiBaseUrl)
   }
 
   private apiPath(key: keyof typeof defaultStationApiPaths): string {
@@ -319,8 +326,8 @@ export class Sub2ApiClient {
     return resolveStationApiPath(defaultStationApiPaths[key], this.station.apiPaths?.[key])
   }
 
-  private requestUrl(path: string): string {
-    return resolveStationApiRequestUrl(this.apiBase(), path)
+  private requestUrl(path: string, apiBaseUrl = this.apiBase()): string {
+    return resolveStationApiRequestUrl(apiBaseUrl, path)
   }
 
   private adminUsagePagePath(
@@ -411,7 +418,7 @@ export class Sub2ApiClient {
     return `接口返回不是 JSON 对象（${this.responseContext(path, response, parsed)}；${this.responseBodyHint(parsed)}）`
   }
 
-  private authHeaders(admin = false): Record<string, string> {
+  private authHeaders(admin = false, apiBaseUrl = this.apiBase()): Record<string, string> {
     const dedicatedAdminToken = this.station.adminToken?.trim()
     const token = admin
       ? dedicatedAdminToken || (this.station.adminCredentialType === 'api-key' ? undefined : this.station.accessToken)
@@ -419,11 +426,11 @@ export class Sub2ApiClient {
     if (!token) throw new Sub2ApiError(admin ? '未配置管理员凭据' : '未配置访问令牌', 'UNAUTHORIZED', 401)
     const headers: Record<string, string> = { 'x-user-ui-request': '1' }
     try {
-      headers.Referer = `${new URL(this.apiBase()).origin}/`
+      headers.Referer = `${new URL(apiBaseUrl).origin}/`
     } catch {
       // The station base URL is validated before a client is constructed.
     }
-    if (isSharkStation(this.apiBase())) headers.Referer = 'https://shayulajiao.xyz/keys'
+    if (isSharkStation(apiBaseUrl)) headers.Referer = 'https://shayulajiao.xyz/keys'
     if (this.station.sessionCookie) headers.Cookie = this.station.sessionCookie
     if (this.station.userAgent) headers['User-Agent'] = this.station.userAgent
     if (admin && dedicatedAdminToken && this.station.adminCredentialType === 'api-key') return { ...headers, 'x-api-key': token }
@@ -436,25 +443,39 @@ export class Sub2ApiClient {
     const onAbort = () => controller.abort()
     options.signal?.addEventListener('abort', onAbort, { once: true })
     try {
-      const response = await this.fetch(this.requestUrl(path), {
-        method: 'GET',
-        headers: { ...this.authHeaders(options.admin), Accept: 'application/json' },
-        redirect: 'manual',
-        signal: controller.signal
-      })
-      const parsed = await this.readApiResponse(response)
-      const payload = parsed.payload as Sub2ApiEnvelope<T> | null
-      if (!response.ok) {
-        const message = payload && typeof payload === 'object' && !Array.isArray(payload) && typeof payload.message === 'string'
-          ? payload.message
-          : this.responseFailureMessage(path, response, parsed)
-        const code = response.status === 401 ? 'UNAUTHORIZED' : response.status === 403 ? 'FORBIDDEN' : 'API_ERROR'
-        throw new Sub2ApiError(message, code, response.status)
+      const apiBases = options.admin ? [this.apiBase()] : this.readApiBases()
+      let lastError: Sub2ApiError | undefined
+      for (const apiBaseUrl of apiBases) {
+        try {
+          const response = await this.fetch(this.requestUrl(path, apiBaseUrl), {
+            method: 'GET',
+            headers: { ...this.authHeaders(options.admin, apiBaseUrl), Accept: 'application/json' },
+            redirect: 'manual',
+            signal: controller.signal
+          })
+          const parsed = await this.readApiResponse(response)
+          const payload = parsed.payload as Sub2ApiEnvelope<T> | null
+          if (!response.ok) {
+            const message = payload && typeof payload === 'object' && !Array.isArray(payload) && typeof payload.message === 'string'
+              ? payload.message
+              : this.responseFailureMessage(path, response, parsed)
+            const code = response.status === 401 ? 'UNAUTHORIZED' : response.status === 403 ? 'FORBIDDEN' : 'API_ERROR'
+            throw new Sub2ApiError(message, code, response.status)
+          }
+          if (!payload || typeof payload !== 'object') {
+            throw new Sub2ApiError(this.invalidResponseMessage(path, response, parsed), 'INVALID_RESPONSE', response.status)
+          }
+          this.activeReadApiBase = apiBaseUrl
+          return unwrapApiResponse<T>(payload)
+        } catch (error) {
+          if (error instanceof Sub2ApiError && error.status === 404 && apiBaseUrl !== apiBases[apiBases.length - 1]) {
+            lastError = error
+            continue
+          }
+          throw error
+        }
       }
-      if (!payload || typeof payload !== 'object') {
-        throw new Sub2ApiError(this.invalidResponseMessage(path, response, parsed), 'INVALID_RESPONSE', response.status)
-      }
-      return unwrapApiResponse<T>(payload)
+      throw lastError ?? new Sub2ApiError('未找到可用的兼容 API 根', 'API_ERROR')
     } catch (error) {
       if (error instanceof Sub2ApiError) throw error
       const classified = classifySub2ApiError(error)
@@ -559,9 +580,14 @@ export class Sub2ApiClient {
     const started = Date.now()
     try {
       let balance = previous?.balance
+      let hasReadableBalance = typeof balance === 'number'
       try {
         const profile = await this.request<unknown>(this.apiPath('profile'), { signal })
-        balance = pickProfileBalance(mappedProfile(profile, this.station.readMapping)) ?? balance
+        const profileBalance = pickProfileBalance(mappedProfile(profile, this.station.readMapping))
+        if (typeof profileBalance === 'number') {
+          balance = profileBalance
+          hasReadableBalance = true
+        }
       } catch (error) {
         if (isAuthorizationError(error)) throw error
         // Some forks don't expose the standard profile endpoint or return HTML there.
@@ -570,12 +596,25 @@ export class Sub2ApiClient {
       if (balancePath) {
         try {
           const balancePayload = await this.request<unknown>(resolveStationApiPath('', balancePath), { signal })
-          balance = pickProfileBalance(mappedProfile(balancePayload, this.station.readMapping)) ?? balance
+          const dedicatedBalance = pickProfileBalance(mappedProfile(balancePayload, this.station.readMapping))
+          if (typeof dedicatedBalance === 'number') {
+            balance = dedicatedBalance
+            hasReadableBalance = true
+          }
         } catch {
           // Dedicated balance endpoints are optional for forked stations.
         }
       }
-      const groupsPayload = await this.request<unknown>(this.apiPath('groups'), { signal })
+      let groupsPayload: unknown
+      let groupReadMessage: string | undefined
+      try {
+        groupsPayload = await this.request<unknown>(this.apiPath('groups'), { signal })
+      } catch (error) {
+        if (isAuthorizationError(error)) throw error
+        if (!hasReadableBalance) throw error
+        const classified = classifySub2ApiError(error)
+        groupReadMessage = `余额已读取，但分组暂不可读取：${classified.message}`
+      }
       let ratesPayload: Record<string, number> = {}
       try {
         ratesPayload = mappedRates(await this.request<unknown>(this.apiPath('rates'), { signal }), this.station.readMapping)
@@ -610,19 +649,21 @@ export class Sub2ApiClient {
       } else {
         sourceKeys = undefined
       }
-      const groups = this.station.readMapping?.capabilities.groups
-        ? mappedRecords(groupsPayload, 'groups', this.station.readMapping).map((record) => ({
-            ...record,
-            id: pickFirstFiniteNumber(record, ['id']) ?? record.id,
-            name: record.name,
-            platform: record.platform,
-            rate_multiplier: pickFirstFiniteNumber(record, ['rateMultiplier']) ?? record.rateMultiplier
-          })) as AvailableGroupResponse[]
-        : Array.isArray(groupsPayload) ? groupsPayload as AvailableGroupResponse[] : (groupsPayload as { groups?: AvailableGroupResponse[] }).groups ?? []
+      const groups = groupsPayload === undefined
+        ? []
+        : this.station.readMapping?.capabilities.groups
+          ? mappedRecords(groupsPayload, 'groups', this.station.readMapping).map((record) => ({
+              ...record,
+              id: pickFirstFiniteNumber(record, ['id']) ?? record.id,
+              name: record.name,
+              platform: record.platform,
+              rate_multiplier: pickFirstFiniteNumber(record, ['rateMultiplier']) ?? record.rateMultiplier
+            })) as AvailableGroupResponse[]
+          : Array.isArray(groupsPayload) ? groupsPayload as AvailableGroupResponse[] : (groupsPayload as { groups?: AvailableGroupResponse[] }).groups ?? []
 
       let channels: AvailableChannelResponse[] = []
       let mappedChannelHints: Map<number, PricingModelSnapshot[]> | undefined
-      let priceCapability: StationSnapshot['priceCapability'] = 'unknown'
+      let priceCapability: StationSnapshot['priceCapability'] = groupReadMessage ? 'disabled' : 'unknown'
       try {
         const channelPayload = await this.request<unknown>(this.apiPath('channels'), { signal })
         if (this.station.readMapping?.capabilities.channels) {
@@ -634,7 +675,7 @@ export class Sub2ApiClient {
         }
       } catch (error) {
         const apiError = error instanceof Sub2ApiError ? error : undefined
-        priceCapability = apiError?.status === 403 || apiError?.status === 404 ? 'disabled' : 'unknown'
+        if (!groupReadMessage) priceCapability = apiError?.status === 403 || apiError?.status === 404 ? 'disabled' : 'unknown'
       }
 
       const pricing = mappedChannelHints ?? buildPricingHints(channels)
@@ -654,6 +695,7 @@ export class Sub2ApiClient {
         lastSuccessAt: now,
         responseTimeMs: Date.now() - started,
         priceCapability,
+        errorMessage: groupReadMessage,
         adminConsole: previous?.adminConsole
       }
     } catch (error) {

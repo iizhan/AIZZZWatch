@@ -1,4 +1,4 @@
-import { applyLcodexApiPathDefaults, defaultNewApiPaths, defaultStationApiPaths, isLcodexLegacyPublicApiUrl, normalizeApiBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiPath, resolveStationApiRequestUrl, resolveStationProfilePath } from '../shared/sub2api'
+import { applyKnownSourceStationApiPathDefaults, applyLcodexApiPathDefaults, defaultNewApiPaths, defaultStationApiPaths, isLcodexLegacyPublicApiUrl, normalizeApiBaseUrl, normalizeStationApiPaths, normalizeStationBaseUrl, resolveLcodexStationCompatibility, resolveStationReadApiBases, resolveStationApiPath, resolveStationApiRequestUrl, resolveStationProfilePath } from '../shared/sub2api'
 import type { FetchLike } from './sub2api-client'
 import type { ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationApiProbe, StationApiProbeResult, StationDiagnostics } from '../shared/types'
 
@@ -14,13 +14,15 @@ export interface StationDiagnosticsInput {
   adminToken?: string
   adminCredentialType?: 'jwt' | 'api-key'
   apiPaths?: StationApiPaths
+  /** Explicit detailed diagnostics may use an already saved session. Auto-detection never does. */
+  useSavedCredentials?: boolean
   fetchImpl?: FetchLike
 }
 
-function buildHeaders(input: StationDiagnosticsInput, admin = false): Record<string, string> {
+function buildHeaders(input: StationDiagnosticsInput, apiBaseUrl: string, admin = false): Record<string, string> {
   const headers: Record<string, string> = { Accept: 'application/json', 'x-user-ui-request': '1' }
   try {
-    headers.Referer = `${new URL(apiBaseUrl(input)).origin}/`
+    headers.Referer = `${new URL(apiBaseUrl).origin}/`
   } catch {
     // URL validation occurs in the normal diagnosis path.
   }
@@ -38,7 +40,7 @@ function buildHeaders(input: StationDiagnosticsInput, admin = false): Record<str
 }
 
 function newApiBaseUrl(input: StationDiagnosticsInput): string {
-  const candidate = (input.apiBaseUrl ?? input.baseUrl).trim().replace(/\/+$/, '')
+  const candidate = (input.apiBaseUrl?.trim() || normalizeStationBaseUrl(input.baseUrl, 'newapi')).replace(/\/+$/, '')
   const url = new URL(candidate)
   url.pathname = url.pathname.replace(/\/api\/v1$/i, '') || '/'
   return url.toString().replace(/\/+$/, '')
@@ -84,27 +86,39 @@ function probeSpecs(input: StationDiagnosticsInput, paths: StationApiPaths, adap
   return sub2ApiProbeSpecs(input, paths).map((spec) => ({ ...spec, adapter: 'sub2api' as const }))
 }
 
-function bodyHint(payload: string): string {
-  const trimmed = payload.trim()
-  if (!trimmed) return ''
+function parseJsonObject(payload: string): Record<string, unknown> | undefined {
   try {
-    const parsed = JSON.parse(trimmed) as unknown
-    if (parsed && typeof parsed === 'object') {
-      const record = parsed as Record<string, unknown>
-      if (typeof record.message === 'string' && record.message.trim()) return record.message.trim()
-      if (typeof record.error === 'string' && record.error.trim()) return record.error.trim()
-      if (typeof record.code === 'string' && record.code.trim()) return record.code.trim()
-    }
+    const parsed = JSON.parse(payload) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined
   } catch {
-    // Ignore parse errors and fall back to raw text.
+    return undefined
   }
-  return trimmed.slice(0, 120)
 }
 
-function classifyHint(status: number, payloadHint: string): { ok: boolean; hint: string } {
-  if (status >= 200 && status < 300) return { ok: true, hint: payloadHint || '接口可用' }
-  if (status === 401) return { ok: true, hint: payloadHint || '需要授权' }
-  if (status === 403) return { ok: true, hint: payloadHint || '权限不足' }
+function bodyHint(_payload: string, parsed?: Record<string, unknown>): string {
+  // Diagnostics cross the main/renderer boundary. Never use a raw response
+  // fallback here: a successful authenticated profile can contain an email,
+  // balance, or other private fields even when it has no message property.
+  if (!parsed) return ''
+  for (const field of ['message', 'error', 'code'] as const) {
+    const value = parsed[field]
+    if (typeof value !== 'string') continue
+    const hint = value.trim()
+    if (!hint || hint.length > 120) continue
+    // A provider error may echo an Authorization/Cookie value. Keep only a
+    // short human-readable message, never a value that resembles a secret or
+    // a serialized response object.
+    if (/bearer\s+|authorization|cookie\s*=|eyJ[a-z0-9_-]+\.|sk-[a-z0-9_-]{16,}|[{}\[\]<>]/i.test(hint)) continue
+    return hint
+  }
+  return ''
+}
+
+function classifyHint(status: number, payloadHint: string, isJsonObject: boolean): { ok: boolean; hint: string } {
+  if (status >= 200 && status < 300 && isJsonObject) return { ok: true, hint: payloadHint || '接口可用' }
+  if ((status === 401 || status === 403) && isJsonObject) return { ok: true, hint: payloadHint || (status === 401 ? '需要授权' : '权限不足') }
+  if (status >= 200 && status < 300 && !isJsonObject) return { ok: false, hint: '接口返回非 JSON 对象（可能是登录页、风控页或反代页面）' }
+  if ((status === 401 || status === 403) && !isJsonObject) return { ok: false, hint: '授权响应不是 JSON 对象（可能是登录页、风控页或反代页面）' }
   if (status === 404) return { ok: false, hint: payloadHint || '未找到路径' }
   return { ok: false, hint: payloadHint || `HTTP ${status}` }
 }
@@ -124,23 +138,36 @@ async function probeOne(input: StationDiagnosticsInput, spec: StationApiProbe & 
   const timeout = setTimeout(() => controller.abort(), 5000)
   try {
     const fetchImpl = input.fetchImpl ?? fetch
-    const response = await fetchImpl(resolveStationApiRequestUrl(apiBaseUrl(input, spec.adapter), spec.path), {
-      method: spec.method,
-      headers: buildHeaders(input, Boolean(spec.admin)),
-      signal: controller.signal,
-      redirect: 'manual',
-      body: spec.method === 'POST' ? JSON.stringify({ refresh_token: input.refreshToken ?? 'probe' }) : undefined
-    })
-    const payloadHint = bodyHint(await response.text().catch(() => ''))
-    const classified = classifyHint(response.status, payloadHint)
-    return {
-      name: spec.name,
-      path: spec.path,
-      method: spec.method,
-      ok: classified.ok,
-      status: response.status,
-      hint: classified.hint
+    const diagnosticInput = input.useSavedCredentials ? input : { ...input, accessToken: undefined, refreshToken: undefined, sessionCookie: undefined, userAgent: undefined, adminToken: undefined }
+    const apiBases = spec.adapter === 'newapi'
+      ? [apiBaseUrl(diagnosticInput, spec.adapter)]
+      : resolveStationReadApiBases(diagnosticInput.baseUrl, apiBaseUrl(diagnosticInput, spec.adapter))
+    let lastResult: StationApiProbeResult | undefined
+    for (let index = 0; index < apiBases.length; index += 1) {
+      const candidateApiBaseUrl = apiBases[index]
+      const response = await fetchImpl(resolveStationApiRequestUrl(candidateApiBaseUrl, spec.path), {
+        method: spec.method,
+        headers: buildHeaders(diagnosticInput, candidateApiBaseUrl, Boolean(spec.admin)),
+        signal: controller.signal,
+        redirect: 'manual',
+        body: spec.method === 'POST' ? JSON.stringify({ refresh_token: input.useSavedCredentials ? input.refreshToken ?? 'probe' : 'probe' }) : undefined
+      })
+      const payload = await response.text().catch(() => '')
+      const parsed = parseJsonObject(payload)
+      const payloadHint = bodyHint(payload, parsed)
+      const classified = classifyHint(response.status, payloadHint, Boolean(parsed))
+      const result: StationApiProbeResult = {
+        name: spec.name,
+        path: spec.path,
+        method: spec.method,
+        ok: classified.ok,
+        status: response.status,
+        hint: classified.hint
+      }
+      if (response.status !== 404 || index === apiBases.length - 1) return result
+      lastResult = result
     }
+    return lastResult ?? { name: spec.name, path: spec.path, method: spec.method, ok: false, hint: '未找到可用的兼容 API 根' }
   } catch (error) {
     return {
       name: spec.name,
@@ -155,7 +182,7 @@ async function probeOne(input: StationDiagnosticsInput, spec: StationApiProbe & 
 }
 
 export async function diagnoseStation(input: StationDiagnosticsInput): Promise<StationDiagnostics> {
-  const apiPaths = applyLcodexApiPathDefaults(input.baseUrl, normalizeStationApiPaths(input.apiPaths))
+  const apiPaths = applyKnownSourceStationApiPathDefaults(input.baseUrl, applyLcodexApiPathDefaults(input.baseUrl, normalizeStationApiPaths(input.apiPaths)))
   const probes = await Promise.all(probeSpecs(input, apiPaths, input.adapterType).map((spec) => probeOne(input, spec)))
   const normalizedBaseUrl = normalizeApiBaseUrl(input.baseUrl)
   const customApiBaseUrl = input.apiBaseUrl?.trim().replace(/\/+$/, '')

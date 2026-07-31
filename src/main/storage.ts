@@ -1,11 +1,12 @@
 import { app, safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
+import type { FileHandle } from 'node:fs/promises'
 import { join } from 'node:path'
-import { applyLcodexApiPathDefaults, applyNewApiPathDefaults, defaultStationApiPaths, defaultSub2ApiKeyListPath, isLcodexLegacyPublicApiUrl, normalizeStationBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveStationApiRequestUrl, Sub2ApiError } from '../shared/sub2api'
+import { applyKnownSourceStationApiPathDefaults, applyLcodexApiPathDefaults, applyNewApiPathDefaults, defaultStationApiPaths, defaultSub2ApiKeyListPath, isLcodexLegacyPublicApiUrl, normalizeStationBaseUrl, normalizeStationApiPaths, resolveLcodexStationCompatibility, resolveSameOriginHttpsApiBaseUrl, resolveStationApiRequestUrl, Sub2ApiError } from '../shared/sub2api'
 import { normalizeStationReadMapping } from '../shared/station-read-mapping'
 import { appendAccountUpstreamMappingEvents, appendObservedGroupRateChanges, appendProfitUsageArchiveDay, appendTimeCostSnapshot, emptyTimeCostLedger } from '../shared/time-cost-ledger'
-import type { AccountCostKind, AccountCostProfile, AccountUpstreamMapping, AdminCredentialType, DataCenterSummary, DataFileSummary, GroupCapabilityTagId, GroupChangeEvent, GroupChangeKind, InternalUserProfile, ProfitArchiveDayCoverage, ProfitUsageRecord, ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationAutoReauthStatus, StationInput, StationPublic, StationReadMapping, StationRole, StationSnapshot, TimeCostLedger, UiPreferences, UsageLedgerCoverage, UsageLedgerEntry } from '../shared/types'
+import type { AccountCostKind, AccountCostProfile, AccountUpstreamMapping, AdminCredentialType, DataCenterSummary, DataFileSummary, GroupCapabilityTagId, GroupChangeEvent, GroupChangeKind, InternalUserProfile, NewApiSessionAuthMode, ProfitArchiveDayCoverage, ProfitUsageRecord, ResolvedStationAdapterType, StationAdapterType, StationApiPaths, StationAutoReauthReason, StationAutoReauthStatus, StationInput, StationPublic, StationReadMapping, StationRole, StationSnapshot, TimeCostLedger, UiPreferences, UsageLedgerCoverage, UsageLedgerEntry } from '../shared/types'
 
 export interface StoredStation {
   id: string
@@ -22,6 +23,8 @@ export interface StoredStation {
   accessToken?: string
   refreshToken?: string
   sessionCookie?: string
+  sessionAuthMode?: NewApiSessionAuthMode
+  newApiSelectedUserId?: string
   userAgent?: string
   adminToken?: string
   adminCredentialType?: AdminCredentialType
@@ -35,6 +38,22 @@ export interface StoredStation {
 const fileName = 'stations.json'
 const preferencesFileName = 'ui-preferences.json'
 let preferenceMutationQueue: Promise<void> = Promise.resolve()
+let stationMutationQueue: Promise<void> = Promise.resolve()
+
+/**
+ * A data file exists but could not be understood. It is never safe to treat
+ * that as "no data": the file is the only copy of the station credentials and
+ * the ledger, and continuing would let the next ordinary save overwrite it.
+ */
+export class StationDataFileCorruptError extends Error {
+  constructor(readonly path: string, readonly backupPath: string | undefined, options?: { cause?: unknown }) {
+    super(backupPath
+      ? `数据文件已损坏，原文件已备份为 ${backupPath}，本次未读取任何数据以免覆盖其中的凭据`
+      : `数据文件已损坏且无法备份（${path}），本次未读取任何数据以免覆盖其中的凭据`)
+    this.name = 'StationDataFileCorruptError'
+    if (options && 'cause' in options) this.cause = options.cause
+  }
+}
 
 function storagePath(): string {
   return join(app.getPath('userData'), fileName)
@@ -55,6 +74,72 @@ async function dataFileSummary(path: string): Promise<DataFileSummary> {
     }
   } catch {
     return { exists: false, path }
+  }
+}
+
+/**
+ * These files hold the only copy of every station credential and ledger
+ * record. A plain writeFile truncates the target before writing, so an
+ * interrupted write leaves a half-document that parses as nothing and reads
+ * back as "no stations". Stage the contents in a sibling temp file, flush it,
+ * then rename: the target only ever contains a complete document.
+ */
+async function writeDataFileAtomic(path: string, contents: string): Promise<void> {
+  await fs.mkdir(app.getPath('userData'), { recursive: true })
+  const temporaryPath = `${path}.${randomUUID()}.tmp`
+  let handle: FileHandle | undefined
+  try {
+    handle = await fs.open(temporaryPath, 'w', 0o600)
+    await handle.writeFile(contents, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    // The open mode is masked by umask; set it explicitly while the file is
+    // still unreachable under its final name.
+    await fs.chmod(temporaryPath, 0o600)
+    await fs.rename(temporaryPath, path)
+  } catch (error) {
+    await handle?.close().catch(() => undefined)
+    await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+function isFileMissingError(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
+}
+
+/**
+ * Move the unreadable file aside instead of deleting it, so the encrypted
+ * credentials inside stay recoverable by hand.
+ */
+async function backupCorruptDataFile(path: string): Promise<string> {
+  const backupPath = `${path}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`
+  await fs.rename(path, backupPath)
+  return backupPath
+}
+
+async function readDataFile<T>(path: string, parse: (raw: string) => T): Promise<T | undefined> {
+  let raw: string
+  try {
+    raw = await fs.readFile(path, 'utf8')
+  } catch (error) {
+    if (isFileMissingError(error)) return undefined
+    throw error
+  }
+  try {
+    return parse(raw)
+  } catch (parseError) {
+    try {
+      const backupPath = await backupCorruptDataFile(path)
+      throw new StationDataFileCorruptError(path, backupPath, { cause: parseError })
+    } catch (backupError) {
+      if (backupError instanceof StationDataFileCorruptError) throw backupError
+      // A failed move leaves the unreadable original in place. Propagating a
+      // recovery-required error prevents any later mutation from treating the
+      // file as an empty document and replacing the only copy of local data.
+      throw new StationDataFileCorruptError(path, undefined, { cause: backupError })
+    }
   }
 }
 
@@ -108,14 +193,41 @@ function sanitizeDetectedAdapterType(value: unknown): ResolvedStationAdapterType
   return value === 'sub2api' || value === 'newapi' || value === 'custom' ? value : undefined
 }
 
+function sanitizeNewApiSessionAuthMode(value: unknown): NewApiSessionAuthMode | undefined {
+  return value === 'refresh-token' || value === 'cookie-session' ? value : undefined
+}
+
+function sanitizeNewApiSelectedUserId(value: unknown): string | undefined {
+  const candidate = typeof value === 'string' ? value.trim() : ''
+  return /^\d{1,20}$/.test(candidate) ? candidate : undefined
+}
+
 function sanitizeAutoReauthStatus(value: unknown): StationAutoReauthStatus | undefined {
   if (!value || typeof value !== 'object') return undefined
   const record = value as Record<string, unknown>
   const state = record.state
   const at = record.at
-  if (state !== 'pending' && state !== 'success' && state !== 'manual-required' && state !== 'failed') return undefined
   if (typeof at !== 'string' || Number.isNaN(new Date(at).getTime())) return undefined
-  return { state, at }
+  const allowedStates = new Set(['pending', 'success', 'retry-scheduled', 'manual-required', 'credentials-invalid', 'interrupted'])
+  const allowedReasons = new Set<StationAutoReauthReason>(['session-expired', 'network-error', 'timeout', 'manual-challenge', 'credentials-invalid', 'login-contract-changed', 'application-restarted', 'manual-priority', 'unknown'])
+  const attempts = typeof record.attempts === 'number' && Number.isInteger(record.attempts) && record.attempts >= 0
+    ? Math.min(record.attempts, 3)
+    : undefined
+  const nextRetryAt = typeof record.nextRetryAt === 'string' && !Number.isNaN(new Date(record.nextRetryAt).getTime())
+    ? record.nextRetryAt
+    : undefined
+  if (state === 'failed') return { state: 'interrupted', at, reason: 'unknown', attempts }
+  if (typeof state !== 'string' || !allowedStates.has(state)) return undefined
+  const reason = typeof record.reason === 'string' && allowedReasons.has(record.reason as StationAutoReauthReason)
+    ? record.reason as StationAutoReauthReason
+    : undefined
+  return {
+    state: state as StationAutoReauthStatus['state'],
+    at,
+    reason,
+    attempts,
+    nextRetryAt: state === 'retry-scheduled' ? nextRetryAt : undefined
+  }
 }
 
 function toPublic(station: StoredStation): StationPublic {
@@ -132,6 +244,7 @@ function toPublic(station: StoredStation): StationPublic {
     apiPaths: station.apiPaths ?? defaultStationApiPaths,
     readMapping: station.readMapping,
     hasAccessToken: Boolean(station.accessToken),
+    hasSessionCookie: Boolean(station.sessionCookie),
     hasRefreshToken: Boolean(station.refreshToken),
     hasAdminToken: Boolean(station.adminToken),
     hasSavedLoginCredentials: Boolean(station.loginAccount && station.loginPassword),
@@ -152,45 +265,85 @@ function applySub2ApiKeyPathDefault(paths: StationApiPaths, adapterType: Station
 }
 
 async function readStored(): Promise<StoredStation[]> {
+  let parsed: unknown[] | undefined
   try {
-    const raw = await fs.readFile(storagePath(), 'utf8')
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed
-      .filter((value): value is StoredStation => Boolean(value && typeof value === 'object'))
-      .map((value) => {
+    parsed = await readDataFile(storagePath(), (raw) => {
+      const value = JSON.parse(raw) as unknown
+      if (!Array.isArray(value)) throw new Error('站点数据文件的顶层结构不是数组')
+      return value
+    })
+  } catch (error) {
+    // A successful backup makes a new empty document safe. Any other read or
+    // backup failure must block mutations rather than risking credential loss.
+    if (error instanceof StationDataFileCorruptError && error.backupPath) {
+      console.error(error.message)
+      return []
+    }
+    throw error
+  }
+  if (!parsed) return []
+  return parsed
+    .filter((value): value is StoredStation => Boolean(value && typeof value === 'object'))
+    // One unnormalizable entry must not discard the healthy stations beside
+    // it, and must not be mistaken for whole-file corruption either.
+    .flatMap((value) => {
+      try {
         const adapterType = sanitizeAdapterType(value.adapterType) ?? 'sub2api'
         const detectedAdapterType = sanitizeDetectedAdapterType(value.detectedAdapterType)
         const baseUrl = normalizeStationBaseUrl(value.baseUrl, adapterType === 'auto' ? detectedAdapterType : adapterType)
-        const apiPaths = applyNewApiPathDefaults(applySub2ApiKeyPathDefault(applyLcodexApiPathDefaults(baseUrl, {
+        const apiPaths = applyNewApiPathDefaults(applySub2ApiKeyPathDefault(applyKnownSourceStationApiPathDefaults(baseUrl, applyLcodexApiPathDefaults(baseUrl, {
           ...defaultStationApiPaths,
           ...normalizeStationApiPaths(value.apiPaths)
-        }), adapterType, detectedAdapterType), adapterType, detectedAdapterType)
-        return {
+        })), adapterType, detectedAdapterType), adapterType, detectedAdapterType)
+        const readMapping = normalizeStationReadMapping(value.readMapping)
+        const configuredApiBaseUrl = sanitizeApiBaseUrl(value.apiBaseUrl)
+        const apiBaseUrl = readMapping?.template === 'custom' && configuredApiBaseUrl
+          ? resolveSameOriginHttpsApiBaseUrl(baseUrl, configuredApiBaseUrl)
+          : resolveStoredApiBaseUrl(baseUrl, configuredApiBaseUrl, apiPaths)
+        return [{
           ...value,
           stationRole: sanitizeStationRole(value.stationRole),
           adapterType,
           detectedAdapterType,
+          sessionAuthMode: sanitizeNewApiSessionAuthMode(value.sessionAuthMode),
+          newApiSelectedUserId: value.newApiSelectedUserId,
           baseUrl,
           rechargeRatio: sanitizeRechargeRatio(value.rechargeRatio),
           lowBalanceThreshold: sanitizeLowBalanceThreshold(value.lowBalanceThreshold),
-          apiBaseUrl: resolveStoredApiBaseUrl(baseUrl, sanitizeApiBaseUrl(value.apiBaseUrl), apiPaths),
+          apiBaseUrl,
           apiPaths,
-          readMapping: normalizeStationReadMapping(value.readMapping),
+          readMapping,
           autoReauthEnabled: Boolean(value.autoReauthEnabled),
           autoReauthStatus: sanitizeAutoReauthStatus(value.autoReauthStatus)
-        }
-      })
-  } catch {
-    return []
-  }
+        }]
+      } catch {
+        return []
+      }
+    })
 }
 
 async function writeStored(stations: StoredStation[]): Promise<void> {
-  await fs.mkdir(app.getPath('userData'), { recursive: true })
   const payload = stations.map((station) => ({ ...station }))
-  await fs.writeFile(storagePath(), JSON.stringify(payload, null, 2), { mode: 0o600 })
-  await fs.chmod(storagePath(), 0o600)
+  await writeDataFileAtomic(storagePath(), JSON.stringify(payload, null, 2))
+}
+
+/**
+ * Station mutations are read-modify-write over the single credential file, so
+ * they must not interleave. Two concurrent token rotations would otherwise
+ * each start from the same snapshot and the later write would silently drop
+ * the earlier station's rotated refresh token.
+ */
+async function mutateStations(mutator: (current: StoredStation[]) => StoredStation[] | undefined): Promise<StoredStation[]> {
+  let result: StoredStation[] | undefined
+  const operation = stationMutationQueue.then(async () => {
+    const current = await readStored()
+    const next = mutator(current)
+    if (next) await writeStored(next)
+    result = next ?? current
+  })
+  stationMutationQueue = operation.catch(() => undefined)
+  await operation
+  return result ?? []
 }
 
 function isGroupChangeKind(value: unknown): value is GroupChangeKind {
@@ -558,10 +711,16 @@ function normalizeUiPreferences(value: unknown): UiPreferences {
   }
 }
 
+function parseUiPreferencesDocument(raw: string): Record<string, unknown> {
+  const value = JSON.parse(raw) as unknown
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('偏好数据文件的顶层结构不是对象')
+  }
+  return value as Record<string, unknown>
+}
+
 async function writeUiPreferences(preferences: UiPreferences): Promise<void> {
-  await fs.mkdir(app.getPath('userData'), { recursive: true })
-  await fs.writeFile(preferencesPath(), JSON.stringify(normalizeUiPreferences(preferences), null, 2), { mode: 0o600 })
-  await fs.chmod(preferencesPath(), 0o600)
+  await writeDataFileAtomic(preferencesPath(), JSON.stringify(normalizeUiPreferences(preferences), null, 2))
 }
 
 async function mutateUiPreferences(mutator: (current: UiPreferences) => UiPreferences): Promise<UiPreferences> {
@@ -592,12 +751,17 @@ export async function listStations(): Promise<StoredStation[]> {
 }
 
 export async function getUiPreferences(): Promise<UiPreferences> {
+  let parsed: unknown
   try {
-    const raw = await fs.readFile(preferencesPath(), 'utf8')
-    return normalizeUiPreferences(JSON.parse(raw) as unknown)
-  } catch {
-    return emptyUiPreferences()
+    parsed = await readDataFile(preferencesPath(), parseUiPreferencesDocument)
+  } catch (error) {
+    if (error instanceof StationDataFileCorruptError && error.backupPath) {
+      console.error(error.message)
+      return emptyUiPreferences()
+    }
+    throw error
   }
+  return parsed === undefined ? emptyUiPreferences() : normalizeUiPreferences(parsed)
 }
 
 export async function getDataCenterSummary(): Promise<DataCenterSummary> {
@@ -668,13 +832,19 @@ export async function saveInternalUserProfiles(profiles: InternalUserProfile[]):
   return mutateUiPreferences((current) => ({ ...current, internalUserProfiles: normalizeInternalUserProfiles(profiles) }))
 }
 
+export interface RecordedTimeCostLedgerSnapshot {
+  preferences: UiPreferences
+  newGroupChangeEvents: GroupChangeEvent[]
+}
+
 export async function recordTimeCostLedgerSnapshot(
   station: Pick<StoredStation, 'id' | 'rechargeRatio'> & { name?: string },
   snapshot: StationSnapshot,
   usageDetail?: { entries: UsageLedgerEntry[]; coverage: UsageLedgerCoverage }
-): Promise<UiPreferences> {
-  if (snapshot.health !== 'healthy') return getUiPreferences()
-  return mutateUiPreferences((current) => {
+): Promise<RecordedTimeCostLedgerSnapshot> {
+  if (snapshot.health !== 'healthy') return { preferences: await getUiPreferences(), newGroupChangeEvents: [] }
+  let newGroupChangeEvents: GroupChangeEvent[] = []
+  const preferences = await mutateUiPreferences((current) => {
     const observedAt = snapshot.lastSuccessAt ?? snapshot.lastUpdatedAt ?? new Date().toISOString()
     const withCurrentMappings = appendAccountUpstreamMappingEvents(
       current.timeCostLedger,
@@ -690,6 +860,8 @@ export async function recordTimeCostLedgerSnapshot(
       snapshot.groups,
       observedAt
     )
+    const existingIds = new Set(current.groupChangeEvents.map((event) => event.id))
+    newGroupChangeEvents = groupChangeEvents.filter((event) => !existingIds.has(event.id))
     return {
       ...current,
       groupChangeEvents,
@@ -703,6 +875,7 @@ export async function recordTimeCostLedgerSnapshot(
       })
     }
   })
+  return { preferences, newGroupChangeEvents }
 }
 
 export async function recordProfitUsageArchiveDay(records: ProfitUsageRecord[], coverage: ProfitArchiveDayCoverage): Promise<UiPreferences> {
@@ -713,34 +886,53 @@ export async function recordProfitUsageArchiveDay(records: ProfitUsageRecord[], 
 }
 
 export async function saveStation(input: StationInput): Promise<StoredStation[]> {
-  const name = input.name.trim()
-  if (!name) throw new Sub2ApiError('站点名称不能为空', 'INVALID_RESPONSE')
   const requestedAdapterType = sanitizeAdapterType(input.adapterType)
   const pollingIntervalMs = Math.min(Math.max(input.pollingIntervalMs ?? 30_000, 15_000), 300_000)
   const rechargeRatio = sanitizeRechargeRatio(input.rechargeRatio, true)
   const lowBalanceThreshold = sanitizeLowBalanceThreshold(input.lowBalanceThreshold, true)
-  const stations = await readStored()
+  return mutateStations((stations) => {
   const existing = input.id ? stations.find((station) => station.id === input.id) : undefined
   const adapterType = requestedAdapterType ?? existing?.adapterType ?? 'sub2api'
   const detectedAdapterType = sanitizeDetectedAdapterType(input.detectedAdapterType) ?? existing?.detectedAdapterType
+  const isNewApiStation = adapterType === 'newapi' || (adapterType === 'auto' && detectedAdapterType === 'newapi')
+  const requestedSessionAuthMode = sanitizeNewApiSessionAuthMode(input.sessionAuthMode)
+  const hasNewAccessToken = Boolean(input.accessToken?.trim())
+  const hasNewApiSelectedUserIdInput = Object.prototype.hasOwnProperty.call(input, 'newApiSelectedUserId')
+  // A verified Cookie-only reauthorization replaces a prior Bearer session.
+  // Conversely, a newly pasted NewAPI token intentionally returns the station
+  // to the standard Bearer/refresh contract without exposing that mode to IPC.
+  const sessionAuthMode = requestedSessionAuthMode
+    ?? (isNewApiStation && hasNewAccessToken ? 'refresh-token' : existing?.sessionAuthMode)
   const baseUrl = normalizeStationBaseUrl(input.baseUrl, adapterType === 'auto' ? detectedAdapterType : adapterType)
+  const name = input.name.trim() || new URL(baseUrl).hostname
   const hasApiPathsInput = Object.prototype.hasOwnProperty.call(input, 'apiPaths')
-  const apiPaths = applyNewApiPathDefaults(applySub2ApiKeyPathDefault(applyLcodexApiPathDefaults(baseUrl, {
+  const apiPaths = applyNewApiPathDefaults(applySub2ApiKeyPathDefault(applyKnownSourceStationApiPathDefaults(baseUrl, applyLcodexApiPathDefaults(baseUrl, {
     ...defaultStationApiPaths,
     ...normalizeStationApiPaths(hasApiPathsInput ? input.apiPaths : existing?.apiPaths)
-  }), adapterType, detectedAdapterType), adapterType, detectedAdapterType)
+  })), adapterType, detectedAdapterType), adapterType, detectedAdapterType)
   const hasApiBaseUrlInput = Object.prototype.hasOwnProperty.call(input, 'apiBaseUrl')
   const lcodexCompatibility = resolveLcodexStationCompatibility(baseUrl)
   const requestedApiBaseUrl = sanitizeApiBaseUrl(input.apiBaseUrl, true)
   const candidateApiBaseUrl = lcodexCompatibility && (!requestedApiBaseUrl || isLcodexLegacyPublicApiUrl(requestedApiBaseUrl))
     ? lcodexCompatibility.managementApiBaseUrl
     : requestedApiBaseUrl ?? (hasApiBaseUrlInput ? baseUrl : existing?.apiBaseUrl ?? lcodexCompatibility?.managementApiBaseUrl ?? baseUrl)
-  const apiBaseUrl = resolveStoredApiBaseUrl(baseUrl, candidateApiBaseUrl, apiPaths)
+  // A manually entered or already-saved root is intentional configuration.
+  // The legacy compatibility repair applies only to a newly inferred root;
+  // otherwise a valid custom root such as /api would be silently rewritten
+  // back to the inferred /api/v1 default.
+  const apiBaseUrl = hasApiBaseUrlInput || Boolean(existing?.apiBaseUrl)
+    ? candidateApiBaseUrl
+    : resolveStoredApiBaseUrl(baseUrl, candidateApiBaseUrl, apiPaths)
   // An explicit undefined means the caller intentionally removed its custom
   // read mapping; an omitted property keeps a saved mapping during normal edits.
   const hasReadMappingInput = Object.prototype.hasOwnProperty.call(input, 'readMapping')
   const readMapping = hasReadMappingInput ? normalizeStationReadMapping(input.readMapping) : existing?.readMapping
-  if (Object.keys(readMapping?.capabilities ?? {}).length > 0 && new URL(apiBaseUrl).protocol !== 'https:') {
+  if (readMapping?.template === 'custom') {
+    if (new URL(apiBaseUrl).protocol !== 'https:') {
+      throw new Error('自定义读取映射仅允许 HTTPS 站点')
+    }
+    resolveSameOriginHttpsApiBaseUrl(baseUrl, apiBaseUrl)
+  } else if (Object.keys(readMapping?.capabilities ?? {}).length > 0 && new URL(apiBaseUrl).protocol !== 'https:') {
     throw new Error('自定义读取映射仅允许 HTTPS 站点')
   }
   for (const path of Object.values(apiPaths)) {
@@ -776,9 +968,15 @@ export async function saveStation(input: StationInput): Promise<StoredStation[]>
     lowBalanceThreshold: input.lowBalanceThreshold === undefined ? existing?.lowBalanceThreshold ?? 10 : lowBalanceThreshold,
     apiPaths,
     readMapping,
-    accessToken: nextSecret(input.accessToken, existing?.accessToken),
-    refreshToken: nextSecret(input.refreshToken, existing?.refreshToken),
+    accessToken: sessionAuthMode === 'cookie-session' ? undefined : nextSecret(input.accessToken, existing?.accessToken),
+    refreshToken: sessionAuthMode === 'cookie-session' ? undefined : nextSecret(input.refreshToken, existing?.refreshToken),
     sessionCookie: nextSecret(input.sessionCookie, existing?.sessionCookie),
+    sessionAuthMode,
+    newApiSelectedUserId: isNewApiStation && sessionAuthMode === 'cookie-session'
+      ? hasNewApiSelectedUserIdInput
+        ? encrypt(sanitizeNewApiSelectedUserId(input.newApiSelectedUserId))
+        : existing?.newApiSelectedUserId
+      : undefined,
     userAgent: nextSecret(input.userAgent, existing?.userAgent),
     adminToken: nextSecret(input.adminToken, existing?.adminToken),
     adminCredentialType: input.adminCredentialType ?? existing?.adminCredentialType,
@@ -788,11 +986,10 @@ export async function saveStation(input: StationInput): Promise<StoredStation[]>
     autoReauthStatus: autoReauthEnabled && !hasNewLoginPassword ? existing?.autoReauthStatus : undefined,
     pollingIntervalMs
   }
-  const next = existing
+  return existing
     ? stations.map((item) => (item.id === station.id ? station : item))
     : [...stations, station]
-  await writeStored(next)
-  return next
+  })
 }
 
 function sanitizeApiBaseUrl(value: unknown, strict = false): string | undefined {
@@ -835,26 +1032,46 @@ function resolveStoredApiBaseUrl(baseUrl: string, apiBaseUrl: string | undefined
 }
 
 export async function removeStation(id: string): Promise<StoredStation[]> {
-  const next = (await readStored()).filter((station) => station.id !== id)
-  await writeStored(next)
-  return next
+  return mutateStations((stations) => stations.filter((station) => station.id !== id))
 }
 
 export async function updateStationAutoReauthStatus(id: string, status: StationAutoReauthStatus): Promise<StoredStation[]> {
-  const stations = await readStored()
-  if (!stations.some((station) => station.id === id)) return stations
-  const next = stations.map((station) => station.id === id ? { ...station, autoReauthStatus: status } : station)
-  await writeStored(next)
-  return next
+  return mutateStations((stations) => {
+    if (!stations.some((station) => station.id === id)) return undefined
+    return stations.map((station) => station.id === id ? { ...station, autoReauthStatus: status } : station)
+  })
+}
+
+/** Reclassify a persisted in-flight keepalive after an app restart. */
+export async function recoverInterruptedAutoReauthStatuses(): Promise<StoredStation[]> {
+  return mutateStations((stations) => {
+    let changed = false
+    const now = new Date().toISOString()
+    const next = stations.map((station) => {
+      if (station.autoReauthStatus?.state !== 'pending') return station
+      changed = true
+      return {
+        ...station,
+        autoReauthStatus: {
+          state: 'interrupted' as const,
+          at: now,
+          reason: 'application-restarted' as const,
+          attempts: station.autoReauthStatus.attempts ?? 0
+        }
+      }
+    })
+    return changed ? next : undefined
+  })
 }
 
 export function stationTokens(
-  station: Pick<StoredStation, 'accessToken' | 'refreshToken' | 'sessionCookie' | 'userAgent' | 'adminToken' | 'adminCredentialType'>
-): Pick<StoredStation, 'accessToken' | 'refreshToken' | 'sessionCookie' | 'userAgent' | 'adminToken' | 'adminCredentialType'> {
+  station: Pick<StoredStation, 'accessToken' | 'refreshToken' | 'sessionCookie' | 'newApiSelectedUserId' | 'userAgent' | 'adminToken' | 'adminCredentialType'>
+): Pick<StoredStation, 'accessToken' | 'refreshToken' | 'sessionCookie' | 'newApiSelectedUserId' | 'userAgent' | 'adminToken' | 'adminCredentialType'> {
   return {
     accessToken: decrypt(station.accessToken),
     refreshToken: decrypt(station.refreshToken),
     sessionCookie: decrypt(station.sessionCookie),
+    newApiSelectedUserId: sanitizeNewApiSelectedUserId(decrypt(station.newApiSelectedUserId)),
     userAgent: decrypt(station.userAgent),
     adminToken: decrypt(station.adminToken),
     adminCredentialType: station.adminCredentialType

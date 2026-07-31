@@ -28,6 +28,10 @@ Review for unrelated/out-of-scope edits, missing errors/tests, misleading UI, un
 
 If verification discovers unapproved impact, stop delivery, publish the scope delta, and route back through `$project-scope-impact-guard`.
 
+## Scenario Loop Evidence
+
+Attach results to the current conversation-initiated Scenario Loop Run in the feature's `workflow-state.yaml`. Continue only for a verified in-scope issue with a distinct root-cause strategy. Record `initiation_source: conversation`, session reference, confirmed artifact versions, score/floors/hard checks/evidence/blockers/risk/budget. A threshold score passes only with all required evidence/floors and no blockers. Stop for a scope, contract, permission, migration, external, release, budget, repeated-strategy/root-cause, or iteration-limit signal; request `vN+1` when scope changes. Repeated failure may create an evolution candidate, never a global Skill/Template/long-lived-memory edit. Desktop monitoring may display imported evidence but cannot create or advance this record.
+
 ## Result States
 
 - `verified`: all acceptance and approved impact have evidence.

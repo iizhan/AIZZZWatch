@@ -5,14 +5,23 @@ export type StationRole = 'source' | 'own'
 /** Controls the HTTP contract used to read a station. */
 export type StationAdapterType = 'auto' | 'sub2api' | 'newapi' | 'custom'
 export type ResolvedStationAdapterType = Exclude<StationAdapterType, 'auto'>
+/** Internal NewAPI authorization contract. Cookie-only is used by legacy OneAPI deployments. */
+export type NewApiSessionAuthMode = 'refresh-token' | 'cookie-session'
 export type GroupChangeKind = 'added' | 'removed' | 'rate-up' | 'rate-down'
 export type GroupCapabilityTagId = 'image' | 'coding' | 'vision' | 'embedding' | 'audio' | 'video' | 'chat'
-export type StationAutoReauthState = 'pending' | 'success' | 'manual-required' | 'failed'
+export type StationAutoReauthState = 'pending' | 'success' | 'retry-scheduled' | 'manual-required' | 'credentials-invalid' | 'interrupted'
+/** Safe reason codes for local keepalive status. Never store provider page text here. */
+export type StationAutoReauthReason = 'session-expired' | 'network-error' | 'timeout' | 'manual-challenge' | 'credentials-invalid' | 'login-contract-changed' | 'application-restarted' | 'manual-priority' | 'unknown'
 
 /** Safe, local-only status of the most recent password keepalive attempt. */
 export interface StationAutoReauthStatus {
   state: StationAutoReauthState
   at: string
+  reason?: StationAutoReauthReason
+  /** Number of scheduled network/timeout retries already consumed, capped at 3. */
+  attempts?: number
+  /** Only present while a bounded network/timeout retry is waiting. */
+  nextRetryAt?: string
 }
 
 export type StationHealth = 'loading' | 'healthy' | 'stale' | 'error' | 'forbidden' | 'empty'
@@ -42,6 +51,10 @@ export interface StationInput {
   accessToken?: string
   refreshToken?: string
   sessionCookie?: string
+  /** Main-process-only compatibility state; never exposed by StationPublic. */
+  sessionAuthMode?: NewApiSessionAuthMode
+  /** Main-process-only numeric NewAPI selected-user context; never exposed by StationPublic. */
+  newApiSelectedUserId?: string
   userAgent?: string
   adminToken?: string
   adminCredentialType?: AdminCredentialType
@@ -71,6 +84,8 @@ export interface StationPublic {
   /** Local, read-only response-field mapping for compatible forks. */
   readMapping?: StationReadMapping
   hasAccessToken: boolean
+  /** Safe local indicator only; the Cookie value never crosses the IPC boundary. */
+  hasSessionCookie?: boolean
   hasRefreshToken: boolean
   hasAdminToken: boolean
   hasSavedLoginCredentials: boolean
@@ -530,9 +545,10 @@ export interface AizzzApi {
     save: (input: StationInput) => Promise<StationPublic[]>
     remove: (id: string) => Promise<StationPublic[]>
     refresh: (id?: string) => Promise<StationSnapshot[]>
+    checkKeepalive: (id: string) => Promise<StationPublic[]>
     getSnapshots: () => Promise<StationSnapshot[]>
-    diagnose: (input: Pick<StationInput, 'id' | 'name' | 'baseUrl' | 'apiBaseUrl' | 'adapterType' | 'accessToken' | 'refreshToken' | 'adminToken' | 'adminCredentialType' | 'apiPaths'>) => Promise<StationDiagnostics>
-    previewMapping: (input: Pick<StationInput, 'id' | 'apiPaths' | 'readMapping'>) => Promise<StationMappingPreview>
+    diagnose: (input: Pick<StationInput, 'id' | 'name' | 'baseUrl' | 'apiBaseUrl' | 'adapterType' | 'accessToken' | 'refreshToken' | 'adminToken' | 'adminCredentialType' | 'apiPaths'> & { useSavedCredentials?: boolean }) => Promise<StationDiagnostics>
+    previewMapping: (input: Pick<StationInput, 'id' | 'apiBaseUrl' | 'apiPaths' | 'readMapping'>) => Promise<StationMappingPreview>
     onSnapshotsUpdated: (callback: (snapshots: StationSnapshot[]) => void) => () => void
     onStationsUpdated: (callback: (stations: StationPublic[]) => void) => () => void
   }
@@ -541,6 +557,7 @@ export interface AizzzApi {
     toggleAlwaysOnTop: () => Promise<{ alwaysOnTop: boolean }>
     show: () => Promise<void>
     onModeChanged: (callback: (state: { mode: WindowMode; alwaysOnTop: boolean }) => void) => () => void
+    onOpenGroupChanges: (callback: (state: { filter: 'all' | 'rate-up' | 'rate-down' }) => void) => () => void
   }
   admin: {
     updateAccountGroups: (mutation: AccountGroupMutation) => Promise<StationSnapshot>
@@ -559,6 +576,7 @@ export interface AizzzApi {
     setAccountUpstreamMappings: (mappings: AccountUpstreamMapping[]) => Promise<UiPreferences>
     setAccountCostProfiles: (profiles: AccountCostProfile[]) => Promise<UiPreferences>
     setInternalUserProfiles: (profiles: InternalUserProfile[]) => Promise<UiPreferences>
+    onUpdated: (callback: () => void) => () => void
   }
   dataCenter: {
     getSummary: () => Promise<DataCenterSummary>

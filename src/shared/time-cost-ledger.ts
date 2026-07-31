@@ -48,6 +48,24 @@ export interface TemporalUsageCostSummary {
   latestObservedAt?: string
 }
 
+/**
+ * Local history that survives after its live station configuration is gone.
+ * It is deliberately read-only: a record here is not evidence that a newly
+ * added station is the same remote station.
+ */
+export interface OrphanedLocalHistorySummary {
+  stationId: string
+  stationName?: string
+  groupChangeCount: number
+  rateObservationCount: number
+  sourceKeyObservationCount: number
+  usageEntryCount: number
+  profitUsageRecordCount: number
+  lastObservedAt?: string
+  recentGroupChanges: GroupChangeEvent[]
+  recentRateObservations: CostRateObservation[]
+}
+
 export interface TimeCostSnapshotInput {
   stationId: string
   rechargeRatio: number
@@ -330,6 +348,80 @@ function addPublicWelfareUsage(
 }
 
 /**
+ * Coverage and archival persist at whole-Shanghai-day granularity, so every
+ * day the [startAt, endAt) interval touches must be included — not just days
+ * fully contained inside it. An hour-granularity query entirely within one
+ * day, or one whose end falls mid-day, still needs that day's full archive:
+ * a day's archive covers any sub-range query within it, but an unarchived
+ * partial day silently reads back as "not yet archived" (see
+ * archiveCoverageForQuery) even when the live-tracked data is already there.
+ */
+export function archiveDates(query: ProfitIntervalQuery): string[] {
+  const dates: string[] = []
+  const endExclusiveMs = Date.parse(query.endAt)
+  if (!Number.isFinite(endExclusiveMs)) return dates
+  const startDate = shanghaiCalendarDate(query.startAt)
+  const lastTouchedDate = shanghaiCalendarDate(new Date(endExclusiveMs - 1).toISOString())
+  if (!startDate || !lastTouchedDate) return dates
+  const cursor = new Date(`${startDate}T00:00:00+08:00`)
+  // A day-count guard well beyond any caller's validated range (90 days)
+  // keeps this loop bounded even if a future caller's invariants change.
+  for (let guard = 0; guard < 400; guard += 1) {
+    const currentDate = shanghaiCalendarDate(cursor.toISOString())
+    if (!currentDate) break
+    dates.push(currentDate)
+    if (currentDate >= lastTouchedDate) break
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return dates
+}
+
+/** Builds the fixed [00:00, 24:00) Shanghai-day query archival persists coverage for. */
+export function dayArchiveQuery(query: ProfitIntervalQuery, date: string): ProfitIntervalQuery {
+  const start = new Date(`${date}T00:00:00+08:00`)
+  const end = new Date(start)
+  end.setUTCDate(end.getUTCDate() + 1)
+  return {
+    ...query,
+    startAt: start.toISOString(),
+    endAt: end.toISOString(),
+    accountId: undefined,
+    sellingGroupId: undefined
+  }
+}
+
+export function archiveCoverageForQuery(ledger: TimeCostLedger, query: ProfitIntervalQuery): UsageLedgerCoverage {
+  const dates = archiveDates(query)
+  const coverageByDate = new Map(ledger.profitUsageCoverage
+    .filter((item) => item.accountStationId === query.stationId)
+    .map((item) => [item.date, item]))
+  const covered = dates.map((date) => coverageByDate.get(date)).filter((item): item is ProfitArchiveDayCoverage => Boolean(item))
+  const missing = dates.length - covered.length
+  const pageLimited = covered.filter((item) => item.state === 'page-limit')
+  const interrupted = covered.filter((item) => item.state === 'incomplete' || item.state === 'unavailable')
+  const state: UsageLedgerCoverage['state'] = missing > 0 || interrupted.length > 0
+    ? 'incomplete'
+    : pageLimited.length > 0
+      ? 'page-limit'
+      : covered.length > 0 ? 'complete' : 'unavailable'
+  const details = [
+    `完整 ${covered.filter((item) => item.state === 'complete').length} 天`,
+    pageLimited.length > 0 ? `部分 ${pageLimited.length} 天` : undefined,
+    interrupted.length > 0 ? `失败 ${interrupted.length} 天` : undefined,
+    missing > 0 ? `未归档 ${missing} 天` : undefined
+  ].filter(Boolean).join(' · ')
+  return {
+    accountStationId: query.stationId,
+    fetchedAt: covered.map((item) => item.fetchedAt).sort((left, right) => right.localeCompare(left))[0] ?? new Date().toISOString(),
+    state,
+    pagesFetched: covered.reduce((total, item) => total + item.pagesFetched, 0),
+    recordsSeen: covered.reduce((total, item) => total + item.recordsSeen, 0),
+    acceptedEntries: covered.reduce((total, item) => total + item.acceptedEntries, 0),
+    detail: details || '尚未归档'
+  }
+}
+
+/**
  * Calculates a bounded [startAt, endAt) interval report. Exact upstream cost
  * is resolved through the persisted observation ledger at each request time;
  * missing or ambiguous history remains visible as unattributed revenue.
@@ -515,6 +607,88 @@ export function latestLedgerObservationAt(ledger: TimeCostLedger): string | unde
     ...ledger.sourceKeyGroupObservations.map((item) => item.observedAt),
     ...ledger.mappingEvents.map((item) => item.effectiveAt)
   ].filter(isValidDate).sort((left, right) => right.localeCompare(left))[0]
+}
+
+/**
+ * Keeps historical local observations visible when the companion station
+ * configuration was lost. No identifier is matched to a newly added station.
+ */
+export function summarizeOrphanedLocalHistory(
+  currentStationIds: ReadonlySet<string>,
+  groupChangeEvents: GroupChangeEvent[],
+  ledger: TimeCostLedger
+): OrphanedLocalHistorySummary[] {
+  const summaries = new Map<string, OrphanedLocalHistorySummary>()
+  const stationNameObservedAt = new Map<string, string>()
+
+  function ensure(stationId: string): OrphanedLocalHistorySummary | undefined {
+    if (!stationId || currentStationIds.has(stationId)) return undefined
+    const existing = summaries.get(stationId)
+    if (existing) return existing
+    const next: OrphanedLocalHistorySummary = {
+      stationId,
+      groupChangeCount: 0,
+      rateObservationCount: 0,
+      sourceKeyObservationCount: 0,
+      usageEntryCount: 0,
+      profitUsageRecordCount: 0,
+      recentGroupChanges: [],
+      recentRateObservations: []
+    }
+    summaries.set(stationId, next)
+    return next
+  }
+
+  function updateLastObservedAt(summary: OrphanedLocalHistorySummary, candidate?: string): void {
+    if (!isValidDate(candidate)) return
+    if (!summary.lastObservedAt || candidate > summary.lastObservedAt) summary.lastObservedAt = candidate
+  }
+
+  for (const event of groupChangeEvents) {
+    const summary = ensure(event.stationId)
+    if (!summary) continue
+    summary.groupChangeCount += 1
+    const previousNameAt = stationNameObservedAt.get(event.stationId)
+    if (event.stationName.trim() && (!previousNameAt || event.occurredAt > previousNameAt)) {
+      summary.stationName = event.stationName.trim()
+      stationNameObservedAt.set(event.stationId, event.occurredAt)
+    }
+    summary.recentGroupChanges.push(event)
+    updateLastObservedAt(summary, event.occurredAt)
+  }
+  for (const observation of ledger.rateObservations) {
+    const summary = ensure(observation.stationId)
+    if (!summary) continue
+    summary.rateObservationCount += 1
+    summary.recentRateObservations.push(observation)
+    updateLastObservedAt(summary, observation.observedAt)
+  }
+  for (const observation of ledger.sourceKeyGroupObservations) {
+    const summary = ensure(observation.stationId)
+    if (!summary) continue
+    summary.sourceKeyObservationCount += 1
+    updateLastObservedAt(summary, observation.observedAt)
+  }
+  for (const entry of ledger.usageEntries) {
+    const summary = ensure(entry.accountStationId)
+    if (!summary) continue
+    summary.usageEntryCount += 1
+    updateLastObservedAt(summary, entry.occurredAt)
+  }
+  for (const record of ledger.profitUsageRecords) {
+    const summary = ensure(record.accountStationId)
+    if (!summary) continue
+    summary.profitUsageRecordCount += 1
+    updateLastObservedAt(summary, record.occurredAt)
+  }
+
+  return [...summaries.values()]
+    .map((summary) => ({
+      ...summary,
+      recentGroupChanges: [...summary.recentGroupChanges].sort(compareIsoDescending).slice(0, 4),
+      recentRateObservations: [...summary.recentRateObservations].sort(compareIsoDescending).slice(0, 4)
+    }))
+    .sort((left, right) => (right.lastObservedAt ?? '').localeCompare(left.lastObservedAt ?? ''))
 }
 
 function trimByTimestamp<T extends Timestamped>(items: T[], limit: number): T[] {

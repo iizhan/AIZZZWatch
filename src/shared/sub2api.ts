@@ -35,6 +35,9 @@ export const defaultNewApiPaths: Required<Pick<StationApiPaths, 'profile' | 'gro
 const lcodexHost = 'lcodex.cc'
 const lcodexLegacyPublicApiHost = 'api.lcodex.cc'
 const lcodexChannelPricingPath = '/api/v1/channels/available'
+const krillHosts = new Set(['krill-ai.com', 'www.krill-ai.com', 'krill-ai.net', 'www.krill-ai.net'])
+const zanzhuPortalHost = 'zanzhu.denxio.com'
+const zanzhuApiHost = 'api.denxio.com'
 
 export interface LcodexStationCompatibility {
   managementApiBaseUrl: string
@@ -77,6 +80,59 @@ export function applyLcodexApiPathDefaults(baseUrl: string, paths: StationApiPat
     return typeof value === 'string' && value.trim() && value.trim() !== defaultPath
   })
   return hasCustomPath ? paths : { ...paths, ...compatibility.apiPaths }
+}
+
+/**
+ * Small compatibility profiles are intentionally host-specific. They improve
+ * known forks without turning a station setting into a generic API scraper.
+ * Manual non-default paths always remain authoritative.
+ */
+export function applyKnownSourceStationApiPathDefaults(baseUrl: string, paths: StationApiPaths): StationApiPaths {
+  const host = parseHttpUrl(baseUrl)?.hostname.toLowerCase()
+  if (!host || !krillHosts.has(host)) return paths
+
+  const next = { ...paths }
+  const useDefault = (key: keyof Pick<StationApiPaths, 'profile' | 'balance' | 'groups'>): boolean => {
+    const value = next[key]?.trim()
+    return !value || value === defaultStationApiPaths[key]
+  }
+  if (useDefault('profile')) next.profile = '/api/auth/me'
+  if (useDefault('balance')) next.balance = '/api/credits'
+  if (useDefault('groups')) next.groups = '/api/my/channels'
+  return next
+}
+
+/**
+ * Provides a bounded read-only fallback list for audited forks. The caller
+ * only retries a 404 and never changes the user's saved configuration.
+ */
+export function resolveStationReadApiBases(baseUrl: string, configuredApiBaseUrl?: string): string[] {
+  const configured = configuredApiBaseUrl?.trim().replace(/\/+$/, '') || normalizeApiBaseUrl(baseUrl)
+  const stationUrl = parseHttpUrl(baseUrl)
+  if (!stationUrl) return [configured]
+  const host = stationUrl.hostname.toLowerCase()
+  if (krillHosts.has(host)) {
+    const configuredUrl = parseHttpUrl(configured)
+    if (configuredUrl?.origin === stationUrl.origin && /\/api\/v1$/i.test(configuredUrl.pathname)) {
+      return [...new Set([stationUrl.origin, configured])]
+    }
+  }
+  if (host === zanzhuPortalHost) {
+    const configuredUrl = parseHttpUrl(configured)
+    if (configuredUrl?.hostname.toLowerCase() === zanzhuApiHost || configuredUrl?.hostname.toLowerCase() === zanzhuPortalHost) {
+      return [...new Set([`https://${zanzhuApiHost}/api/v1`, `https://${zanzhuApiHost}`, configured])]
+    }
+  }
+  return [configured]
+}
+
+/** Only the audited Zanzhu portal/API pair is allowed to use a cross-host read root. */
+export function isTrustedStationReadApiBase(stationBaseUrl: string, candidateApiBaseUrl: string): boolean {
+  const stationUrl = parseHttpUrl(stationBaseUrl)
+  const candidateUrl = parseHttpUrl(candidateApiBaseUrl)
+  if (!stationUrl || !candidateUrl || candidateUrl.protocol !== 'https:') return false
+  if (stationUrl.origin === candidateUrl.origin) return true
+  return stationUrl.hostname.toLowerCase() === zanzhuPortalHost && candidateUrl.hostname.toLowerCase() === zanzhuApiHost
 }
 
 export interface Sub2ApiEnvelope<T> {
@@ -207,7 +263,7 @@ export class Sub2ApiError extends Error {
 }
 
 export function normalizeApiBaseUrl(value: string): string {
-  const trimmed = value.trim().replace(/\/+$/, '')
+  const trimmed = normalizeStationEntryUrl(value)
   if (!trimmed) throw new Sub2ApiError('站点地址不能为空', 'INVALID_RESPONSE')
 
   let url: URL
@@ -228,7 +284,7 @@ export function normalizeApiBaseUrl(value: string): string {
 /** NewAPI endpoints live at `/api/*`, unlike Sub2API's `/api/v1/*` root. */
 export function normalizeStationBaseUrl(value: string, adapterType?: StationAdapterType): string {
   if (adapterType !== 'newapi') return normalizeApiBaseUrl(value)
-  const trimmed = value.trim().replace(/\/+$/, '')
+  const trimmed = normalizeStationEntryUrl(value)
   if (!trimmed) throw new Sub2ApiError('站点地址不能为空', 'INVALID_RESPONSE')
   try {
     const url = new URL(trimmed)
@@ -236,6 +292,29 @@ export function normalizeStationBaseUrl(value: string, adapterType?: StationAdap
     return trimmed
   } catch {
     throw new Sub2ApiError('站点地址不是有效 URL', 'INVALID_RESPONSE')
+  }
+}
+
+/**
+ * Users commonly paste an application page such as `/keys` or `/sign-in`.
+ * Retain genuine deployment subpaths, while removing only known UI routes so
+ * the adapter always starts from the station root rather than a browser page.
+ */
+function normalizeStationEntryUrl(value: string): string {
+  const raw = value.trim()
+  if (!raw) return ''
+  try {
+    const url = new URL(raw)
+    if (!['http:', 'https:'].includes(url.protocol)) return raw.replace(/\/+$/, '')
+    url.search = ''
+    url.hash = ''
+    const path = url.pathname.replace(/\/+$/, '')
+    if (/(?:^|\/)(?:keys?|login|sign-in|signin|sign-up|signup|register|dashboard|console)$/i.test(path)) {
+      url.pathname = path.slice(0, path.lastIndexOf('/')) || '/'
+    }
+    return url.toString().replace(/\/+$/, '')
+  } catch {
+    return raw.replace(/\/+$/, '')
   }
 }
 
@@ -342,6 +421,33 @@ export function resolveStationApiRequestUrl(apiBaseUrl: string, path: string): s
     throw new Sub2ApiError('自定义接口地址必须与站点同源', 'INVALID_RESPONSE')
   }
   return targetUrl.toString()
+}
+
+/**
+ * A response-field mapping can read authenticated data, so a draft API root
+ * must remain HTTPS and on the saved station's origin before preview or save.
+ */
+export function resolveSameOriginHttpsApiBaseUrl(stationBaseUrl: string, candidate?: string): string {
+  const raw = (candidate ?? stationBaseUrl).trim().replace(/\/+$/, '')
+  if (!raw) throw new Sub2ApiError('API 根地址不能为空', 'INVALID_RESPONSE')
+  let stationUrl: URL
+  let apiBaseUrl: URL
+  try {
+    stationUrl = new URL(stationBaseUrl)
+    apiBaseUrl = new URL(raw)
+  } catch {
+    throw new Sub2ApiError('API 根地址不是有效 URL', 'INVALID_RESPONSE')
+  }
+  if (apiBaseUrl.protocol !== 'https:') {
+    throw new Sub2ApiError('自定义 API 根仅允许 HTTPS', 'INVALID_RESPONSE')
+  }
+  if (apiBaseUrl.username || apiBaseUrl.password || apiBaseUrl.origin !== stationUrl.origin) {
+    throw new Sub2ApiError('自定义 API 根必须与站点地址同源', 'INVALID_RESPONSE')
+  }
+  if (apiBaseUrl.search || apiBaseUrl.hash) {
+    throw new Sub2ApiError('API 根不能包含查询参数或片段', 'INVALID_RESPONSE')
+  }
+  return apiBaseUrl.toString().replace(/\/+$/, '')
 }
 
 export function unwrapApiResponse<T>(payload: unknown): T {

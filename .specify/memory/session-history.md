@@ -1,5 +1,26 @@
 # Session History
 
+# 2026-07-25 站点智能接入与安全保活 v5
+
+- 确认版本：用户确认执行 `站点智能接入与安全保活 正式实施包 v5`；验收状态 `awaiting_user_acceptance`。
+- 结论：站点地址输入后自动执行无凭据 JSON 探测，`nihao.dog/keys` 会归一到根地址并识别为 NewAPI；HTML 页面不再误判。添加站点默认收纳接口根、路径、令牌和保活；保存账号密码且显式开启后才允许 HTTPS 同源自动保活。队列单窗口 FIFO，网络/超时 1/5/30 分钟退避，验证码、2FA、风控、密码失效和契约变化转人工。
+- 安全修正：详细诊断移除了原始 JSON 文本回退，已授权 profile 不会作为提示传到 renderer。密码、Cookie、JWT、用户资料和原始响应仍不离开主进程安全边界。
+- 验证：相关 5 文件 / 71 项、完整 `npm run verify` 14 文件 / 209 项、差异检查和 Profile capture 均通过；本地 macOS 测试包通过严格签名与 ZIP 完整性。隔离桌面演示确认 `nihao.dog/keys` 识别 NewAPI 并启用授权按钮，未保存站点。
+- 不满意分类：`verification_gap`；真实第三方授权、验证码/2FA 与真实网络中断仍只能由用户自行完成。
+- 剩余风险：当前已有应用实例占用开发端口，本轮未强行启动第二实例；其他二开站的路径/Cookie/登录契约仍需脱敏现象确认。
+- 下一步：用户在桌面端完成一次真实 `nihao.dog` 授权，并按需启用自动保活后观察状态。
+
+# 2026-07-25 OneAPI Cookie 会话授权修复 v4
+
+- 确认版本：用户确认执行 `OneAPI Cookie 会话授权修复 v4`；验收状态 `awaiting_user_acceptance`。
+- 结论：`nihao.dog` 登录后以 Cookie 调用 `/api/user/self`，但不支持 `/api/user/auth/refresh`。应用现在仅在刷新接口明确 404 后，以临时隔离分区的固定 HTTPS 同源 profile 验证 Cookie 会话；成功后加密保存 Cookie/UA 和内部模式，授权窗口自动关闭。Cookie-only 读取不发送 Bearer，也不再访问不存在的刷新接口。
+- 影响文件：`src/main/web-auth.ts`、`src/main/index.ts`、`src/main/newapi-client.ts`、`src/main/storage.ts`、`src/shared/types.ts`、授权/客户端/存储测试及本任务交付工件。
+- 验证：聚焦 3 文件 / 57 项测试、完整 13 文件 / 201 项测试、类型检查、生产构建和差异检查均通过；macOS arm64 测试 ZIP 已通过严格签名和完整性校验。可见授权窗确认 NewAPI 路径为 `nihao.dog/sign-in`；没有输入或读取真实凭据。
+- 安全边界：不读取 `localStorage["user"]`、页面资料、Cookie/JWT 原文或账号密码；Cookie/UA 仅以既有 safeStorage 存于主进程，不进入 renderer IPC 或日志。Cookie 会话成功会清除旧 Bearer 凭据；手动粘贴 JWT 会恢复标准 Bearer 模式。
+- 不满意分类：`verification_gap`；自动检查不能替代用户的真实登录、验证码或 2FA。
+- 剩余风险：真实成功后的自动关闭、保存与首次同步需用户验收；其他 OneAPI 二开的 Cookie 和 profile 契约可能不同。
+- 下一步：用户使用新 macOS ZIP 添加 `https://nihao.dog` 并完成一次真实网页登录；若失败，仅提供脱敏截图或窗口状态。
+
 # 2026-07-24 NewAPI 登录入口兼容 v1
 
 - 确认版本：用户确认执行 `NewAPI 登录入口兼容 v1`；验收状态 `awaiting_user_acceptance`。
@@ -1025,3 +1046,68 @@
 - 验证：此前 `npm run verify`（13 个测试文件、181 条）及 DMG/Windows CI 验证均通过；发布后通过 GitHub 页面与 Releases API 复核公开状态 `draft: false`、`prerelease: false`、Latest 和两项二进制资产。GitHub 将 EXE 资产文件名规范化为 `AIZZZWatch.Setup.0.1.1.exe`，公开说明已同步。
 - 不满意分类与证据：`verification_gap`；Windows 安装、启动、系统托盘、完整/紧凑/气泡窗口和卸载仍没有可见桌面验收，已在公开 Release 中明确披露，且用户仅对 v0.1.1 作出了风险豁免。
 - 剩余风险：两平台安装包未正式签名；不得将当前风险豁免或 GitHub Windows CI 构建结果当作后续版本或 Windows 可见验收的替代品。
+
+# 2026-07-25 NewAPI 页面内同源会话恢复 v3
+
+- 状态：`awaiting_user_acceptance`；用户以“ok”确认紧接的 v3 正式实施包。
+- 完成：保留隔离授权分区刷新；仅在它未恢复令牌且授权页已进入登录后 HTTPS 同源路由时，通过固定 `/api/user/auth/refresh` 页面请求恢复标准令牌。返回仅接受受限 `access_token`，随后复用既有加密保存和临时分区清理。
+- 验证：`npm run verify` 通过（13 个测试文件、190 条）；授权聚焦 18 条、`git diff --check`、macOS 打包、严格签名与 ZIP 完整性均通过。
+- 不满意分类与证据：`implementation_defect`；用户登录 `nihao.dog` 后窗口没有自动关闭，v2 的分区刷新未覆盖页面会话上下文。
+- 剩余风险：真实 Electron 登录、验证码/2FA、站点端刷新 Cookie 策略仍需用户在新包中可见验收；未代填或记录任何凭据。
+
+# 2026-07-26 NewAPI Cookie 会话落盘 v1
+
+- 确认版本：用户确认“确认执行 NewAPI Cookie 会话落盘 v1”；验收状态 `awaiting_user_acceptance`。
+- 完成：对 OneAPI Cookie-only 站点，固定 profile 的 HTTPS 同源验证成功即可落盘受限 Cookie，不再依赖刷新接口的特定 404；新增非敏感 Cookie 会话状态和明确失败提示。
+- 验证：聚焦 59 项、`npm run verify`（14 文件 / 211 项）、生产构建和 `git diff --check` 通过；审阅未发现 Cookie/JWT/Profile 原文跨 IPC、日志或公开 DTO。
+- 不满意分类与证据：`implementation_defect`；用户已登录 NewAPI 站点仍报“未配置 NewAPI 登录会话”，根因为旧 Cookie 保存前置条件过窄。
+- 剩余风险：当前旧安装包的单实例锁阻止隔离新构建做真实点击验收；用户仍需在新构建中自行完成登录，验证码/2FA/WAF 不会自动处理。
+
+# 2026-07-26 NewAPI 页面会话捕获修复 v2
+
+- 确认版本：用户确认“确认执行 NewAPI 页面会话捕获修复 v2”；验收状态 `awaiting_user_acceptance`。
+- 结论：OneAPI Cookie profile 验证从主进程分区请求移到已登录 HTTPS 同源页面执行，页面仅把有效性布尔值交回主进程；成功后仍由主进程校验、加密保存 Cookie 并关闭授权窗口。
+- 影响文件：`src/main/web-auth.ts`、`src/main/index.ts`、`tests/web-auth.test.ts`、NewAPI feature 工件与 Profile。
+- 验证：`web-auth` 24 项、`npm run verify`（14 文件 / 211 项）、生产构建、`git diff --check`、`npm run package:dmg` 与严格 codesign 通过。DMG SHA-256：`a7a2b7cd580572ee8e8f960e82b0cd541558419db2dd3806ff068ba786a6a359`。
+- 不满意分类与证据：`implementation_defect`；用户已看到 `nihao` 后台但授权窗未关闭，确认原验证通道未复用页面 Cookie/WAF 上下文。
+- 剩余风险：真实网页登录、Cloudflare、验证码、2FA 和 Cookie 生命周期仅能由用户在新 DMG 中验收；没有读取、打印或保存任何真实认证数据。
+
+# 2026-07-26 数据与刷新安全修复及自定义 API 根编辑 v2
+
+- 确认版本：用户确认“确认执行 数据与刷新安全修复及自定义 API 根编辑 正式实施包 v2”；验收状态 `awaiting_user_acceptance`。
+- 完成：损坏站点/偏好文件只有成功备份原件后才会回退；手动刷新与保活检查可淘汰旧轮询提交；自定义兼容 API 根可编辑并安全保存同源 HTTPS `/api` 根。
+- 验证：聚焦 58 项、`npm run verify`（15 文件 / 237 项）、生产构建、`git diff --check`、凭据日志审阅和 Profile capture 通过。
+- 不满意分类与证据：`implementation_defect`；用户反馈自定义兼容 API 根不可修改导致 `www.krill-ai.net` 无法录入，审阅确认显式根还会被默认归一化覆盖。
+- 剩余风险：浏览器环境无法访问 localhost，隔离桌面窗口被已运行正式应用单实例锁接管；未对真实站点或真实本地数据执行 UI 操作，待用户完成可见验收。
+
+# 2026-07-27 接入与涨跌可见性 正式实施包 v1
+
+- 确认版本：用户确认“确认执行 接入与涨跌可见性 正式实施包 v1”；验收状态 `awaiting_user_acceptance`。
+- 完成：倍率涨跌事件由主进程持久化写入后驱动偏好更新和原生通知；通知点击按涨价、降价或混合的正确筛选打开近期分组变化。Aihub 默认 profile、Krill 已知余额/分组路径与余额可用降级、Zanzhu 固定 API 别名 404 回退均已实现。
+- 验证：`npm run verify` 通过（15 个测试文件、242 项）；TypeScript、生产构建和 `git diff --check` 通过；定向敏感扫描没有真实 JWT、密码、余额或账号资料。
+- 不满意分类与证据：`implementation_defect`；用户反馈已发现的涨价不显示、Aihub/Krill/Zanzhu 无法添加，根因是持久化事件无独立界面刷新链路以及二开站仍使用默认 Sub2API 根/路径。
+- 剩余风险：真实站点认证 GET、macOS 通知点击、WAF/Cookie 生命周期和二开字段需在最新版桌面端验收。隔离 Electron 受 `MachPortRendezvous` 权限限制，且 `127.0.0.1:5187` 未运行开发服务器导致 in-app browser 返回 `ERR_CONNECTION_REFUSED`；未读取或修改真实凭据和数据。
+
+# 2026-07-27 Sub2API Web Watch 只读垂直切片 v1
+
+- 确认版本：用户确认 Sub2API 官方 `v0.1.165` 下游集成方案；验收状态 `awaiting_user_acceptance`。
+- 完成：在 `/Users/bing/Myself/Code/MacTools/Watch_Sub2Api` 的 `feature/watch-web-v0.1.165` 增加 Watch 服务、管理员概览/排价预览 API、独立 `watch_` migration、Vue 管理页面、路由、导航和中英文文案。
+- 规则：分组倍率与模型渠道价格均选当前可调度/可解析候选的最低值并加 `0.01`；无合格候选冻结；本阶段只读，不写入价格。
+- 验证：`git diff --check` 通过；未运行 Go 检查（本机无 `go`/`gofmt`）；前端依赖安装因缓存缺少 `@vue/compiler-core@3.5.40` 且联网安装无进展而停止，未运行 typecheck/build。
+- 剩余风险：当前健康判断为账号配置/可调度性，不等同真实 HTTP 保活；自动写价、审计回滚、令牌保活和官方升级演练仍待后续确认切片。
+
+# 2026-07-27 Sub2API Web Watch Docker 验证与安全修正 v2
+
+- 确认版本：需求/影响/设计/任务/验收计划 v1；验收状态 `awaiting_user_acceptance`。
+- 完成：在服务器 Docker 临时树完成后端生产构建、Watch 价格规则定向单测、前端 typecheck；修正概览错误文案泄露和不合格候选显示为 0 的问题；生产容器保持 healthy，未执行生产写入或切换。
+- 验证：后端 `go build -p 1 -tags embed` 通过；Watch 两组定向测试通过；前端 `pnpm run typecheck` 通过；修正前同一基线 Vite build 通过；Wire 文件 SHA 与本地一致。
+- 不满意分类与证据：`verification_gap`；服务器 3.5GiB 内存不足以稳定完成全量 Go/Wire 和修正后组合 Vite 重跑，记录为资源阻塞而非代码通过。
+- 剩余风险：全量 service 测试存在既有 Ollama 用例失败；真实 HTTP 保活、自动调价、审计回滚、生产 migration/升级和可见 Web 点击仍未覆盖。
+
+# 2026-07-27 Sub2API Web Watch 智能运营菜单重构 v3
+
+- 确认版本：需求/影响/设计/任务/验收计划 v2；验收状态 `awaiting_user_acceptance`。
+- 完成：将独立 Watch 页面改为“智能运营”折叠菜单；拆分“运营概览”和“聚合排价”子页面；统一复用官方 AppLayout；旧 `/admin/watch` 兼容跳转。
+- 验证：Docker `vue-tsc + Vite` 构建通过；集成测试 4/4、定向 ESLint、`git diff --check` 通过；Go embed 镜像构建成功；本地三个容器 healthy，health 与两个页面路径均返回 200。
+- 不满意分类与证据：`ui_interaction`；用户指出原页面独立显示、缺少统一菜单目录，根因是 WatchView 遗漏 AppLayout 且信息架构只有单一顶级入口。
+- 剩余风险：应用内浏览器 webview 三次无法附着，未完成宽屏/窄屏菜单点击和截图；需用户在本地预览完成可见验收。

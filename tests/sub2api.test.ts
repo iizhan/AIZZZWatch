@@ -5,6 +5,7 @@ import {
   normalizeApiBaseUrl,
   normalizeStationApiPaths,
   normalizeGroups,
+  resolveSameOriginHttpsApiBaseUrl,
   pickProfileBalance,
   resolveStationApiRequestUrl,
   resolveStationProfilePath,
@@ -19,6 +20,8 @@ describe('Sub2API contract helpers', () => {
   it('normalizes station root URLs without duplicating api prefix', () => {
     expect(normalizeApiBaseUrl('https://relay.example.com')).toBe('https://relay.example.com/api/v1')
     expect(normalizeApiBaseUrl('https://relay.example.com/api/v1/')).toBe('https://relay.example.com/api/v1')
+    expect(normalizeApiBaseUrl('https://relay.example.com/keys')).toBe('https://relay.example.com/api/v1')
+    expect(normalizeApiBaseUrl('https://relay.example.com/panel/sign-in')).toBe('https://relay.example.com/panel/api/v1')
   })
 
   it('rejects unsafe or malformed station URLs', () => {
@@ -31,6 +34,12 @@ describe('Sub2API contract helpers', () => {
     expect(resolveStationApiRequestUrl('https://shayulajiao.xyz/api/v1', 'https://shayulajiao.xyz/api/credits')).toBe('https://shayulajiao.xyz/api/credits')
     expect(() => resolveStationApiRequestUrl('https://shayulajiao.xyz/api/v1', 'http://shayulajiao.xyz/api/credits')).toThrow('必须使用 HTTPS')
     expect(() => resolveStationApiRequestUrl('https://shayulajiao.xyz/api/v1', 'https://other.example/api/credits')).toThrow('必须与站点同源')
+  })
+
+  it('accepts only a same-origin HTTPS custom API root', () => {
+    expect(resolveSameOriginHttpsApiBaseUrl('https://www.krill-ai.net/api/v1', 'https://www.krill-ai.net/api')).toBe('https://www.krill-ai.net/api')
+    expect(() => resolveSameOriginHttpsApiBaseUrl('https://www.krill-ai.net/api/v1', 'http://www.krill-ai.net/api')).toThrow('仅允许 HTTPS')
+    expect(() => resolveSameOriginHttpsApiBaseUrl('https://www.krill-ai.net/api/v1', 'https://api.krill-ai.net')).toThrow('必须与站点地址同源')
   })
 
   it('uses the aihub user summary endpoint only while the standard profile path is unchanged', () => {

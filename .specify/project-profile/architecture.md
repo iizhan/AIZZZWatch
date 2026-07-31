@@ -1,7 +1,7 @@
 # AIZZZWatch Project Architecture
 
 Status: `implemented_mvp`
-Last analyzed: `2026-07-24`
+Last analyzed: `2026-07-25`
 
 ## System Shape
 
@@ -18,9 +18,11 @@ Last analyzed: `2026-07-24`
 | desktop shell | window lifecycle, always-on-top, bubble, macOS status bar / Windows system tray | `src/main/index.ts` | renderer via preload | native BrowserWindow/Tray APIs and platform-native icon resources | source + visible smoke |
 | packaging | produce local macOS arm64 DMG and Windows x64 NSIS artifacts while retaining legacy app packager; the GitHub Windows runner uploads EXE-only temporary Artifacts without publishing | `package.json`, `.github/workflows/windows-package.yml`, `scripts/package-mac.mjs`, `scripts/build-icon.sh` | electron-builder, Electron runtime, GitHub Actions | ignored local `release/` artifacts; 7-day remote EXE Artifact; ICNS/ICO copied as app resources | package config test + DMG verification + successful Windows CI Run #3 |
 | renderer dashboard | category-driven token buying board, source wallet tabs, model price ranking with exact upstream-usage indicators and compact usage-switch filtering, own-station account workspaces, upstream Key mapping, internal-use user marking, persisted multiplier history, settings, data-integration mapping workspace and state feedback | `src/renderer/src/App.tsx` | preload IPC | visible UI state and persisted UI preferences | source + screenshots |
-| station compatibility diagnostics | auto-probe Sub2API/NewAPI signatures or manual compatibility paths; reuse saved browser Cookie/UA for read-only diagnostics | `src/main/station-diagnostics.ts` | Chromium `net.fetch`, shared URL/path helpers | read-only probe requests and suggestion payload | source + unit test |
+| station compatibility diagnostics | auto-probe Sub2API/NewAPI signatures without credentials, or run an explicitly requested same-origin saved-session detailed diagnostic | `src/main/station-diagnostics.ts` | Chromium `net.fetch`, shared URL/path helpers | read-only probe requests and suggestion payload | source + unit test |
+| automatic reauthorization queue | reserve one station before async storage access, serialize hidden login windows, bound retries, and let manual authorization cancel the relevant recovery | `src/main/auto-reauth-queue.ts`, `src/main/index.ts` | encrypted storage, web authorization | local status/timers and main-process BrowserWindow lifecycle | queue unit test + source review |
 | station adapters | select Sub2API or NewAPI read contract; NewAPI normalizes user balance, available group ratios, fixed pricing and token group assignments without admin mutation | `src/main/station-adapter.ts`, `src/main/newapi-client.ts`, `src/main/sub2api-client.ts` | station HTTP endpoints | remote reads and explicit capability degradation | source + contract tests |
-| secure storage | encrypted station credentials, optional password keepalive credentials, explicit source/own role, adapter type, API base/path and recharge metadata; validated local preferences including internal-use station/user ID pairs | `src/main/storage.ts` | Electron safeStorage | local userData file | source review |
+| secure storage | encrypted station credentials, optional password keepalive credentials, explicit source/own role, adapter type, API base/path and recharge metadata; validated local preferences including internal-use station/user ID pairs; sibling-temp atomic writes and corrupt-file backup before safe empty fallback | `src/main/storage.ts` | Electron safeStorage | local userData file | source review + storage durability tests |
+| refresh coordination | gives each station poll or user-forced refresh a monotonic epoch so older async work cannot commit after newer intent | `src/main/station-refresh-epochs.ts`, `src/main/index.ts` | main snapshot orchestration | in-memory snapshots, fingerprints, association persistence and ledger events | epoch tests + source review |
 | fork response mapping | validates dot-path-only standard-field mappings and applies them to selected read payloads without storing raw responses | `src/shared/station-read-mapping.ts`, `src/main/sub2api-client.ts` | shared DTOs and Sub2API client | main-process read normalization only | mapping/unit tests |
 
 ## Critical Flows
@@ -29,7 +31,7 @@ Last analyzed: `2026-07-24`
 
 `trigger/transport -> application -> domain -> data -> side effect -> response/event`
 
-- Contract: station base URL plus a user access context; normalize profile, groups/rates, and channel pricing into one snapshot. Profile balance compatibility accepts standard aliases plus forked `credit_balance`, including lcodex's root `/user/profile` response.
+- Contract: station base URL plus a user access context; normalize profile, groups/rates, and channel pricing into one snapshot. Profile balance compatibility accepts standard aliases plus forked `credit_balance`, including lcodex's root `/user/profile` response. Each poll or explicit user refresh gets a station-local epoch; only the newest epoch may persist snapshots, association inputs, ledger observations or renderer events.
 - Failure boundaries: timeout, network failure, 401/403, incompatible response shape, disabled `/channels/available`.
 - Verification path: adapter unit tests, mocked polling, visible dashboard retry path.
 - Evidence: upstream Sub2API routes `/user/profile`, `/groups/available`, `/groups/rates`, `/channels/available`.
@@ -47,7 +49,7 @@ Last analyzed: `2026-07-24`
 
 `renderer settings form -> diagnostics IPC -> main probe requests -> suggested apiBaseUrl/apiPaths -> persisted station config`
 
-- Contract: probe standard `/api/v1` routes first, then keep the user-provided base URL and manual paths when a fork or custom deployment differs. An existing station's encrypted Cookie/UA may be temporarily used in the main process so diagnostics represent the saved login session.
+- Contract: address input triggers a debounced, no-credential probe. Only a JSON-object 2xx, or a JSON 401/403 authorization response, is an API signal; HTML login/anti-bot pages are not signals. The explicit detailed-diagnosis action may temporarily use an existing station's encrypted Cookie/UA only from its saved HTTPS origin. The user-provided base URL and manual paths remain authoritative for a fork or custom deployment.
 - Failure boundaries: probe timeout, 404 on forked API roots, 401/403 auth hints, expired browser session, incomplete or missing response bodies.
 - Verification path: `station-diagnostics` unit test, settings modal smoke, manual path save and re-open.
 - Evidence: `src/main/station-diagnostics.ts`, `src/renderer/src/App.tsx`, `tests/station-diagnostics.test.ts`.
@@ -66,27 +68,27 @@ Last analyzed: `2026-07-24`
 `settings adapter type -> encrypted station metadata -> main adapter factory -> capability-limited snapshot -> renderer station type/degraded UI`
 
 - Contract: `sub2api` and `custom` use the established Sub2API-compatible read contract. `newapi` reads `/api/user/self`, `/api/user/self/groups`, `/api/pricing`, and `/api/token`; the price response's user-adjusted `group_ratio` is normalized into source groups and fixed model prices. It never calls Sub2API group/rate/administrator routes, and never exposes a NewAPI administrator-management view. `auto` is resolved only by an explicit read-only diagnostic result.
-- Security: credentials, Cookie and UA remain in the main process. NewAPI token rows are reduced to record ID/name/group; a callable token field is discarded before a snapshot crosses IPC. The browser session restore and subsequent refresh use the HttpOnly `new_api_refresh` cookie only in the main process, retaining a rotated cookie when supplied.
+- Security: credentials, Cookie and UA remain in the main process. NewAPI token rows are reduced to record ID/name/group; a callable token field is discarded before a snapshot crosses IPC. The browser session restore and subsequent refresh use the HttpOnly `new_api_refresh` cookie in the isolated authorization partition; when a confirmed NewAPI deployment needs page context, the logged-in HTTPS same-origin page may call only the fixed refresh endpoint and returns only a bounded `access_token` to the main process. Raw Cookie and response data never cross IPC.
 - Verification path: adapter, storage, diagnostic and renderer classification tests plus the browser-preview type switch at a constrained desktop width.
 - Evidence: `src/main/newapi-client.ts`, `src/main/station-adapter.ts`, `src/main/station-diagnostics.ts`, `src/renderer/src/App.tsx`, `tests/newapi-client.test.ts`.
 
 ### Flow 12: Encrypted password keepalive
 
-`station snapshot failure -> token refresh when supported -> encrypted credential re-login when enabled -> main-only token rotation -> one snapshot retry`
+`station snapshot authorization failure -> token refresh when supported -> opt-in encrypted-credential FIFO recovery -> bounded retry or manual handoff -> refreshed snapshot`
 
-- Contract: the saved account/password never crosses the preload bridge or renderer boundary. Automatic recovery is serialized per station, rate-limited, limited to the station's HTTPS origin, and stops for CAPTCHA, 2FA, WAF, or other manual-interaction requirements.
-- Failure boundaries: unavailable Electron encryption, absent saved credentials, non-password login flows, changed login contract, session fingerprint checks, and concurrent recovery attempts all surface a local status rather than repeatedly submitting credentials.
-- Verification path: unit tests for storage redaction and recovery classification, plus a visible station reauthorization path.
+- Contract: the saved account/password never crosses the preload bridge or renderer boundary. Recovery needs an explicit opt-in, saved credentials, and an HTTPS station. A synchronous FIFO reservation prevents competing authorization windows even while storage reads are in flight; network/timeout failures retry at 1, 5 and 30 minutes, then stop. CAPTCHA, 2FA, WAF, invalid credentials, a changed login contract, and a user-started manual authorization stop automatic submission and expose a safe local status. A prior `pending` state is reclassified as `application-restarted` at application start.
+- Failure boundaries: unavailable Electron encryption, absent saved credentials, non-password login flows, changed login contract, session fingerprint checks, cancelled manual priority and concurrent recovery attempts surface a safe local status rather than repeatedly submitting credentials. No retry timer survives app quit.
+- Verification path: queue reservation/FIFO/manual-cancel/backoff unit tests, storage redaction/status tests, and a visible station reauthorization path.
 - Evidence: `src/main/index.ts`, `src/main/storage.ts`, `src/main/web-auth.ts`, `src/preload/index.ts`, `src/renderer/src/App.tsx`, `tests/storage.test.ts`.
 
 ### Flow 13: Isolated web-login route compatibility
 
-`renderer authorization intent -> main-only isolated BrowserWindow -> fixed same-origin login route -> bounded SPA-404 fallback -> main-only session capture -> renderer-safe outcome`
+`renderer authorization intent -> main-only isolated BrowserWindow -> fixed same-origin login route -> bounded SPA-404 fallback -> partition refresh -> bounded logged-page same-origin refresh/profile verification -> main-only session capture -> renderer-safe outcome`
 
-- Contract: NewAPI explicitly starts at `/sign-in` and can fall back once to `/login`; other compatible stations start at `/login` and can fall back once to `/sign-in`. The lcodex root-page client-route behaviour remains separate. A fallback is permitted only when the current page is same-origin, at an allowed candidate route (or its own `/404` route), and visibly reports a 404 state.
-- Security: no arbitrary route is accepted, external OAuth/challenge pages are never redirected, and raw page text, Cookie, JWT, account name and password remain in the main process.
-- Failure boundaries: if both fixed routes visibly return 404, the renderer receives a route-specific, Chinese actionable error. A normally closed authorization window remains a user cancellation.
-- Verification path: web-auth helper unit tests, public `nihao.dog/sign-in` and `/login` visible checks, full typecheck/test/build, and a locally signed macOS test ZIP.
+- Contract: NewAPI explicitly starts at `/sign-in` and can fall back once to `/login`; other compatible stations start at `/login` and can fall back once to `/sign-in`. The lcodex root-page client-route behaviour remains separate. A fallback is permitted only when the current page is same-origin, at an allowed candidate route (or its own `/404` route), and visibly reports a 404 state. The refresh-first branch applies only to deployments implementing `/api/user/auth/refresh`; `nihao.dog` was observed on 2026-07-25 to use a legacy OneAPI-compatible, cookie-authenticated `/api/user/self` flow and returns 404 from the refresh endpoint. Its Cookie fallback verifies the fixed profile endpoint inside the logged-in HTTPS same-origin page, then stores the bounded Cookie session as internal `cookie-session` mode for read-only NewAPI requests.
+- Security: no arbitrary route is accepted, external OAuth/challenge pages are never redirected, and raw page text, Cookie, JWT, account name and password remain outside renderer IPC. The legacy cookie-session fallback returns a profile-valid result and, only where the public station client requires it, a 1–20 digit `localStorage.uid` selected-user context; then main-process code encrypts the bounded Cookie header and that context. It does not read or return the complete localStorage `user` object, account profile, token values, or raw response.
+- Failure boundaries: if both fixed routes visibly return 404, the renderer receives a route-specific, Chinese actionable error. Page-navigation errors during the refresh fallback degrade to an open authorization window rather than closing it. A normally closed authorization window remains a user cancellation.
+- Verification path: web-auth helper unit tests, public `nihao.dog/sign-in` and `/login` visible checks, full typecheck/test/build, and a locally signed macOS test ZIP; a user-controlled real login remains required for end-to-end acceptance.
 - Evidence: `src/main/web-auth.ts`, `src/main/index.ts`, `src/renderer/src/App.tsx`, `tests/web-auth.test.ts`.
 
 ### Flow 9: Exact upstream Key usage indicator
@@ -100,7 +102,7 @@ Last analyzed: `2026-07-24`
 
 ### Flow 4: Persisted multiplier change history
 
-`main snapshot update -> persisted rate baseline comparison -> local UI preference history -> renderer ranking/history presentation`
+`main snapshot update -> persisted rate baseline comparison -> local UI preference history -> narrow preload broadcast refreshes renderer history; newly recorded verified rate changes may issue a native notification whose click opens the change log`
 
 - Contract: the main process establishes the first successful observation as baseline, then persists rate-up/rate-down events with group identity and previous/next multiplier in the same serialized write as the time ledger. The price ranking exposes only each group’s current latest local rate change below its final multiplier, including the full observed date and time. It establishes a local observed-change boundary, not a provider-issued audit timestamp.
 - Failure boundaries: the app is closed between remote changes, polling is delayed, or a provider returns no group key; exact historical accounting cannot be inferred for an unobserved interval.
@@ -137,7 +139,7 @@ Last analyzed: `2026-07-24`
 
 `renderer integration draft -> preload preview IPC -> saved station context in main -> same-origin HTTPS GET -> bounded dot-path normalization -> sanitized preview/snapshot`
 
-- Contract: mappings can cover only profile, groups, rates, channels and source Key record fields. They accept dot paths up to 12 segments and no scripts, filters, cross-origin paths or remote writes. A mapping preview returns paths, field names, record counts and a short result only.
+- Contract: mappings can cover only profile, groups, rates, channels and source Key record fields. They accept dot paths up to 12 segments and no scripts, filters, cross-origin paths or remote writes. In the custom template, the displayed API root is an editable, saved draft that must be HTTPS, same-origin, credential-free and contain no query/hash. A mapping preview returns paths, field names, record counts and a short result only.
 - Security: credentials and raw response payloads stay in the main process. Mapping preview operates only against a persisted station ID; supplied name/base URL/tokens are ignored. Custom mapping capability reads require HTTPS and all full paths must remain same-origin.
 - Failure boundaries: invalid paths are stripped on save, missing required fields return `partial`, an unavailable endpoint is reported per capability, and clearing an explicit mapping restores default compatibility behavior.
 - Evidence: `src/shared/station-read-mapping.ts`, `src/main/index.ts`, `src/main/storage.ts`, `src/main/sub2api-client.ts`, `tests/station-read-mapping.test.ts`, `tests/storage.test.ts`, `tests/sub2api-client.test.ts`.

@@ -108,6 +108,31 @@ describe('Sub2ApiClient', () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain('https://aihub.top/api/v1/user/profile')
   })
 
+  it('uses Krill\'s known user paths from a legacy API root without manual path edits', async () => {
+    const fetchMock = vi.fn((url: string | URL) => {
+      const target = String(url)
+      if (target === 'https://www.krill-ai.net/api/auth/me') return Promise.resolve(ok({ credits: 12.5 }))
+      if (target === 'https://www.krill-ai.net/api/my/channels') {
+        return Promise.resolve(ok([{ id: 3, title: 'OpenAI', provider: 'openai', multiplier: 0.025 }]))
+      }
+      return Promise.resolve(new Response('not found', { status: 404, headers: { 'Content-Type': 'text/plain' } }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await new Sub2ApiClient({
+      id: 'krill',
+      name: 'Krill',
+      baseUrl: 'https://www.krill-ai.net/api/v1',
+      accessToken: 'secret',
+      apiPaths: { profile: '/api/auth/me', balance: '/api/credits', groups: '/api/my/channels' }
+    }).fetchSnapshot()
+
+    expect(result).toMatchObject({ health: 'healthy', balance: 12.5 })
+    expect(result.groups[0]).toMatchObject({ id: 3, name: 'OpenAI', platform: 'openai', rateMultiplier: 0.025 })
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain('https://www.krill-ai.net/api/auth/me')
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain('https://www.krill-ai.net/api/my/channels')
+  })
+
   it('uses an injected fetch implementation for desktop Chromium network requests', async () => {
     const globalFetch = vi.fn()
     vi.stubGlobal('fetch', globalFetch)
@@ -243,7 +268,7 @@ describe('Sub2ApiClient', () => {
     await expect(client.refreshAccessToken()).rejects.toThrow(/\/auth\/refresh.*接口返回空内容/)
   })
 
-  it('surfaces a path hint when a forked station returns 404 text for the groups endpoint', async () => {
+  it('keeps a source wallet readable when only its groups endpoint returns 404 text', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(ok({ balance: 18.25 }))
       .mockResolvedValueOnce(new Response('not found', {
@@ -256,8 +281,8 @@ describe('Sub2ApiClient', () => {
 
     const result = await client.fetchSnapshot()
 
-    expect(result.health).toBe('error')
-    expect(result.errorMessage).toMatch(/分组接口未命中.*\/groups\/available/)
+    expect(result).toMatchObject({ health: 'healthy', balance: 18.25, groups: [], priceCapability: 'disabled' })
+    expect(result.errorMessage).toMatch(/余额已读取，但分组暂不可读取.*分组接口未命中.*\/groups\/available/)
   })
 
   it('refreshes access and refresh tokens through the auth endpoint', async () => {

@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
 import { classifySub2ApiError, normalizeRecordCollection, resolveStationApiPath, resolveStationApiRequestUrl, Sub2ApiError } from '../shared/sub2api'
-import type { GroupSnapshot, PricingModelSnapshot, SourceKeySnapshot, StationApiPaths, StationSnapshot } from '../shared/types'
+import type { GroupSnapshot, NewApiSessionAuthMode, PricingModelSnapshot, SourceKeySnapshot, StationApiPaths, StationSnapshot } from '../shared/types'
 import type { FetchLike } from './sub2api-client'
+import { isBoundedCookieHeader } from './web-auth'
 
 interface NewApiClientStation {
   id: string
@@ -10,6 +11,8 @@ interface NewApiClientStation {
   apiBaseUrl?: string
   accessToken?: string
   sessionCookie?: string
+  sessionAuthMode?: NewApiSessionAuthMode
+  newApiSelectedUserId?: string
   userAgent?: string
   apiPaths?: StationApiPaths
   fetchImpl?: FetchLike
@@ -62,6 +65,11 @@ function finiteNumber(value: unknown): number | undefined {
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function boundedNewApiSelectedUserId(value: unknown): string | undefined {
+  const candidate = nonEmptyString(value)
+  return candidate && /^\d{1,20}$/.test(candidate) ? candidate : undefined
 }
 
 function newApiBalance(profile: Record<string, unknown>): number | undefined {
@@ -260,7 +268,10 @@ export class NewApiClient {
 
   private async requestEnvelope(path: string, options: NewApiRequestOptions = {}): Promise<NewApiResponseEnvelope | undefined> {
     const token = this.station.accessToken?.trim()
-    if (!token) throw new Sub2ApiError('未配置 NewAPI 访问令牌，请重新授权或粘贴 JWT', 'UNAUTHORIZED', 401)
+    const sessionCookie = isBoundedCookieHeader(this.station.sessionCookie) ? this.station.sessionCookie : undefined
+    const usesCookieSession = this.station.sessionAuthMode === 'cookie-session' || (!token && Boolean(sessionCookie))
+    const selectedUserId = usesCookieSession ? boundedNewApiSelectedUserId(this.station.newApiSelectedUserId) : undefined
+    if (!token && !sessionCookie) throw new Sub2ApiError('未配置 NewAPI 登录会话，请重新授权或粘贴 JWT', 'UNAUTHORIZED', 401)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10_000)
     try {
@@ -271,11 +282,12 @@ export class NewApiClient {
         signal: controller.signal,
         headers: {
           Accept: 'application/json',
-          Authorization: `Bearer ${token}`,
+          ...(!usesCookieSession && token ? { Authorization: `Bearer ${token}` } : {}),
           'x-user-ui-request': '1',
           Referer: `${origin}/`,
           ...(options.method === 'POST' ? { Origin: origin, 'Content-Type': 'application/json' } : {}),
-          ...(this.station.sessionCookie ? { Cookie: this.station.sessionCookie } : {}),
+          ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+          ...(selectedUserId ? { 'New-Api-User': selectedUserId } : {}),
           ...(this.station.userAgent ? { 'User-Agent': this.station.userAgent } : {})
         },
         ...(options.method === 'POST' ? { body: options.body ?? '{}' } : {})
@@ -322,6 +334,9 @@ export class NewApiClient {
   }
 
   async refreshAccessToken(): Promise<{ accessToken: string; refreshToken?: string; sessionCookie?: string }> {
+    if (this.station.sessionAuthMode === 'cookie-session') {
+      throw new Sub2ApiError('当前 OneAPI Cookie 会话不支持刷新访问令牌，请重新授权', 'UNAUTHORIZED', 401)
+    }
     const envelope = await this.requestEnvelope(this.endpoint('authRefresh', '/api/user/auth/refresh'), { method: 'POST' })
     if (!envelope) throw new Sub2ApiError('NewAPI 会话刷新未返回数据', 'UNAUTHORIZED', 401)
     const payload = unwrapNewApiPayload<unknown>(envelope.payload)

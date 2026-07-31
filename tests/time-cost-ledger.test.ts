@@ -4,14 +4,18 @@ import {
   appendObservedGroupRateChanges,
   appendProfitUsageArchiveDay,
   appendTimeCostSnapshot,
+  archiveCoverageForQuery,
+  archiveDates,
   buildProfitIntervalReport,
   calculateTemporalUsageCost,
+  dayArchiveQuery,
   emptyTimeCostLedger,
   extractStrictProfitUsageRecords,
   extractStrictUsageEntries,
-  resolveSourceGroupAtTime
+  resolveSourceGroupAtTime,
+  summarizeOrphanedLocalHistory
 } from '../src/shared/time-cost-ledger'
-import type { AccountUpstreamMapping, TimeCostLedger, UsageLedgerEntry } from '../src/shared/types'
+import type { AccountUpstreamMapping, ProfitArchiveDayCoverage, ProfitIntervalQuery, TimeCostLedger, UsageLedgerEntry } from '../src/shared/types'
 
 function usageEntry(occurredAt: string, id = 'usage-1'): UsageLedgerEntry {
   return { id, accountStationId: 'mine', accountId: 7, usageAmount: 100, occurredAt }
@@ -50,6 +54,36 @@ describe('time cost ledger', () => {
 
     const changed = appendObservedGroupRateChanges([], baseline, 'source', 'Source', [{ ...firstSnapshot.groups[0], rateMultiplier: 0.03 }], '2026-07-21T12:05:00.000Z')
     expect(changed).toMatchObject([{ kind: 'rate-up', previousRate: 0.02, nextRate: 0.03, occurredAt: '2026-07-21T12:05:00.000Z' }])
+  })
+
+  it('keeps local history visible without guessing that a new station owns it', () => {
+    const ledger: TimeCostLedger = {
+      ...emptyTimeCostLedger(),
+      rateObservations: [
+        { id: 'old-rate', stationId: 'old-source', groupId: 11, rateMultiplier: 0.02, rechargeRatio: 1, effectiveMultiplier: 0.02, observedAt: '2026-07-21T11:10:00.000Z', timeSource: 'observed' },
+        { id: 'live-rate', stationId: 'live-source', groupId: 12, rateMultiplier: 0.03, rechargeRatio: 1, effectiveMultiplier: 0.03, observedAt: '2026-07-21T12:10:00.000Z', timeSource: 'observed' }
+      ],
+      usageEntries: [{ id: 'old-usage', accountStationId: 'old-source', accountId: 7, usageAmount: 20, occurredAt: '2026-07-21T11:20:00.000Z' }],
+      profitUsageRecords: [{ id: 'old-profit', accountStationId: 'old-source', accountId: 7, occurredAt: '2026-07-21T11:30:00.000Z', revenue: 5, upstreamBaseCost: 2, accountRateMultiplier: 0.02 }]
+    }
+    const changes = [
+      { id: 'old-name', kind: 'rate-up' as const, stationId: 'old-source', stationName: '旧名称', groupId: 11, groupName: 'Claude', platform: 'anthropic', previousRate: 0.02, nextRate: 0.03, occurredAt: '2026-07-21T11:05:00.000Z' },
+      { id: 'old-change', kind: 'rate-down' as const, stationId: 'old-source', stationName: '旧来源', groupId: 11, groupName: 'Claude', platform: 'anthropic', previousRate: 0.03, nextRate: 0.02, occurredAt: '2026-07-21T11:40:00.000Z' }
+    ]
+
+    const histories = summarizeOrphanedLocalHistory(new Set(['live-source']), changes, ledger)
+
+    expect(histories).toEqual([expect.objectContaining({
+      stationId: 'old-source',
+      stationName: '旧来源',
+      groupChangeCount: 2,
+      rateObservationCount: 1,
+      usageEntryCount: 1,
+      profitUsageRecordCount: 1,
+      lastObservedAt: '2026-07-21T11:40:00.000Z'
+    })])
+    expect(histories[0].recentRateObservations).toHaveLength(1)
+    expect(histories[0].recentGroupChanges).toHaveLength(2)
   })
 
   it('uses the old multiplier before the observed change boundary', () => {
@@ -276,5 +310,66 @@ describe('time cost ledger', () => {
     expect(changed.mappingEvents).toHaveLength(2)
     expect(changed.mappingEvents.find((event) => event.effectiveAt === '2026-07-21T11:00:00.000Z')).toMatchObject({ sourceStationId: 'source-a', sourceKeyId: 'key-a' })
     expect(changed.mappingEvents.find((event) => event.effectiveAt === '2026-07-21T12:00:00.000Z')).toMatchObject({ sourceStationId: 'source-b', sourceKeyId: 'key-b' })
+  })
+})
+
+function profitQuery(startAt: string, endAt: string, granularity: ProfitIntervalQuery['granularity'] = 'hour'): ProfitIntervalQuery {
+  return { stationId: 'mine', startAt, endAt, timezone: 'Asia/Shanghai', granularity }
+}
+
+describe('archive dates', () => {
+  it('includes the touched day for a range entirely inside one Shanghai day', () => {
+    expect(archiveDates(profitQuery('2026-07-26T01:00:00.000Z', '2026-07-26T10:00:00.000Z'))).toEqual(['2026-07-26'])
+  })
+
+  it('includes exactly one day for a range spanning a full Shanghai day boundary to boundary', () => {
+    expect(archiveDates(profitQuery('2026-07-25T16:00:00.000Z', '2026-07-26T16:00:00.000Z'))).toEqual(['2026-07-26'])
+  })
+
+  it('includes the trailing partial day instead of dropping it', () => {
+    expect(archiveDates(profitQuery('2026-07-25T16:00:00.000Z', '2026-07-28T02:00:00.000Z')))
+      .toEqual(['2026-07-26', '2026-07-27', '2026-07-28'])
+  })
+
+  it('can touch up to 8 calendar days for a maximal 7-day hourly window misaligned with day boundaries', () => {
+    // 2026-07-20T15:00+08 through +7 days lands at 2026-07-27T15:00+08.
+    expect(archiveDates(profitQuery('2026-07-20T07:00:00.000Z', '2026-07-27T07:00:00.000Z'))).toEqual([
+      '2026-07-20', '2026-07-21', '2026-07-22', '2026-07-23', '2026-07-24', '2026-07-25', '2026-07-26', '2026-07-27'
+    ])
+  })
+
+  it('builds a fixed [00:00, 24:00) Shanghai-day query that discards account/group filters', () => {
+    const baseQuery: ProfitIntervalQuery = { ...profitQuery('2026-07-25T00:00:00.000Z', '2026-07-27T00:00:00.000Z', 'day'), accountId: 7, sellingGroupId: 11 }
+    const query = dayArchiveQuery(baseQuery, '2026-07-26')
+    expect(query.startAt).toBe('2026-07-25T16:00:00.000Z')
+    expect(query.endAt).toBe('2026-07-26T16:00:00.000Z')
+    expect(query.accountId).toBeUndefined()
+    expect(query.sellingGroupId).toBeUndefined()
+  })
+
+  function coverageDay(date: string, overrides: Partial<ProfitArchiveDayCoverage> = {}): ProfitArchiveDayCoverage {
+    return { accountStationId: 'mine', date, fetchedAt: `${date}T20:00:00.000Z`, state: 'complete', pagesFetched: 1, recordsSeen: 1, acceptedEntries: 1, ...overrides }
+  }
+
+  it('reports coverage as complete when every touched day, including a trailing partial day, is archived', () => {
+    const ledger: TimeCostLedger = { ...emptyTimeCostLedger(), profitUsageCoverage: [coverageDay('2026-07-26'), coverageDay('2026-07-27')] }
+    const coverage = archiveCoverageForQuery(ledger, profitQuery('2026-07-25T16:00:00.000Z', '2026-07-27T10:00:00.000Z'))
+    expect(coverage.state).toBe('complete')
+  })
+
+  it('reports coverage as incomplete, not silently unavailable, when a same-day range has never been archived', () => {
+    // Before archiveDates counted the touched day, this range produced zero
+    // dates and the coverage state fell through to a misleading 'unavailable'
+    // ("nothing to report") instead of flagging the one missing day.
+    const coverage = archiveCoverageForQuery(emptyTimeCostLedger(), profitQuery('2026-07-26T01:00:00.000Z', '2026-07-26T10:00:00.000Z'))
+    expect(coverage.state).toBe('incomplete')
+    expect(coverage.detail).toContain('未归档 1 天')
+  })
+
+  it('reports coverage as incomplete when the trailing partial day has not been archived yet', () => {
+    const ledger: TimeCostLedger = { ...emptyTimeCostLedger(), profitUsageCoverage: [coverageDay('2026-07-26')] }
+    const coverage = archiveCoverageForQuery(ledger, profitQuery('2026-07-25T16:00:00.000Z', '2026-07-27T02:00:00.000Z'))
+    expect(coverage.state).toBe('incomplete')
+    expect(coverage.detail).toContain('未归档 1 天')
   })
 })

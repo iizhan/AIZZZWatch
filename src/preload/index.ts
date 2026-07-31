@@ -13,6 +13,7 @@ const api: AizzzApi = {
     save: (input: StationInput) => ipcRenderer.invoke('stations:save', input),
     remove: (id: string) => ipcRenderer.invoke('stations:remove', id),
     refresh: (id?: string) => ipcRenderer.invoke('stations:refresh', id),
+    checkKeepalive: (id: string) => ipcRenderer.invoke('stations:keepalive-check', id),
     getSnapshots: () => ipcRenderer.invoke('stations:snapshots'),
     diagnose: (input) => ipcRenderer.invoke('stations:diagnose', input),
     previewMapping: (input) => ipcRenderer.invoke('stations:preview-mapping', input),
@@ -35,6 +36,11 @@ const api: AizzzApi = {
       const listener = (_event: Electron.IpcRendererEvent, state: { mode: WindowMode; alwaysOnTop: boolean }) => callback(state)
       ipcRenderer.on('window:mode', listener)
       return () => ipcRenderer.removeListener('window:mode', listener)
+    },
+    onOpenGroupChanges: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: { filter: 'all' | 'rate-up' | 'rate-down' }) => callback(state)
+      ipcRenderer.on('preferences:open-group-changes', listener)
+      return () => ipcRenderer.removeListener('preferences:open-group-changes', listener)
     }
   },
   admin: {
@@ -53,7 +59,12 @@ const api: AizzzApi = {
     setDismissedGroupChangeEventIds: (ids: string[]) => ipcRenderer.invoke('preferences:set-dismissed-group-change-event-ids', ids),
     setAccountUpstreamMappings: (mappings: AccountUpstreamMapping[]) => ipcRenderer.invoke('preferences:set-account-upstream-mappings', mappings),
     setAccountCostProfiles: (profiles: AccountCostProfile[]) => ipcRenderer.invoke('preferences:set-account-cost-profiles', profiles),
-    setInternalUserProfiles: (profiles: InternalUserProfile[]) => ipcRenderer.invoke('preferences:set-internal-user-profiles', profiles)
+    setInternalUserProfiles: (profiles: InternalUserProfile[]) => ipcRenderer.invoke('preferences:set-internal-user-profiles', profiles),
+    onUpdated: (callback) => {
+      const listener = () => callback()
+      ipcRenderer.on('preferences:updated', listener)
+      return () => ipcRenderer.removeListener('preferences:updated', listener)
+    }
   },
   dataCenter: {
     getSummary: () => ipcRenderer.invoke('data-center:get-summary')

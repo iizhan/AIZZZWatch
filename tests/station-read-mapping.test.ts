@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { mappingRequiredFieldsPresent, normalizeStationReadMapping, readMappedPath } from '../src/shared/station-read-mapping'
 
 describe('station read mapping', () => {
+  it('keeps an explicit empty custom template so an API root can be configured before field mappings', () => {
+    expect(normalizeStationReadMapping({ version: 1, template: 'custom', capabilities: {} })).toEqual({
+      version: 1,
+      template: 'custom',
+      capabilities: {}
+    })
+    expect(normalizeStationReadMapping({})).toBeUndefined()
+  })
+
   it('keeps only allowed dot paths and known fields', () => {
     expect(normalizeStationReadMapping({
       version: 1,

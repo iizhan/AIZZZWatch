@@ -65,7 +65,7 @@ function createPreviewDiagnostics(): StationDiagnostics {
   }
 }
 
-function createPreviewMappingPreview(input: Pick<StationInput, 'id' | 'apiPaths' | 'readMapping'>): StationMappingPreview {
+function createPreviewMappingPreview(input: Pick<StationInput, 'id' | 'apiBaseUrl' | 'apiPaths' | 'readMapping'>): StationMappingPreview {
   const capabilities: StationReadCapability[] = ['profile', 'groups', 'rates', 'channels', 'keys']
   return {
     stationId: input.id,
@@ -257,20 +257,23 @@ export function createPreviewApi(): AizzzApi {
     },
     stations: {
       list: async () => stations,
+      checkKeepalive: async () => {
+        throw new Error('浏览器预览不执行保活检查，请打开桌面端验证真实会话')
+      },
       diagnose: async () => createPreviewDiagnostics(),
       previewMapping: async (input) => createPreviewMappingPreview(input),
       save: async (input: StationInput) => {
-        const name = input.name.trim()
-        if (!name) throw new Error('站点名称不能为空')
         const baseUrl = normalizeStationBaseUrl(input.baseUrl, input.adapterType === 'auto' ? input.detectedAdapterType : input.adapterType)
+        const name = input.name.trim() || new URL(baseUrl).hostname
         const existing = input.id ? stations.find((station) => station.id === input.id) : undefined
+        const hasApiBaseUrlInput = Object.prototype.hasOwnProperty.call(input, 'apiBaseUrl')
         const hasReadMappingInput = Object.prototype.hasOwnProperty.call(input, 'readMapping')
         const hasAdminToken = hasValue(input.adminToken) || Boolean(existing?.hasAdminToken)
         const station: StationPublic = {
           id: existing?.id ?? input.id ?? createPreviewId(),
           name,
           baseUrl,
-          apiBaseUrl: input.apiBaseUrl?.trim() || existing?.apiBaseUrl,
+          apiBaseUrl: hasApiBaseUrlInput ? input.apiBaseUrl?.trim() || baseUrl : existing?.apiBaseUrl,
           stationRole: input.stationRole ?? existing?.stationRole ?? 'source',
           adapterType: input.adapterType ?? existing?.adapterType ?? 'sub2api',
           detectedAdapterType: input.detectedAdapterType ?? existing?.detectedAdapterType,
@@ -321,7 +324,8 @@ export function createPreviewApi(): AizzzApi {
       setMode: async (mode) => ({ mode }),
       toggleAlwaysOnTop: async () => ({ alwaysOnTop: false }),
       show: async () => undefined,
-      onModeChanged: () => () => undefined
+      onModeChanged: () => () => undefined,
+      onOpenGroupChanges: () => () => undefined
     },
     admin: {
       updateAccountGroups: async () => {
@@ -343,7 +347,8 @@ export function createPreviewApi(): AizzzApi {
       setDismissedGroupChangeEventIds: async (ids) => writePreviewPreferences({ ...readPreviewPreferences(), dismissedGroupChangeEventIds: ids }),
       setAccountUpstreamMappings: async (mappings) => writePreviewPreferences({ ...readPreviewPreferences(), accountUpstreamMappings: mappings }),
       setAccountCostProfiles: async (profiles) => writePreviewPreferences({ ...readPreviewPreferences(), accountCostProfiles: profiles }),
-      setInternalUserProfiles: async (profiles) => writePreviewPreferences({ ...readPreviewPreferences(), internalUserProfiles: profiles })
+      setInternalUserProfiles: async (profiles) => writePreviewPreferences({ ...readPreviewPreferences(), internalUserProfiles: profiles }),
+      onUpdated: () => () => undefined
     },
     dataCenter: {
       getSummary: async () => createPreviewDataCenterSummary(stations)

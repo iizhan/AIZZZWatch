@@ -59,14 +59,20 @@ function cleanCapability(capability: StationReadCapability, value: unknown): Sta
 export function normalizeStationReadMapping(value: unknown): StationReadMapping | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const mapping = value as Partial<StationReadMapping>
-  const template: StationReadMappingTemplate = ['sub2api', 'newapi', 'lcodex', 'aihub', 'custom'].includes(mapping.template ?? '')
+  const hasRecognizedTemplate = ['sub2api', 'newapi', 'lcodex', 'aihub', 'custom'].includes(mapping.template ?? '')
+  const template: StationReadMappingTemplate = hasRecognizedTemplate
     ? mapping.template as StationReadMappingTemplate
     : 'custom'
   const capabilities = Object.fromEntries(stationReadCapabilities.flatMap((capability) => {
     const next = cleanCapability(capability, mapping.capabilities?.[capability])
     return next ? [[capability, next]] : []
   })) as StationReadMapping['capabilities']
-  return Object.keys(capabilities).length > 0 || template !== 'custom'
+  const rawCapabilities = mapping.capabilities
+  const hasRawCapabilities = Boolean(rawCapabilities && typeof rawCapabilities === 'object' && !Array.isArray(rawCapabilities) && Object.keys(rawCapabilities).length > 0)
+  // A user can select the custom template to configure only an API root first
+  // and add field mappings later. Preserve that explicit empty selection;
+  // arbitrary invalid mapping objects still normalize to undefined.
+  return Object.keys(capabilities).length > 0 || template !== 'custom' || (hasRecognizedTemplate && !hasRawCapabilities)
     ? { version: 1, template, capabilities }
     : undefined
 }

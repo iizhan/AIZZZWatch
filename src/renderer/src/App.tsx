@@ -70,7 +70,7 @@ import type {
 } from '../../shared/types'
 import { defaultStationApiPaths } from '../../shared/sub2api'
 import { mappingFieldDefinitions, stationReadCapabilities } from '../../shared/station-read-mapping'
-import { emptyTimeCostLedger, latestLedgerObservationAt, summarizeTemporalUsageCosts, type TemporalUsageCostSummary } from '../../shared/time-cost-ledger'
+import { emptyTimeCostLedger, latestLedgerObservationAt, summarizeOrphanedLocalHistory, summarizeTemporalUsageCosts, type TemporalUsageCostSummary } from '../../shared/time-cost-ledger'
 import { analyzeUsageCapability, type UsageCapabilityDiagnostic, type UsageCapabilityPrecision } from '../../shared/usage-diagnostics'
 
 const demoStations: StationPublic[] = [
@@ -237,6 +237,7 @@ type CostSortMode = 'unset-first' | 'risk' | 'cost-kind' | 'category' | 'group-r
 type WorkspaceView = 'pricing' | 'stations' | 'integration' | 'data'
 
 type IntegrationDraft = {
+  apiBaseUrl: string
   apiPaths: StationApiPaths
   readMapping: StationReadMapping
 }
@@ -254,6 +255,7 @@ function integrationTemplateFor(station: StationPublic): StationReadMapping['tem
 
 function integrationDraftFromStation(station: StationPublic): IntegrationDraft {
   return {
+    apiBaseUrl: station.apiBaseUrl ?? station.baseUrl,
     apiPaths: { ...station.apiPaths },
     readMapping: station.readMapping ?? { version: 1, template: integrationTemplateFor(station), capabilities: {} }
   }
@@ -310,7 +312,6 @@ const hiddenGroupsStorageKey = 'aizzzwatch:hidden-ranking-groups:v1'
 const groupChangeEventsStorageKey = 'aizzzwatch:group-change-events:v1'
 const groupChangeEventsRetentionLimit = 50_000
 const accountRecommendationStrategyStorageKey = 'aizzzwatch:account-recommendation-strategy:v1'
-const groupChangeNotificationStorageKey = 'aizzzwatch:last-change-notification:v1'
 
 type GroupCapabilityTag = {
   id: GroupCapabilityTagId
@@ -613,8 +614,13 @@ function autoReauthStatusLabel(status: StationPublic['autoReauthStatus']): strin
   const timestamp = formatGroupChangeObservedAt(status.at)
   if (status.state === 'pending') return `正在尝试重新登录${timestamp ? ` · ${timestamp}` : ''}`
   if (status.state === 'success') return `上次保活成功${timestamp ? ` · ${timestamp}` : ''}`
+  if (status.state === 'retry-scheduled') {
+    const nextRetry = formatGroupChangeObservedAt(status.nextRetryAt)
+    return `网络重试 ${status.attempts ?? 0}/3${nextRetry ? ` · 下次 ${nextRetry}` : ''}`
+  }
   if (status.state === 'manual-required') return `需要人工完成验证${timestamp ? ` · ${timestamp}` : ''}`
-  return `上次保活未完成${timestamp ? ` · ${timestamp}` : ''}`
+  if (status.state === 'credentials-invalid') return `账号密码需更新${timestamp ? ` · ${timestamp}` : ''}`
+  return `保活已中断${timestamp ? ` · ${timestamp}` : ''}`
 }
 
 function formatAge(value: string | undefined, now: number): string {
@@ -1897,6 +1903,7 @@ function cleanUrl(value: string): string {
 export function webAuthErrorText(error: unknown): string {
   const message = error instanceof Error ? error.message : ''
   if (message === 'AUTH_CANCELLED') return '已取消网页登录授权'
+  if (message === 'AUTH_NEWAPI_SESSION_NOT_CAPTURED') return '已检测到网页已登录，但未能保存可用的 NewAPI 会话。请保持同一网络，确认已进入站点后台后重试授权；该站也可能只支持粘贴 JWT。'
   if (message.startsWith('AUTH_LOGIN_ROUTE_NOT_FOUND:')) {
     const paths = message.slice('AUTH_LOGIN_ROUTE_NOT_FOUND:'.length).split(',').filter(Boolean)
     return `未找到网页登录入口（已尝试 ${paths.join('、')}）。请确认站点类型或向站点确认登录入口。`
@@ -2120,24 +2127,6 @@ function readStoredGroupChangeEvents(): GroupChangeEvent[] {
   }
 }
 
-function readLastGroupChangeNotificationAt(): string | undefined {
-  if (typeof window === 'undefined') return undefined
-  try {
-    return window.localStorage.getItem(groupChangeNotificationStorageKey) || undefined
-  } catch {
-    return undefined
-  }
-}
-
-function saveLastGroupChangeNotificationAt(value: string): void {
-  if (typeof window === 'undefined') return
-  try {
-    window.localStorage.setItem(groupChangeNotificationStorageKey, value)
-  } catch {
-    // Notification read markers are local UI convenience only.
-  }
-}
-
 function newestGroupChangeTime(events: GroupChangeEvent[]): string | undefined {
   return events
     .map((event) => event.occurredAt)
@@ -2166,26 +2155,6 @@ export function groupChangeNotificationSummary(events: GroupChangeEvent[], lastN
     rateDown,
     newestAt,
     text: parts.length > 0 ? `发现 ${parts.join('、')}，可在价格榜筛选查看。` : undefined
-  }
-}
-
-function showSystemNotification(title: string, body: string): void {
-  if (typeof Notification === 'undefined') return
-  try {
-    const show = () => new Notification(title, { body })
-    if (Notification.permission === 'granted') {
-      show()
-      return
-    }
-    if (Notification.permission === 'default') {
-      void Notification.requestPermission()
-        .then((permission) => {
-          if (permission === 'granted') show()
-        })
-        .catch(() => undefined)
-    }
-  } catch {
-    // System notifications are best-effort.
   }
 }
 
@@ -2529,6 +2498,8 @@ function App() {
   const [selectedTag, setSelectedTag] = useState<GroupTagFilter>('all')
   const [diagnostics, setDiagnostics] = useState<StationDiagnostics | null>(null)
   const [diagnosing, setDiagnosing] = useState(false)
+  const [advancedSettingsOpen, setAdvancedSettingsOpen] = useState(false)
+  const diagnosisRequestRef = useRef(0)
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth)
   const [rankingSort, setRankingSort] = useState<RankingSortState>(defaultRankingSort)
   const [rankingChangeFilter, setRankingChangeFilter] = useState<RankingChangeFilter>('all')
@@ -2599,6 +2570,7 @@ function App() {
   const [expandedProfitAccountKeys, setExpandedProfitAccountKeys] = useState<Set<string>>(() => new Set())
   const previousSnapshotsRef = useRef<Record<string, StationSnapshot> | null>(null)
   const preferencesLoadedRef = useRef(false)
+  const preferencesSyncSequenceRef = useRef(0)
 
   const isBrowserPreview = window.aizzz.runtime.isBrowserPreview
   const demoMode = stations.length === 0
@@ -2743,6 +2715,10 @@ function App() {
   const ownStations = useMemo(() => {
     return sourceStations.filter((station) => isOwnStation(station, visibleSnapshots[station.id]))
   }, [sourceStations, visibleSnapshots])
+  const orphanedLocalHistory = useMemo(
+    () => summarizeOrphanedLocalHistory(new Set(stations.map((station) => station.id)), groupChangeEvents, timeCostLedger),
+    [groupChangeEvents, stations, timeCostLedger]
+  )
   const thirdPartySourceStations = useMemo(() => {
     return sourceStations.filter((station) => isPriceRankingStation(station, visibleSnapshots[station.id]))
   }, [sourceStations, visibleSnapshots])
@@ -2756,41 +2732,45 @@ function App() {
 
   useEffect(() => {
     let disposed = false
-    void window.aizzz.preferences.get().then((preferences) => {
-      if (disposed) return
-      const legacyHiddenKeys = readHiddenGroupKeys()
-      const legacyChangeEvents = readStoredGroupChangeEvents()
-      const nextHiddenGroupKeys = preferences.hiddenGroupKeys.length > 0 ? preferences.hiddenGroupKeys : [...legacyHiddenKeys]
-      const nextGroupChangeEvents = preferences.groupChangeEvents.length > 0 ? preferences.groupChangeEvents : legacyChangeEvents
-      setHiddenGroupKeys(new Set(nextHiddenGroupKeys))
-      setOperatingExcludedGroupKeys(new Set(preferences.operatingExcludedGroupKeys ?? []))
-      setManualGroupTags(preferences.manualGroupTags ?? {})
-      setAccountUpstreamMappings(preferences.accountUpstreamMappings ?? [])
-      setAccountCostProfiles(preferences.accountCostProfiles ?? [])
-      setInternalUserProfiles(preferences.internalUserProfiles ?? [])
-      setTimeCostLedger(preferences.timeCostLedger ?? emptyTimeCostLedger())
-      setGroupChangeEvents(nextGroupChangeEvents)
-      setDismissedGroupChangeEventIds(new Set(preferences.dismissedGroupChangeEventIds ?? []))
-      preferencesLoadedRef.current = true
-      if (preferences.hiddenGroupKeys.length === 0 && nextHiddenGroupKeys.length > 0) {
-        void window.aizzz.preferences.setHiddenGroupKeys(nextHiddenGroupKeys).catch(() => undefined)
-      }
-      if (preferences.groupChangeEvents.length === 0 && nextGroupChangeEvents.length > 0) {
-        void window.aizzz.preferences.setGroupChangeEvents(nextGroupChangeEvents).catch(() => undefined)
-      }
-    }).catch(() => {
-      if (disposed) return
-      setHiddenGroupKeys(readHiddenGroupKeys())
-      setOperatingExcludedGroupKeys(new Set())
-      setManualGroupTags({})
-      setAccountUpstreamMappings([])
-      setAccountCostProfiles([])
-      setInternalUserProfiles([])
-      setTimeCostLedger(emptyTimeCostLedger())
-      setGroupChangeEvents(readStoredGroupChangeEvents())
-      setDismissedGroupChangeEventIds(new Set())
-      preferencesLoadedRef.current = true
-    })
+    const syncPreferences = (migrateLegacy = false): void => {
+      const sequence = ++preferencesSyncSequenceRef.current
+      void window.aizzz.preferences.get().then((preferences) => {
+        if (disposed || sequence !== preferencesSyncSequenceRef.current) return
+        const legacyHiddenKeys = migrateLegacy ? readHiddenGroupKeys() : new Set<string>()
+        const legacyChangeEvents = migrateLegacy ? readStoredGroupChangeEvents() : []
+        const nextHiddenGroupKeys = preferences.hiddenGroupKeys.length > 0 ? preferences.hiddenGroupKeys : [...legacyHiddenKeys]
+        const nextGroupChangeEvents = preferences.groupChangeEvents.length > 0 ? preferences.groupChangeEvents : legacyChangeEvents
+        setHiddenGroupKeys(new Set(nextHiddenGroupKeys))
+        setOperatingExcludedGroupKeys(new Set(preferences.operatingExcludedGroupKeys ?? []))
+        setManualGroupTags(preferences.manualGroupTags ?? {})
+        setAccountUpstreamMappings(preferences.accountUpstreamMappings ?? [])
+        setAccountCostProfiles(preferences.accountCostProfiles ?? [])
+        setInternalUserProfiles(preferences.internalUserProfiles ?? [])
+        setTimeCostLedger(preferences.timeCostLedger ?? emptyTimeCostLedger())
+        setGroupChangeEvents(nextGroupChangeEvents)
+        setDismissedGroupChangeEventIds(new Set(preferences.dismissedGroupChangeEventIds ?? []))
+        preferencesLoadedRef.current = true
+        if (migrateLegacy && preferences.hiddenGroupKeys.length === 0 && nextHiddenGroupKeys.length > 0) {
+          void window.aizzz.preferences.setHiddenGroupKeys(nextHiddenGroupKeys).catch(() => undefined)
+        }
+        if (migrateLegacy && preferences.groupChangeEvents.length === 0 && nextGroupChangeEvents.length > 0) {
+          void window.aizzz.preferences.setGroupChangeEvents(nextGroupChangeEvents).catch(() => undefined)
+        }
+      }).catch(() => {
+        if (disposed || sequence !== preferencesSyncSequenceRef.current || !migrateLegacy) return
+        setHiddenGroupKeys(readHiddenGroupKeys())
+        setOperatingExcludedGroupKeys(new Set())
+        setManualGroupTags({})
+        setAccountUpstreamMappings([])
+        setAccountCostProfiles([])
+        setInternalUserProfiles([])
+        setTimeCostLedger(emptyTimeCostLedger())
+        setGroupChangeEvents(readStoredGroupChangeEvents())
+        setDismissedGroupChangeEventIds(new Set())
+        preferencesLoadedRef.current = true
+      })
+    }
+    syncPreferences(true)
     void window.aizzz.stations.list().then((next) => {
       if (disposed) return
       setStations(next)
@@ -2801,24 +2781,18 @@ function App() {
       const snapshotMap = Object.fromEntries(next.map((snapshot) => [snapshot.stationId, snapshot]))
       previousSnapshotsRef.current = snapshotMap
       setSnapshots(snapshotMap)
-      void window.aizzz.preferences.get().then((preferences) => {
-        if (!disposed) setTimeCostLedger(preferences.timeCostLedger ?? emptyTimeCostLedger())
-      }).catch(() => undefined)
+      syncPreferences()
     })
     const unsubscribe = window.aizzz.stations.onSnapshotsUpdated((next) => {
       if (disposed) return
       const snapshotMap = Object.fromEntries(next.map((snapshot) => [snapshot.stationId, snapshot]))
       previousSnapshotsRef.current = snapshotMap
       setSnapshots(snapshotMap)
-      // Change detection is main-process owned. Fetching the persisted view
-      // after the snapshot prevents startup empty states from becoming fake
-      // "added" history in the renderer.
-      void window.aizzz.preferences.get().then((preferences) => {
-        if (disposed) return
-        setGroupChangeEvents(preferences.groupChangeEvents ?? [])
-        setTimeCostLedger(preferences.timeCostLedger ?? emptyTimeCostLedger())
-      }).catch(() => undefined)
+      // Change detection is main-process owned. Re-read the persisted view so
+      // startup snapshots never become renderer-side synthetic history.
+      syncPreferences()
     })
+    const unsubscribePreferences = window.aizzz.preferences.onUpdated(() => syncPreferences())
     const unsubscribeStations = window.aizzz.stations.onStationsUpdated((next) => {
       if (!disposed) setStations(next)
     })
@@ -2828,11 +2802,20 @@ function App() {
         setAlwaysOnTop(state.alwaysOnTop)
       }
     })
+    const unsubscribeOpenGroupChanges = window.aizzz.window.onOpenGroupChanges(({ filter }) => {
+      if (disposed) return
+      setChangeLogFilter(filter)
+      setChangeLogQuery('')
+      setSelectedGroupHistory(null)
+      setChangeLogOpen(true)
+    })
     return () => {
       disposed = true
       unsubscribe()
+      unsubscribePreferences()
       unsubscribeStations()
       unsubscribeWindow()
+      unsubscribeOpenGroupChanges()
     }
   }, [])
 
@@ -2888,15 +2871,6 @@ function App() {
     if (!preferencesLoadedRef.current) return
     void window.aizzz.preferences.setAccountCostProfiles(accountCostProfiles).catch(() => undefined)
   }, [accountCostProfiles])
-
-  useEffect(() => {
-    if (!preferencesLoadedRef.current || groupChangeEvents.length === 0) return
-    const summary = groupChangeNotificationSummary(groupChangeEvents, readLastGroupChangeNotificationAt())
-    if (!summary.text || !summary.newestAt) return
-    saveLastGroupChangeNotificationAt(summary.newestAt)
-    setNotice({ kind: summary.rateUp > 0 ? 'warning' : 'success', text: summary.text })
-    showSystemNotification('AIZZZWatch 分组倍率变动', summary.text)
-  }, [groupChangeEvents])
 
   useEffect(() => {
     if (!preferencesLoadedRef.current) return
@@ -2971,6 +2945,20 @@ function App() {
   const settingsStation = settingsForm.id ? stations.find((station) => station.id === settingsForm.id) : undefined
   const settingsHasSavedLoginCredentials = Boolean(settingsStation?.hasSavedLoginCredentials)
   const settingsCanConfigureAutoReauth = !settingsForm.clearSavedLoginCredentials && (settingsHasSavedLoginCredentials || Boolean(settingsForm.loginAccount.trim() && settingsForm.loginPassword))
+  const shouldShowAdvancedSettings = advancedSettingsOpen || Boolean(settingsForm.adapterType === 'auto' && diagnostics && !diagnostics.detectedAdapterType)
+
+  useEffect(() => {
+    if (!settingsOpen || settingsForm.adapterType !== 'auto' || !settingsForm.baseUrl.trim()) return
+    const requestId = ++diagnosisRequestRef.current
+    const form = { ...settingsForm, apiPaths: { ...settingsForm.apiPaths } }
+    const timer = window.setTimeout(() => {
+      void runDiagnostics({ automatic: true, requestId, form })
+    }, 550)
+    return () => {
+      window.clearTimeout(timer)
+      if (diagnosisRequestRef.current === requestId) diagnosisRequestRef.current += 1
+    }
+  }, [settingsOpen, settingsForm.adapterType, settingsForm.baseUrl])
 
   async function refreshDataCenterSummary() {
     setDataCenterLoading(true)
@@ -3082,6 +3070,7 @@ function App() {
     try {
       const preview = await window.aizzz.stations.previewMapping({
         id: integrationStation.id,
+        apiBaseUrl: integrationDraft.apiBaseUrl || integrationStation.baseUrl,
         apiPaths: integrationDraft.apiPaths,
         readMapping: integrationDraft.readMapping
       })
@@ -3102,7 +3091,7 @@ function App() {
         id: integrationStation.id,
         name: integrationStation.name,
         baseUrl: integrationStation.baseUrl,
-        apiBaseUrl: integrationStation.apiBaseUrl,
+        apiBaseUrl: integrationDraft.apiBaseUrl,
         stationRole: integrationStation.stationRole,
         adapterType: integrationStation.adapterType,
         detectedAdapterType: integrationStation.detectedAdapterType,
@@ -3114,6 +3103,8 @@ function App() {
         readMapping: integrationDraft.readMapping
       })
       setStations(next)
+      const savedStation = next.find((station) => station.id === integrationStation.id)
+      if (savedStation) setIntegrationDraft(integrationDraftFromStation(savedStation))
       const refreshed = await window.aizzz.stations.refresh(integrationStation.id)
       setSnapshots((current) => ({ ...current, ...Object.fromEntries(refreshed.map((snapshot) => [snapshot.stationId, snapshot])) }))
       setNotice({ kind: 'success', text: '接口适配已保存并完成刷新' })
@@ -3126,42 +3117,50 @@ function App() {
 
   function openEdit(station?: StationPublic) {
     setDiagnostics(null)
+    diagnosisRequestRef.current += 1
+    setAdvancedSettingsOpen(Boolean(station))
     setSettingsForm(station ? { id: station.id, name: station.name, baseUrl: station.baseUrl, apiBaseUrl: station.apiBaseUrl ?? '', stationRole: station.stationRole ?? (isOwnStation(station, visibleSnapshots[station.id]) ? 'own' : 'source'), adapterType: station.adapterType ?? 'sub2api', detectedAdapterType: station.detectedAdapterType, accessToken: '', refreshToken: '', adminToken: '', adminCredentialType: station.adminCredentialType ?? 'jwt', loginAccount: '', loginPassword: '', clearSavedLoginCredentials: false, autoReauthEnabled: station.autoReauthEnabled, pollingIntervalMs: station.pollingIntervalMs, rechargeRatio: station.rechargeRatio ?? 1, lowBalanceThreshold: station.lowBalanceThreshold ?? 10, apiPaths: station.apiPaths ?? {} } : { ...emptyForm, stationRole: sourceWalletView === 'own' ? 'own' : 'source' })
     setSettingsOpen(true)
   }
 
-  async function runDiagnostics() {
-    if (!settingsForm.baseUrl.trim()) {
-      setNotice({ kind: 'error', text: '请先填写站点地址' })
-      return
+  async function runDiagnostics(options: { automatic?: boolean; requestId?: number; form?: SettingsForm; useSavedCredentials?: boolean } = {}): Promise<StationDiagnostics | undefined> {
+    const form = options.form ?? settingsForm
+    if (!form.baseUrl.trim()) {
+      if (!options.automatic) setNotice({ kind: 'error', text: '请先填写站点地址' })
+      return undefined
     }
+    const requestId = options.requestId ?? ++diagnosisRequestRef.current
     setDiagnosing(true)
     try {
       const result = await window.aizzz.stations.diagnose({
-        id: settingsForm.id,
-        name: settingsForm.name,
-        baseUrl: settingsForm.baseUrl,
-        apiBaseUrl: settingsForm.apiBaseUrl || undefined,
-        adapterType: settingsForm.adapterType,
-        accessToken: settingsForm.accessToken,
-        refreshToken: settingsForm.refreshToken,
-        adminToken: settingsForm.adminToken,
-        adminCredentialType: settingsForm.adminCredentialType,
-        apiPaths: settingsForm.apiPaths
+        id: form.id,
+        name: form.name,
+        baseUrl: form.baseUrl,
+        apiBaseUrl: form.apiBaseUrl || undefined,
+        adapterType: form.adapterType,
+        accessToken: form.accessToken,
+        refreshToken: form.refreshToken,
+        adminToken: form.adminToken,
+        adminCredentialType: form.adminCredentialType,
+        apiPaths: form.apiPaths,
+        useSavedCredentials: options.useSavedCredentials === true
       })
+      if (requestId !== diagnosisRequestRef.current) return undefined
       setDiagnostics(result)
-      if (Object.keys(result.suggestedPaths).length > 0) {
-        setSettingsForm((current) => ({
-          ...current,
-          detectedAdapterType: result.detectedAdapterType ?? current.detectedAdapterType,
-          apiPaths: { ...current.apiPaths, ...result.suggestedPaths }
-        }))
-      }
-      setNotice({ kind: 'success', text: result.detectedAdapterType === 'newapi' ? '已识别为 NewAPI 站点；只启用已确认的只读能力' : result.apiVariant === 'standard' ? '已识别为标准 Sub2API 站点' : result.apiVariant === 'fork' ? '已识别为二开或自定义站点' : '诊断完成，请选择匹配的站点类型' })
+      setSettingsForm((current) => current.adapterType !== 'auto' && options.automatic
+        ? current
+        : {
+            ...current,
+            detectedAdapterType: current.adapterType === 'auto' ? result.detectedAdapterType : current.detectedAdapterType,
+            apiPaths: result.detectedAdapterType ? { ...current.apiPaths, ...result.suggestedPaths } : current.apiPaths
+          })
+      if (!options.automatic) setNotice({ kind: 'success', text: result.detectedAdapterType === 'newapi' ? '已识别为 NewAPI 站点；已应用默认只读接口' : result.detectedAdapterType === 'sub2api' ? '已识别为 Sub2API 站点；已应用默认接口' : '未能确定类型；已打开高级配置供你调整。' })
+      return result
     } catch (error) {
-      setNotice({ kind: 'error', text: error instanceof Error ? error.message : '诊断失败' })
+      if (!options.automatic && requestId === diagnosisRequestRef.current) setNotice({ kind: 'error', text: error instanceof Error ? error.message : '诊断失败' })
+      return undefined
     } finally {
-      setDiagnosing(false)
+      if (requestId === diagnosisRequestRef.current) setDiagnosing(false)
     }
   }
 
@@ -3174,8 +3173,8 @@ function App() {
   }
 
   async function authorizeStationFor(input: WebAuthInput) {
-    if (!input.name.trim() || !input.baseUrl.trim()) {
-      setNotice({ kind: 'error', text: '请先填写站点名称和地址' })
+    if (!input.baseUrl.trim()) {
+      setNotice({ kind: 'error', text: '请先填写站点地址' })
       return
     }
     setAuthorizing(true)
@@ -3185,7 +3184,7 @@ function App() {
       const station = next.find((item) => item.id === input.id) ?? next.find((item) => item.name === input.name) ?? next.at(-1)
       if (station) setSelectedId(station.id)
       setSettingsOpen(false)
-      setNotice({ kind: 'success', text: '网页登录授权成功，正在同步' })
+      setNotice({ kind: 'success', text: station?.hasSessionCookie && !station.hasAccessToken ? '网页登录授权成功，已保存 Cookie 会话，正在同步' : '网页登录授权成功，已保存 JWT 会话，正在同步' })
     } catch (error) {
       setNotice({ kind: 'error', text: webAuthErrorText(error) })
     } finally {
@@ -3194,21 +3193,46 @@ function App() {
   }
 
   async function authorizeStation(useSavedLoginCredentials = false) {
+    let form = settingsForm
+    if (form.adapterType === 'auto' && !form.detectedAdapterType) {
+      const result = await runDiagnostics({ form, automatic: false })
+      if (result?.detectedAdapterType) {
+        form = {
+          ...form,
+          detectedAdapterType: result.detectedAdapterType,
+          apiPaths: { ...form.apiPaths, ...result.suggestedPaths }
+        }
+      }
+    }
     await authorizeStationFor({
-      id: settingsForm.id,
-      name: settingsForm.name,
-      baseUrl: settingsForm.baseUrl,
-      apiBaseUrl: settingsForm.apiBaseUrl || undefined,
-      stationRole: settingsForm.stationRole,
-      adapterType: settingsForm.adapterType,
-      detectedAdapterType: settingsForm.detectedAdapterType,
-      rechargeRatio: settingsForm.rechargeRatio,
-      lowBalanceThreshold: settingsForm.lowBalanceThreshold,
-      apiPaths: settingsForm.apiPaths,
-      adminCredentialType: settingsForm.adminCredentialType,
-      pollingIntervalMs: settingsForm.pollingIntervalMs,
+      id: form.id,
+      name: form.name,
+      baseUrl: form.baseUrl,
+      apiBaseUrl: form.apiBaseUrl || undefined,
+      stationRole: form.stationRole,
+      adapterType: form.adapterType,
+      detectedAdapterType: form.detectedAdapterType,
+      rechargeRatio: form.rechargeRatio,
+      lowBalanceThreshold: form.lowBalanceThreshold,
+      apiPaths: form.apiPaths,
+      adminCredentialType: form.adminCredentialType,
+      pollingIntervalMs: form.pollingIntervalMs,
       useSavedLoginCredentials
     })
+  }
+
+  async function checkKeepalive(): Promise<void> {
+    if (!settingsForm.id) return
+    setDiagnosing(true)
+    try {
+      const next = await window.aizzz.stations.checkKeepalive(settingsForm.id)
+      setStations(next)
+      setNotice({ kind: 'success', text: '已完成会话检查；如需登录会进入受控保活队列。' })
+    } catch (error) {
+      setNotice({ kind: 'error', text: error instanceof Error ? error.message : '会话检查失败' })
+    } finally {
+      setDiagnosing(false)
+    }
   }
 
   async function saveSettings(event: React.FormEvent) {
@@ -5192,7 +5216,7 @@ function App() {
                   <div><span className="eyebrow">INTEGRATION</span><h1>接口适配中心</h1></div>
                   <div className="integration-actions">
                     <button type="button" className="outline-button compact" onClick={() => setIntegrationDraft(integrationStation ? integrationDraftFromStation(integrationStation) : null)} disabled={!integrationStation || mappingSaving}>恢复已保存</button>
-                    <button type="button" className="outline-button compact" onClick={() => integrationStation && setIntegrationDraft({ apiPaths: { ...integrationStation.apiPaths }, readMapping: { version: 1, template: integrationTemplateFor(integrationStation), capabilities: {} } })} disabled={!integrationStation || mappingSaving}>清除自定义字段</button>
+                    <button type="button" className="outline-button compact" onClick={() => integrationStation && setIntegrationDraft({ apiBaseUrl: integrationStation.apiBaseUrl ?? integrationStation.baseUrl, apiPaths: { ...integrationStation.apiPaths }, readMapping: { version: 1, template: integrationTemplateFor(integrationStation), capabilities: {} } })} disabled={!integrationStation || mappingSaving}>清除自定义字段</button>
                     <button type="button" className="outline-button compact" onClick={() => void previewIntegrationMapping()} disabled={!integrationStation || !integrationDraft || mappingPreviewing || mappingSaving}>{mappingPreviewing ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}{mappingPreviewing ? '检测中' : '检测并预览'}</button>
                     <button type="button" className="primary-button compact" onClick={() => void saveIntegrationMapping()} disabled={!integrationStation || !integrationDraft || mappingSaving || mappingPreviewing}>{mappingSaving ? <LoaderCircle className="spin" size={14} /> : <Check size={14} />}{mappingSaving ? '保存中' : '保存适配'}</button>
                   </div>
@@ -5209,7 +5233,9 @@ function App() {
                     <div className="integration-summary">
                       <div><span>站点</span><strong title={integrationStation.apiBaseUrl ?? integrationStation.baseUrl}>{integrationStation.name}</strong></div>
                       <div><span>模板</span><select value={integrationDraft.readMapping.template} onChange={(event) => setIntegrationDraft((current) => current ? { ...current, readMapping: { ...current.readMapping, template: event.target.value as StationReadMapping['template'] } } : current)} aria-label="读取模板"><option value="sub2api">Sub2API</option><option value="lcodex">lcodex</option><option value="aihub">AIHub</option><option value="custom">自定义兼容</option></select></div>
-                      <div><span>API 根</span><strong title={integrationStation.apiBaseUrl ?? integrationStation.baseUrl}>{(integrationStation.apiBaseUrl ?? integrationStation.baseUrl).replace(/^https?:\/\//, '')}</strong></div>
+                      <div><span>API 根</span>{integrationDraft.readMapping.template === 'custom'
+                        ? <input type="url" value={integrationDraft.apiBaseUrl} onChange={(event) => setIntegrationDraft((current) => current ? { ...current, apiBaseUrl: event.target.value } : current)} placeholder="https://www.krill-ai.net/api" aria-label="自定义 API 根" disabled={mappingPreviewing || mappingSaving} />
+                        : <strong title={integrationDraft.apiBaseUrl || integrationStation.baseUrl}>{(integrationDraft.apiBaseUrl || integrationStation.baseUrl).replace(/^https?:\/\//, '')}</strong>}</div>
                       <div><span>授权</span><strong>{integrationStation.hasAccessToken ? '已保存' : '未授权'}</strong></div>
                     </div>
                     <div className="integration-note"><ShieldCheck size={15} /><span>只支持同源 HTTPS GET 和点路径，例如 <code>data.items</code>。检测仅展示字段、数量和摘要，不保存令牌、Cookie 或原始响应。</span></div>
@@ -5321,6 +5347,44 @@ function App() {
                             </div>
                           </article>
                         </div>
+                      </section>
+                      <section className="data-center-section">
+                        <div className="data-center-section-heading">
+                          <div><span className="eyebrow">LOCAL HISTORY</span><h2>已恢复的旧本地记录</h2></div>
+                          <span className="last-seen">{orphanedLocalHistory.length > 0 ? `${orphanedLocalHistory.length} 个旧站点记录` : '没有待展示的旧记录'}</span>
+                        </div>
+                        <div className="data-center-note">
+                          <ShieldCheck size={16} />
+                          <span>这些记录仍保留在本机，但对应的站点配置已不存在。它们只用于查看历史，不参与实时查价、远端同步或自动关联新站点。</span>
+                        </div>
+                        {orphanedLocalHistory.length === 0 ? (
+                          <div className="empty-state data-center-history-empty">当前所有本地历史都已归属到现有站点。</div>
+                        ) : (
+                          <div className="data-center-history-list">
+                            {orphanedLocalHistory.map((history) => (
+                              <details className="data-center-history-record" key={history.stationId}>
+                                <summary>
+                                  <span className="data-center-history-main">
+                                    <strong>{history.stationName || `未命名旧站点 · ${history.stationId.slice(0, 8)}`}</strong>
+                                    <em>变化 {history.groupChangeCount} · 倍率 {history.rateObservationCount} · 用量 {history.usageEntryCount} · 收益 {history.profitUsageRecordCount}</em>
+                                  </span>
+                                  <time>{history.lastObservedAt ? `最近 ${formatGroupChangeObservedAt(history.lastObservedAt)}` : '时间未知'}</time>
+                                </summary>
+                                <div className="data-center-history-detail">
+                                  {history.recentGroupChanges.length > 0 && <div className="data-center-history-column">
+                                    <span>近期分组变化</span>
+                                    {history.recentGroupChanges.map((event) => <p key={event.id}><strong>{event.groupName}</strong><em>{groupChangeRateText(event)} · {formatGroupChangeObservedAt(event.occurredAt)}</em></p>)}
+                                  </div>}
+                                  {history.recentRateObservations.length > 0 && <div className="data-center-history-column">
+                                    <span>最近倍率观察</span>
+                                    {history.recentRateObservations.map((observation) => <p key={observation.id}><strong>分组 #{observation.groupId}</strong><em>{formatRateMultiplier(observation.rateMultiplier)} · {formatGroupChangeObservedAt(observation.observedAt)}</em></p>)}
+                                  </div>}
+                                  {history.recentGroupChanges.length === 0 && history.recentRateObservations.length === 0 && <span className="data-center-history-unavailable">该旧记录只保留用量或收益条目，没有可展示的分组快照。</span>}
+                                </div>
+                              </details>
+                            ))}
+                          </div>
+                        )}
                       </section>
                       <section className="data-center-section">
                         <div className="data-center-section-heading">
@@ -5727,7 +5791,7 @@ function App() {
             <button type="button" className="icon-button" title="关闭" onClick={() => setSettingsOpen(false)}><X size={16} /></button>
           </div>
 
-          <label>显示名称<input required value={settingsForm.name} onChange={(event) => setSettingsForm({ ...settingsForm, name: event.target.value })} placeholder="例如：主力中转站" /></label>
+          <label>显示名称 <span className="optional">可选</span><input value={settingsForm.name} onChange={(event) => setSettingsForm({ ...settingsForm, name: event.target.value })} placeholder="留空时自动使用站点域名" /></label>
           <label>站点角色<select value={settingsForm.stationRole} onChange={(event) => setSettingsForm({ ...settingsForm, stationRole: event.target.value as StationRole })}><option value="source">三方站点（上游来源）</option><option value="own">我的站点（聚合平台）</option></select><span className="field-hint">三方站点只参与来源钱包和价格榜；我的站点才会进入账号、成本与收益管理。</span></label>
           <label>站点类型<select value={settingsForm.adapterType} onChange={(event) => {
             const adapterType = event.target.value as StationAdapterType
@@ -5738,14 +5802,27 @@ function App() {
               apiPaths: adapterType === 'newapi' ? { ...current.apiPaths, ...newApiPathDefaults } : current.apiPaths
             }))
           }}><option value="auto">自动检测</option><option value="sub2api">Sub2API</option><option value="newapi">NewAPI</option><option value="custom">自定义兼容</option></select><span className="field-hint">自动检测只做读取探测；自定义兼容仍需选择与 Sub2API 相同的数据结构，不能猜测任意 JSON。</span></label>
-          <label>{newApiSettings ? '站点地址' : 'API 地址'}<input required value={settingsForm.baseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, baseUrl: event.target.value })} placeholder={newApiSettings ? 'https://newapi.example.com' : 'https://relay.example.com/api/v1'} /><span className="field-hint">{newApiSettings ? 'NewAPI 使用站点根地址；会读取余额、可用分组、定价与令牌分组。' : '支持站点根地址或带 /api/v1 的地址'}</span></label>
-          <label>API 基址 <span className="optional">可选</span><input value={settingsForm.apiBaseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, apiBaseUrl: cleanUrl(event.target.value) })} placeholder={newApiSettings ? '部署在子路径时填写实际根地址' : '二开站可手动填真实 API 根地址'} /><span className="field-hint">{newApiSettings ? 'NewAPI 可作为来源站进入价格榜；管理员控制台仍不复用 Sub2API 管理接口。' : '标准站留空即可；二开站如果实际接口根不是默认 /api/v1，请在这里记录。'}</span></label>
+          <label>站点地址<input required value={settingsForm.baseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, baseUrl: event.target.value })} placeholder="https://nihao.dog 或粘贴 /keys 页面地址" /><span className="field-hint">粘贴 /keys、/login 或 /sign-in 会自动回到站点根；默认会自行识别 NewAPI 或 Sub2API。</span></label>
+          <div className="station-access-link station-smart-onboarding" aria-live="polite">
+            <div><strong>智能识别</strong><span>{diagnosing ? '正在使用无凭据只读请求识别站点类型…' : diagnostics?.detectedAdapterType === 'newapi' ? '已识别为 NewAPI，已采用站点根地址与默认只读接口。' : diagnostics?.detectedAdapterType === 'sub2api' ? '已识别为 Sub2API，已采用 /api/v1 默认接口。' : settingsForm.baseUrl.trim() ? '暂未识别；可打开高级配置手动调整。' : '填写站点地址后将自动识别。'}</span></div>
+            <div className="station-access-actions">
+              <strong>{diagnosing ? '识别中' : diagnostics?.detectedAdapterType === 'newapi' ? 'NewAPI' : diagnostics?.detectedAdapterType === 'sub2api' ? 'Sub2API' : '待识别'}</strong>
+            </div>
+          </div>
+          <div className="auth-actions">
+            <button type="button" className="outline-button" onClick={() => void authorizeStation()} disabled={isBrowserPreview || authorizing || saving || !settingsForm.baseUrl.trim()} title={isBrowserPreview ? '浏览器预览不执行网页登录授权' : settingsForm.id ? '重新授权 / 换号登录' : '网页登录授权'}>{authorizing ? <LoaderCircle className="spin" size={15} /> : <LogIn size={15} />} {authorizing ? '等待网页登录' : settingsForm.id ? '重新授权 / 换号登录' : '网页授权登录'}</button>
+            {settingsForm.id && <span className={`status-chip ${settingsStation?.hasAccessToken || settingsStation?.hasSessionCookie ? 'ready' : 'warning'}`}>{settingsStation?.hasAccessToken ? 'JWT 已保存' : settingsStation?.hasSessionCookie ? 'Cookie 会话已保存' : '未授权'}</span>}
+            <span className="field-hint">授权前会自动识别；账号、密码与令牌只在你打开高级配置后设置。</span>
+          </div>
+          <button type="button" className="text-button" aria-expanded={shouldShowAdvancedSettings} onClick={() => setAdvancedSettingsOpen((current) => !current)}>{shouldShowAdvancedSettings ? '收起高级配置' : '高级配置（接口根地址、路径、令牌与保活）'}</button>
+          {shouldShowAdvancedSettings && <>
+          <label>接口根地址 <span className="optional">高级</span><input value={settingsForm.apiBaseUrl} onChange={(event) => setSettingsForm({ ...settingsForm, apiBaseUrl: cleanUrl(event.target.value) })} placeholder={newApiSettings ? '部署在子路径时填写实际根地址' : '二开站可手动填写真实接口根'} /><span className="field-hint">仅用于二开或子路径部署；标准 NewAPI 自动使用站点根，标准 Sub2API 自动使用 /api/v1。</span></label>
           <label>充值比例 <span className="field-inline">1 : <input type="number" min={0.0001} step={0.0001} value={settingsForm.rechargeRatio} onChange={(event) => setSettingsForm({ ...settingsForm, rechargeRatio: Number(event.target.value) })} /></span><span className="field-hint">例如 1:10 填 10，1:1 填 1；用于换算最终倍率。</span></label>
           <label>余额提醒阈值 <span className="field-inline"><input type="number" min={0} step={0.01} value={settingsForm.lowBalanceThreshold} onChange={(event) => setSettingsForm({ ...settingsForm, lowBalanceThreshold: Number(event.target.value) })} /><span>余额</span></span><span className="field-hint">余额小于等于该值时来源钱包标红；填 0 关闭提醒。</span></label>
           <div className="station-access-link">
             <div><strong>接口适配</strong><span>分组、倍率、模型价格、余额和上游密钥的路径及字段映射已集中到“数据接入”。</span></div>
             <div className="station-access-actions">
-              <button type="button" className="outline-button compact" onClick={() => void runDiagnostics()} disabled={diagnosing || authorizing || saving}>{diagnosing ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}{diagnosing ? '识别中' : '自动识别'}</button>
+              <button type="button" className="outline-button compact" onClick={() => void runDiagnostics({ useSavedCredentials: true })} disabled={diagnosing || authorizing || saving}>{diagnosing ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}{diagnosing ? '识别中' : '详细诊断'}</button>
               <button type="button" className="outline-button compact" disabled={!settingsForm.id} title={settingsForm.id ? '打开接口适配中心' : '请先保存站点基础信息'} onClick={() => { if (!settingsForm.id) return; setSelectedId(settingsForm.id); setSettingsOpen(false); setWorkspaceView('integration') }}>打开适配中心</button>
             </div>
           </div>
@@ -5757,7 +5834,7 @@ function App() {
                 <h2>兼容诊断</h2>
               </div>
               <div className="detail-actions">
-                <button type="button" className="outline-button compact" onClick={() => void runDiagnostics()} disabled={diagnosing || authorizing || saving}>
+                <button type="button" className="outline-button compact" onClick={() => void runDiagnostics({ useSavedCredentials: true })} disabled={diagnosing || authorizing || saving}>
                   {diagnosing ? <LoaderCircle className="spin" size={15} /> : <LayoutDashboard size={15} />} {diagnosing ? '探测中' : '自动探测'}
                 </button>
                 <button type="button" className="outline-button compact" onClick={applySuggestedPaths} disabled={!diagnostics || Object.keys(diagnostics.suggestedPaths).length === 0}>
@@ -5772,7 +5849,7 @@ function App() {
             </div>
             {diagnostics?.notes && <div className="diagnostic-note">{diagnostics.notes}</div>}
             <div className="diagnostic-probe-list">
-              {diagnostics?.probes.length ? diagnostics.probes.map((probe) => <div className="diagnostic-probe" key={`${probe.name}:${probe.path}`}><span>{probe.name}</span><strong>{probe.ok ? '可用' : '失败'}</strong><em>{probe.path} · {probe.hint}</em></div>) : <div className="empty-state compact-empty"><SlidersHorizontal size={18} /><span>点击自动探测后，这里会显示每个接口的状态</span></div>}
+              {diagnostics?.probes.length ? diagnostics.probes.map((probe) => <div className="diagnostic-probe" key={`${probe.name}:${probe.path}`}><span>{probe.name}</span><strong>{probe.ok ? '可用' : '失败'}</strong><em>{probe.path} · {probe.hint}</em></div>) : <div className="empty-state compact-empty"><SlidersHorizontal size={18} /><span>填写地址后会自动识别；可在此执行已授权的详细诊断。</span></div>}
             </div>
           </div>
 
@@ -5817,6 +5894,7 @@ function App() {
               <span className="field-hint">先尝试刷新令牌；仅 HTTPS 同源登录页会自动提交。验证码、2FA 与风控页会转为人工授权。</span>
               {settingsStation?.autoReauthStatus && <span className={`auth-keepalive-status ${settingsStation.autoReauthStatus.state}`}>{autoReauthStatusLabel(settingsStation.autoReauthStatus)}</span>}
             </div>
+            {settingsForm.id && <button type="button" className="outline-button compact" onClick={() => void checkKeepalive()} disabled={diagnosing || authorizing || saving}><RefreshCw size={14} /> 立即检查保活</button>}
             {settingsHasSavedLoginCredentials && <div className="auth-actions"><span className="field-hint">密码原文不会回显。{settingsForm.clearSavedLoginCredentials ? '保存配置后会清除已保存账号密码并关闭自动重新登录。' : '可使用上方按钮在同源登录页填入，仍需你自行提交登录。'}</span><button type="button" className="text-button" onClick={() => setSettingsForm({ ...settingsForm, loginAccount: '', loginPassword: '', clearSavedLoginCredentials: !settingsForm.clearSavedLoginCredentials, autoReauthEnabled: settingsForm.clearSavedLoginCredentials ? settingsForm.autoReauthEnabled : false })}>{settingsForm.clearSavedLoginCredentials ? '撤销清除' : '清除已保存凭据'}</button></div>}
           </div>
           <label>站点登录 JWT <span className="optional">备用</span><input type="password" value={settingsForm.accessToken} onChange={(event) => setSettingsForm({ ...settingsForm, accessToken: event.target.value })} placeholder={settingsForm.id ? '留空则保留原令牌' : '粘贴 access token'} autoComplete="off" /></label>
@@ -5824,6 +5902,7 @@ function App() {
           <label>管理员凭据 <span className="optional">可选</span><select value={settingsForm.adminCredentialType} onChange={(event) => setSettingsForm({ ...settingsForm, adminCredentialType: event.target.value as SettingsForm['adminCredentialType'] })}><option value="jwt">管理员 JWT</option><option value="api-key">管理员 API Key</option></select><input type="password" value={settingsForm.adminToken} onChange={(event) => setSettingsForm({ ...settingsForm, adminToken: event.target.value })} placeholder={settingsForm.id ? '留空则保留原凭据；管理员网页登录可不填' : 'API Key 或独立管理员 token；管理员网页登录可不填'} autoComplete="off" /></label>
           <label>轮询间隔 <span className="field-inline"><input type="number" min={15} max={300} value={settingsForm.pollingIntervalMs / 1000} onChange={(event) => setSettingsForm({ ...settingsForm, pollingIntervalMs: Number(event.target.value) * 1000 })} /><span>秒</span></span></label>
           <div className="modal-note"><LockKeyhole size={14} /><span>{isBrowserPreview ? '浏览器预览只在当前页面内存中保存配置，不执行真实登录、轮询或远程写入。' : '登录账号密码、登录令牌、刷新令牌和管理员凭据仅写入 macOS 安全存储，渲染页面不会读取已保存的原文。填入不会自动提交，也不会绕过验证码或 2FA。'}</span></div>
+          </>}
           <div className="modal-actions"><button type="button" className="outline-button" onClick={() => setSettingsOpen(false)}>取消</button><button type="submit" className="primary-button" disabled={saving || authorizing || diagnosing}>{saving ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />} {saving ? '保存中' : '保存配置'}</button></div>
         </form>
       </div>}

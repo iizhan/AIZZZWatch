@@ -1,0 +1,88 @@
+feature:
+  slug: "sub2api-web-watch"
+  name: "Sub2API Web Watch"
+  baseline: "v0.1.165"
+  task_lane: controlled
+  status: executing
+  initiation_source: conversation
+  session_ref: "2026-07-27-sub2api-web-watch"
+workflow:
+  primary_template: "scenario.feature-delivery"
+  primary_version: "1.0.0"
+  dependencies:
+    - "foundation.engineering-governance"
+  loop_policy:
+    max_iterations: 3
+    max_same_root_cause_strategies: 2
+    stop_on_scope_change: true
+    stop_on_external_effect: true
+confirmation:
+  requirement: {version: v3, status: approved}
+  impact: {version: v3, status: approved}
+  design: {version: v3, status: approved}
+  tasks: {version: v3, status: approved}
+  acceptance_plan: {version: v3, status: approved}
+requirement_status: approved
+scope_status: locked_v3
+active_milestone: "M1-reliable-data-plane"
+milestones:
+  - {id: M1, name: reliable-data-plane, status: in_progress}
+  - {id: M2, name: pricing-observability, status: pending}
+  - {id: M3, name: controlled-automation, status: pending}
+  - {id: M4, name: cost-profit-parity, status: pending}
+  - {id: M5, name: verification-delivery, status: pending}
+capability_routes:
+  backend: [architecture, api, data, runtime_security, testing]
+  frontend: [experience, data_flow, accessibility_i18n, security, testing, vue, css]
+validation_status: pending
+handoff_notes: "从 Watch 上游站点/凭据/观测 Repository 开始，M1 验证通过前不开放自动写价。"
+residual_risks:
+  - "目标 Watch_Sub2Api 工作树包含 v2 未提交改动，实施必须增量叠加且不得重置。"
+  - "跨站网页登录无法照搬 Electron BrowserWindow，M1 以 API token/API key/可验证会话凭据为服务端接入边界。"
+scenario_loop_runs:
+  - id: "loop-sub2api-web-watch-003"
+    initiation_source: conversation
+    status: in_progress
+    iteration: 1
+    root_cause: "v2 仅有菜单、配置统计和本机分组只读排价，未迁移桌面端可靠数据面"
+    strategy: "先建立独立加密上游数据面和有界 Runner，再让排行与自动调价消费可靠观测"
+    quality:
+      score: null
+      dimensions: {coverage: null, correctness: null, verification: null, maintainability: null}
+      required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
+    evidence: []
+    stop_reason: null
+    residual_risk: "M1 尚未实现和验证"
+  - id: "loop-sub2api-web-watch-001"
+    initiation_source: conversation
+    status: completed
+    iteration: 1
+    root_cause: "官方仓库尚无 Watch 聚合/调价/保活领域模块"
+    strategy: "先实现独立只读领域骨架和契约，再接入写入路径"
+    quality:
+      score: null
+      dimensions: {coverage: null, correctness: null, verification: null, maintainability: null}
+      required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
+    evidence: ["official-tag-v0.1.165", "backend-route-audit", "frontend-route-audit", "docker-watch-unit-tests", "docker-backend-build", "docker-frontend-typecheck", "wire-sha-match", "production-health-readonly"]
+    stop_reason: "只读垂直切片和服务器 Docker 验证完成，等待用户验收后进入自动写价/保活范围"
+    residual_risk: "全量 service 测试存在既有 Ollama 用例失败；Wire 全量生成和安全修正后的 Vite 重跑受服务器资源限制；真实保活、生产部署和可见 Web 验证尚未执行"
+  - id: "loop-sub2api-web-watch-002"
+    initiation_source: conversation
+    status: completed_with_risk
+    iteration: 1
+    root_cause: "WatchView 未复用 AppLayout，新增能力作为单一顶级菜单，导致与官方后台导航割裂"
+    strategy: "复用官方可折叠菜单与 AppLayout，将现有能力拆为智能运营子路由并保留旧地址兼容"
+    quality:
+      score: 88
+      dimensions: {coverage: 82, correctness: 96, verification: 82, maintainability: 94}
+      required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
+      blockers: ["应用内浏览器 webview 无法附着，未完成宽屏/窄屏点击截图"]
+    evidence:
+      - "frontend-docker-vue-tsc-vite-build"
+      - "intelligent-operations-vitest-4-passed"
+      - "targeted-eslint-passed"
+      - "git-diff-check-passed"
+      - "local-compose-healthy"
+      - "health-and-two-route-http-200"
+    stop_reason: "实现、自动化和本地 Docker 运行验证完成；可见浏览器因 webview 附着超时转交用户验收"
+    residual_risk: "需要用户实际点击智能运营、运营概览和聚合排价，并确认宽屏/窄屏布局"

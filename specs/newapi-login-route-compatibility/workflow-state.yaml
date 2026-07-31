@@ -6,62 +6,136 @@ feature:
 
 requirement_status: confirmed
 scope_status: locked
-active_milestone: newapi_login_route_compatibility_v1
+active_milestone: change_visibility_and_source_station_compatibility_v1
 task_lane: controlled
 confirmation_state: awaiting_user_acceptance
 task_lane_history:
   - { lane: controlled, reason: "第三方网页登录、主进程会话与用户可见授权路径兼容", date: "2026-07-24" }
+  - { lane: controlled, reason: "自动识别、保存密码自动保活、后台重试队列与站点添加流程同时变更", date: "2026-07-25" }
+  - { lane: controlled, reason: "本地凭据文件恢复、共享刷新并发与自定义接口根同时变更", date: "2026-07-26" }
 
 project_profile:
   status: fresh
   profile_version: 1
-  last_checked_at: "2026-07-24T12:30:55.810Z"
+  last_checked_at: "2026-07-26T17:17:52.157Z"
   evidence_state: fresh
   loaded_sections: ["desktop shell", "station adapters", "secure storage", "renderer dashboard"]
-  refreshed_sections: ["desktop authorization route flow", "web-auth source evidence"]
+  refreshed_sections: ["desktop authorization route flow", "web-auth source evidence", "station diagnostics", "automatic reauthorization queue", "secure storage", "refresh coordination", "renderer data integration", "change-event notification flow", "known source-station compatibility"]
   reused_decisions: []
 
 artifact_versions:
-  requirement: v1
-  design: v1
-  impact: v1
-  plan: v1
-  task_breakdown: v1
-  verification: null
+  requirement: v7
+  design: v7
+  impact: v7
+  plan: v7
+  task_breakdown: v7
+  verification: v7
+  data_refresh_safety: v2
+  change_visibility_source_station_compatibility: v1
 
 confirmation_gates:
-  requirement_impact: { required: true, status: confirmed, approved_version: v1 }
+  requirement_impact: { required: true, status: confirmed, approved_version: v5 }
   semantic_confirmation: { required: false, status: not_required, approved_version: not_required }
-  design_plan: { required: true, status: confirmed, approved_version: v1 }
-  child_task_plan: { required: true, status: confirmed, approved_version: v1 }
+  design_plan: { required: true, status: confirmed, approved_version: v5 }
+  child_task_plan: { required: true, status: confirmed, approved_version: v5 }
   user_acceptance: { required: true, status: pending, approved_version: null }
 confirmation_history:
   - { gate: requirement_impact, version: v1, choice: "确认执行 NewAPI 登录入口兼容 v1", date: "2026-07-24" }
   - { gate: design_plan, version: v1, choice: "确认执行 NewAPI 登录入口兼容 v1", date: "2026-07-24" }
+  - { gate: requirement_impact, version: v2, choice: "确认执行 NewAPI 会话回传修复 v2", date: "2026-07-25" }
+  - { gate: design_plan, version: v2, choice: "确认执行 NewAPI 会话回传修复 v2", date: "2026-07-25" }
+  - { gate: requirement_impact, version: v3, choice: "ok（紧接 v3 正式实施包）", date: "2026-07-25" }
+  - { gate: design_plan, version: v3, choice: "ok（紧接 v3 正式实施包）", date: "2026-07-25" }
+  - { gate: requirement_impact, version: v4, choice: "确认执行 OneAPI Cookie 会话授权修复 v4", date: "2026-07-25" }
+  - { gate: design_plan, version: v4, choice: "确认执行 OneAPI Cookie 会话授权修复 v4", date: "2026-07-25" }
+  - { gate: requirement_impact, version: v5, choice: "确认需求与影响 v5", date: "2026-07-25" }
+  - { gate: design_plan, version: v5, choice: "确认执行 站点智能接入与安全保活 正式实施包 v5", date: "2026-07-25" }
+  - { gate: child_task_plan, version: v5, choice: "确认执行 站点智能接入与安全保活 正式实施包 v5", date: "2026-07-25" }
+  - { gate: requirement_impact, version: v6, choice: "确认执行 NewAPI Cookie 会话落盘 v1", date: "2026-07-26" }
+  - { gate: design_plan, version: v6, choice: "确认执行 NewAPI Cookie 会话落盘 v1", date: "2026-07-26" }
+  - { gate: child_task_plan, version: v6, choice: "确认执行 NewAPI Cookie 会话落盘 v1", date: "2026-07-26" }
+  - { gate: requirement_impact, version: v7, choice: "确认执行 NewAPI 页面会话捕获修复 v2", date: "2026-07-26" }
+  - { gate: design_plan, version: v7, choice: "确认执行 NewAPI 页面会话捕获修复 v2", date: "2026-07-26" }
+  - { gate: child_task_plan, version: v7, choice: "确认执行 NewAPI 页面会话捕获修复 v2", date: "2026-07-26" }
+  - { gate: requirement_impact, version: data-refresh-safety-v2, choice: "确认执行 数据与刷新安全修复及自定义 API 根编辑 正式实施包 v2", date: "2026-07-26" }
+  - { gate: design_plan, version: data-refresh-safety-v2, choice: "确认执行 数据与刷新安全修复及自定义 API 根编辑 正式实施包 v2", date: "2026-07-26" }
+  - { gate: child_task_plan, version: data-refresh-safety-v2, choice: "确认执行 数据与刷新安全修复及自定义 API 根编辑 正式实施包 v2", date: "2026-07-26" }
+  - { gate: requirement_impact, version: change-visibility-source-station-v1, choice: "确认需求与影响 v1", date: "2026-07-27" }
+  - { gate: design_plan, version: change-visibility-source-station-v1, choice: "确认执行 接入与涨跌可见性 正式实施包 v1", date: "2026-07-27" }
+  - { gate: child_task_plan, version: change-visibility-source-station-v1, choice: "确认执行 接入与涨跌可见性 正式实施包 v1", date: "2026-07-27" }
 
 work_items:
   - { id: ITEM-001, title: "兼容 NewAPI 登录入口", status: completed }
+  - { id: ITEM-002, title: "恢复 NewAPI 登录会话回传", status: completed }
+  - { id: ITEM-003, title: "页面内同源会话恢复", status: awaiting_user_acceptance }
+  - { id: ITEM-004, title: "OneAPI Cookie 会话验证", status: awaiting_user_acceptance }
+  - { id: ITEM-005, title: "Cookie-only NewAPI 读取", status: awaiting_user_acceptance }
+  - { id: ITEM-006, title: "安全回归与本地测试包", status: awaiting_user_acceptance }
+  - { id: ITEM-007, title: "真正自动的站点类型识别", status: completed }
+  - { id: ITEM-008, title: "保活状态语义与恢复可见性", status: completed }
+  - { id: ITEM-009, title: "用户显式开启的安全自动保活", status: completed }
+  - { id: ITEM-010, title: "默认简单、按需高级的添加站点流程", status: completed }
+  - { id: ITEM-011, title: "OneAPI Cookie 会话独立落盘", status: awaiting_user_acceptance }
+  - { id: ITEM-012, title: "页面上下文 Cookie 会话验证", status: awaiting_user_acceptance }
+  - { id: ITEM-014, title: "本地数据文件安全恢复", status: completed }
+  - { id: ITEM-015, title: "刷新意图与过期提交隔离", status: completed }
+  - { id: ITEM-016, title: "自定义 API 根编辑", status: awaiting_user_acceptance }
+  - { id: ITEM-017, title: "涨跌记录与通知可见性一致", status: awaiting_user_acceptance }
+  - { id: ITEM-018, title: "Aihub 受控兼容诊断", status: awaiting_user_acceptance }
+  - { id: ITEM-019, title: "Krill AI 受控兼容诊断", status: awaiting_user_acceptance }
+  - { id: ITEM-020, title: "Zanzhu API 根别名兼容", status: awaiting_user_acceptance }
 child_tasks:
   - { id: TASK-001, title: "记录规格与计划", status: completed }
   - { id: TASK-002, title: "实现路由选择与一次回退", status: completed }
   - { id: TASK-003, title: "补充测试与错误提示", status: completed }
   - { id: TASK-004, title: "验证与测试包", status: completed }
+  - { id: TASK-005, title: "记录 v2 规格与计划", status: completed }
+  - { id: TASK-006, title: "实现分区会话恢复", status: completed }
+  - { id: TASK-007, title: "补充会话回传测试", status: completed }
+  - { id: TASK-008, title: "验证与本地测试包", status: awaiting_user_acceptance }
+  - { id: TASK-009, title: "记录 v3 规格与方案", status: completed }
+  - { id: TASK-010, title: "实现页面内同源恢复", status: completed }
+  - { id: TASK-011, title: "接入授权捕获回退", status: completed }
+  - { id: TASK-012, title: "安全回归、验证与本地测试包", status: awaiting_user_acceptance }
+  - { id: TASK-013, title: "记录 v4 受控实施包", status: completed }
+  - { id: TASK-014, title: "实现 OneAPI Cookie 会话验证", status: completed }
+  - { id: TASK-015, title: "实现 Cookie-only NewAPI 读取", status: completed }
+  - { id: TASK-016, title: "安全回归、验证与本地测试包", status: awaiting_user_acceptance }
+  - { id: TASK-017, title: "诊断信号与自动应用", status: completed }
+  - { id: TASK-018, title: "简化表单与高级配置", status: completed }
+  - { id: TASK-019, title: "保活状态机持久化", status: completed }
+  - { id: TASK-020, title: "有界队列和恢复策略", status: completed }
+  - { id: TASK-021, title: "可见验证与交付", status: completed }
+  - { id: TASK-022, title: "Cookie 会话捕获编排", status: completed }
+  - { id: TASK-023, title: "安全会话状态反馈", status: completed }
+  - { id: TASK-024, title: "回归验证与用户验收", status: awaiting_user_acceptance }
+  - { id: TASK-025, title: "记录 v7 受控修复", status: completed }
+  - { id: TASK-026, title: "实现页面上下文 Cookie 会话验证", status: completed }
+  - { id: TASK-027, title: "安全回归、DMG 与用户验收", status: awaiting_user_acceptance }
+  - { id: TASK-031, title: "存储损坏保护", status: completed }
+  - { id: TASK-032, title: "刷新 epoch 提交保护", status: completed }
+  - { id: TASK-033, title: "自定义根草稿流", status: completed }
+  - { id: TASK-034, title: "审阅与验证", status: completed }
+  - { id: TASK-035, title: "变化记录广播与原生通知", status: completed }
+  - { id: TASK-036, title: "受控兼容 Profile 与部分可用快照", status: completed }
+  - { id: TASK-037, title: "已保存站点认证读取诊断", status: awaiting_user_acceptance }
+  - { id: TASK-038, title: "回归测试与可见验证", status: awaiting_user_acceptance }
 
 impact_assessment:
   level: high
-  direct: ["src/main/web-auth.ts", "src/main/index.ts", "src/renderer/src/App.tsx", "tests/web-auth.test.ts"]
-  indirect: ["所有隔离网页登录站点"]
-  user: ["新版 NewAPI 登录页", "旧版 /login 兼容", "明确授权失败反馈"]
-  data_migration: ["none"]
-  interfaces_config: ["无 IPC 新字段；新增内部路由错误前缀"]
-  security_permissions: ["固定同源路径", "safeStorage 不变", "无远程写入"]
-  compatibility: ["保留 /login 与 lcodex 特例"]
-  performance_resources: ["最多一次额外页面加载"]
-  tests: ["授权辅助单测", "npm run verify", "公开登录页可见验证"]
-  release_rollback: ["本地 ZIP，无发布；可还原功能提交"]
-  workflow_skills: ["foundation engineering governance；无完整匹配主 Workflow"]
-  explicitly_unaffected: ["余额、分组、定价、持久化凭据、远程写入、版本号"]
-  unknowns: ["其他二开第三登录路径不在本次范围"]
+  direct: ["src/main/index.ts", "src/main/storage.ts", "src/preload/index.ts", "src/renderer/src/App.tsx", "src/shared/types.ts", "src/shared/sub2api.ts", "src/main/sub2api-client.ts", "src/main/station-diagnostics.ts", "相关测试"]
+  indirect: ["价格榜与近期分组变化", "已配置的 Aihub、Krill AI、Zanzhu 来源站"]
+  user: ["持久化涨跌通知", "Aihub 默认 profile 读取", "Krill 余额/分组兼容", "Zanzhu 固定 API 别名读取"]
+  data_migration: ["无迁移；复用本地 groupChangeEvents"]
+  interfaces_config: ["新增无敏感 preferences 更新/打开变化窗口 IPC", "手工 API 路径保持优先"]
+  security_permissions: ["已知 HTTPS 主机和仅 404 回退", "无真实凭据/响应跨 IPC", "无远程业务写入"]
+  compatibility: ["标准 Sub2API 与手工路径保持优先；只增加 Krill/Zanzhu 固定读取候选"]
+  performance_resources: ["最多有限候选根；仅 404 才继续"]
+  tests: ["客户端/诊断/存储单测", "npm run verify", "桌面通知与诊断用户验收"]
+  release_rollback: ["未打包、发布或推送；移除受控 Profile/IPC 订阅即可回退"]
+  workflow_skills: ["scenario.feature-delivery + foundation.engineering-governance"]
+  explicitly_unaffected: ["远端站点配置、管理员写操作、账号/余额存储格式、版本号、GitHub 发布"]
+  unknowns: ["真实站点 WAF、Cookie 生命周期、二开字段和系统通知权限"]
 
 branch_flow:
   feature_branch: "feature/newapi-login-route-compatibility"
@@ -72,15 +146,94 @@ branch_flow:
   merge_target: main
   status: feature_development
 
-validation_status: verified_with_risk
+validation_status: verified_with_risk_change_visibility_source_station_v1
 verification_evidence:
-  - "npm test -- tests/web-auth.test.ts：12/12 通过"
-  - "npm run typecheck：通过"
-  - "npm run verify：13 个测试文件、184 项测试及生产构建通过"
+  - "聚焦诊断/队列/存储/授权/客户端测试：5 文件、71 项通过"
+  - "npm run verify：14 个测试文件、209 项测试及生产构建通过"
   - "git diff --check：通过"
-  - "公开可见验证：nihao.dog/sign-in 显示登录表单；/login 显示明确 404"
+  - "安全审阅：诊断 JSON 只返回受限提示，Cookie/JWT/密码/Profile 原文不跨 IPC"
+  - "隔离 Electron 演示：nihao.dog/keys 识别为 NewAPI，授权入口可用，未保存站点"
   - "本地 macOS arm64 测试包：codesign --verify 与 unzip -t 通过"
+  - "NewAPI Cookie 会话落盘：聚焦 59 项测试、npm run verify（14 文件 / 211 项）、生产构建与 git diff --check 通过"
+  - "本地 macOS arm64 DMG：AIZZZWatch-0.1.1-arm64.dmg，codesign 严格校验与只读 UDIF 元数据检查通过"
+  - "NewAPI 页面会话捕获：web-auth 24 项、npm run verify（14 文件 / 211 项）、git diff --check 通过"
+  - "本地 macOS arm64 DMG：AIZZZWatch-0.1.1-arm64.dmg，SHA-256 a7a2b7cd580572ee8e8f960e82b0cd541558419db2dd3806ff068ba786a6a359，codesign 严格校验通过"
+  - "OneAPI 选中用户上下文：聚焦 61 项测试、npm run verify（14 文件 / 213 项）、git diff --check 通过"
+  - "本地 macOS arm64 DMG：AIZZZWatch-0.1.1-arm64.dmg，SHA-256 9fe0ac22fae972c91130f7a9461a17315b1bef44c9b88b39eb49efc6bec4b062，codesign 严格校验通过"
+  - "数据与刷新安全修复 v2：聚焦 storage/mapping/epoch/sub2api 58 项、npm run verify（15 文件 / 237 项）、生产构建与 git diff --check 通过"
+  - "安全审阅：custom API 根仅 HTTPS 同源，凭据字段不进入映射预览或 console；无真实站点请求"
+  - "接入与涨跌可见性 v1：npm run verify（15 文件 / 242 项）、类型检查、生产构建与 git diff --check 通过"
+  - "安全审阅：Krill/Zanzhu 仅固定 HTTPS 候选且仅 404 回退；preferences IPC 不传凭据或原始响应"
 delivery_artifacts: ["specs/newapi-login-route-compatibility/delivery-summary.md"]
 reflection_artifacts: ["specs/newapi-login-route-compatibility/task-reflection.md"]
-handoff_notes: ["已完成 v1；本地测试 ZIP 位于 release/AIZZZWatch-v0.1.1-darwin-arm64.zip，等待用户在桌面端自行登录验收。"]
-residual_risks: ["未使用用户账号在 Electron 授权窗口完成真实登录；验证码、2FA、反爬和站点后续路由变更仍需用户验收。"]
+handoff_notes: ["v1 自动化验证完成；真实 Aihub/Krill/Zanzhu 认证 GET 与通知点击仍待用户在桌面端验收，未改动真实数据。"]
+residual_risks: ["真实站点 WAF、Cookie 生命周期、路径/字段契约与系统通知权限仍可能阻止预期读取或可见反馈。", "隔离 Electron 被 MachPortRendezvous 权限限制阻断，且 127.0.0.1:5187 未运行开发服务器导致 in-app browser 返回 ERR_CONNECTION_REFUSED；不将这些环境限制描述为真实站点验证通过。"]
+
+session_reflections:
+  - status: awaiting_user_acceptance
+    summary: "主进程持久化涨跌事件已统一驱动界面刷新与原生通知；Aihub、Krill、Zanzhu 的只读兼容已限制为已知 HTTPS 根和路径。"
+    user_choices: ["确认执行 接入与涨跌可见性 正式实施包 v1"]
+    choice_rationale: ["第三方读取与本地通知需要在无真实凭据暴露、无远端写入的边界内实施。"]
+    worked_well: ["新增事件在串行偏好写入中判定，避免 renderer 重启或快照竞争造成重复。"]
+    should_change: ["真实认证 GET 和系统通知点击必须由最新桌面端完成，不用受限环境的自动化替代。"]
+    user_feedback: ["涨价提醒无数据，Aihub、Krill、Zanzhu 添加失败。"]
+    acceptance_status: pending
+    dissatisfaction_categories: ["implementation_defect", "verification_gap"]
+
+memory_candidates:
+  - candidate: "已授权第三方诊断只记录脱敏路径/状态，真实响应留在主进程。"
+    space: task
+    status: recorded
+
+rule_change_candidates:
+  - title: "无"
+    target_level: session
+    status: not_required
+
+scenario_loop_runs:
+  - run_id: "loop-newapi-login-route-compatibility-001"
+    initiation_source: conversation
+    session_ref: null
+    primary_workflow: scenario.feature-delivery
+    template_version: "1.0.0"
+    formal_package:
+      requirement: v7
+      design: v7
+      impact: v7
+      task_breakdown: v7
+      verification: v7
+      confirmation_ref: "确认执行 NewAPI 页面会话捕获修复 v2"
+    status: needs_user_decision
+    current_iteration: 1
+    iterations:
+      - number: 1
+        root_cause: "主进程分区 profile 验证与 Cloudflare 保护的已登录网页上下文不一致"
+        strategy: "仅在固定 HTTPS 同源已登录页面内验证 profile，向主进程返回布尔值后复用既有 Cookie 保存"
+        quality_checks: ["web-auth focused test", "npm run verify", "git diff --check", "codesign verification"]
+        evidence: ["公开 nihao 前端使用同源 Cookie 调用 /api/user/self", "聚焦授权测试通过", "全量 211 项测试及生产构建通过"]
+        blockers: ["真实登录仍需用户在新构建中完成"]
+        risk: "第三方 WAF 或 Cookie 策略变化仍可能阻止实际会话持久化"
+        status: verified_with_risk
+  - run_id: "loop-newapi-login-route-compatibility-002"
+    initiation_source: conversation
+    session_ref: null
+    primary_workflow: scenario.feature-delivery
+    template_version: "1.0.0"
+    formal_package:
+      requirement: change-visibility-source-station-v1
+      design: change-visibility-source-station-v1
+      impact: change-visibility-source-station-v1
+      task_breakdown: change-visibility-source-station-v1
+      verification: change-visibility-source-station-v1
+      confirmation_ref: "确认执行 接入与涨跌可见性 正式实施包 v1"
+    status: verified_with_risk
+    current_iteration: 1
+    iterations:
+      - number: 1
+        root_cause: "已持久化的有效变化事件未形成独立的 UI 更新与通知链路；二开站仍依赖标准 Sub2API 默认路径。"
+        strategy: "主进程持久化后广播无敏感变化状态，增加严格受控的已知站点兼容 Profile 和能力级降级。"
+        quality_checks: ["受控 HTTP 契约测试", "并发持久化回归", "桌面可见交互", "npm run verify"]
+        evidence: ["npm run verify：15 个测试文件、242 项通过及生产构建通过", "git diff --check 通过", "储存新增事件、Krill 路径/降级、Zanzhu 固定别名诊断测试通过", "敏感扫描未发现真实凭据"]
+        blockers: ["隔离 Electron 受 macOS MachPortRendezvous 权限限制，且 127.0.0.1:5187 未运行开发服务器导致 in-app browser 返回 ERR_CONNECTION_REFUSED"]
+        risk: "真实站点的 WAF、Cookie 生命周期和未公开二开字段仍需要已授权 GET 诊断确认。"
+        status: verified_with_risk
