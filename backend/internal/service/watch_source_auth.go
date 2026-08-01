@@ -28,7 +28,8 @@ func loginWatchSourceWithPassword(ctx context.Context, source *WatchSource, user
 		timeout = 15
 	}
 	client := newWatchSourceHTTPClient(time.Duration(timeout)*time.Second, allowPrivate)
-	payload, status, err := requestWatchLoginJSON(ctx, client, joinWatchURL(source.APIBaseURL, loginPath), source.AdapterType, credential, username, password)
+	response := requestWatchLoginResponse(ctx, client, joinWatchURL(source.APIBaseURL, loginPath), source.AdapterType, credential, username, password)
+	payload, status, err := response.payload, response.status, response.err
 	if err != nil {
 		return WatchSourceCredential{}, err
 	}
@@ -42,8 +43,11 @@ func loginWatchSourceWithPassword(ctx context.Context, source *WatchSource, user
 		return WatchSourceCredential{}, ErrWatchSourcePasswordAuthUnavailable
 	}
 	accessToken := watchLoginAccessToken(payload)
-	if watchLoginRejected(payload) && accessToken == "" {
+	if watchLoginRejected(payload) && accessToken == "" && response.cookie == "" {
 		return WatchSourceCredential{}, ErrWatchSourcePasswordAuthFailed
+	}
+	if accessToken == "" && response.cookie != "" {
+		return WatchSourceCredential{Cookie: response.cookie, UserAgent: strings.TrimSpace(credential.UserAgent)}, nil
 	}
 	if accessToken == "" {
 		return WatchSourceCredential{}, ErrWatchSourcePasswordAuthMissingToken
@@ -52,6 +56,21 @@ func loginWatchSourceWithPassword(ctx context.Context, source *WatchSource, user
 }
 
 func requestWatchLoginJSON(ctx context.Context, client *http.Client, endpoint, adapterType string, credential WatchSourceCredential, username, password string) (any, int, error) {
+	response := requestWatchLoginResponse(ctx, client, endpoint, adapterType, credential, username, password)
+	return response.payload, response.status, response.err
+}
+
+type watchLoginResponse struct {
+	payload     any
+	status      int
+	contentType string
+	cookie      string
+	body        []byte
+	diagnostic  WatchSourceEndpointDiagnostic
+	err         error
+}
+
+func requestWatchLoginResponse(ctx context.Context, client *http.Client, endpoint, adapterType string, credential WatchSourceCredential, username, password string) watchLoginResponse {
 	loginPayload := map[string]string{"password": password}
 	if adapterType == WatchSourceAdapterSub2API {
 		loginPayload["email"] = username
@@ -60,11 +79,11 @@ func requestWatchLoginJSON(ctx context.Context, client *http.Client, endpoint, a
 	}
 	body, err := json.Marshal(loginPayload)
 	if err != nil {
-		return nil, 0, ErrWatchSourcePasswordAuthUnavailable
+		return watchLoginResponse{err: ErrWatchSourcePasswordAuthUnavailable}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: invalid login endpoint", ErrWatchSourcePasswordAuthUnavailable)
+		return watchLoginResponse{err: fmt.Errorf("%w: invalid login endpoint", ErrWatchSourcePasswordAuthUnavailable)}
 	}
 	if strings.TrimSpace(credential.UserAgent) != "" {
 		req.Header.Set("User-Agent", strings.TrimSpace(credential.UserAgent))
@@ -75,42 +94,86 @@ func requestWatchLoginJSON(ctx context.Context, client *http.Client, endpoint, a
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("%w: upstream login request failed", ErrWatchSourcePasswordAuthUnavailable)
+		return watchLoginResponse{err: fmt.Errorf("%w: upstream login request failed", ErrWatchSourcePasswordAuthUnavailable)}
 	}
 	defer resp.Body.Close()
 
 	reader := io.LimitReader(resp.Body, watchMaxResponseBytes+1)
 	responseBody, err := io.ReadAll(reader)
 	if err != nil {
-		return nil, resp.StatusCode, ErrWatchSourcePasswordAuthUnavailable
+		return watchLoginResponse{status: resp.StatusCode, err: ErrWatchSourcePasswordAuthUnavailable}
 	}
 	if len(responseBody) > watchMaxResponseBytes {
-		return nil, resp.StatusCode, ErrWatchSourcePasswordAuthUnavailable
+		return watchLoginResponse{status: resp.StatusCode, err: ErrWatchSourcePasswordAuthUnavailable}
+	}
+	contentType := strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0])
+	cookieParts := make([]string, 0, len(resp.Cookies()))
+	for _, cookie := range resp.Cookies() {
+		cookieParts = append(cookieParts, cookie.Name+"="+cookie.Value)
+	}
+	response := watchLoginResponse{
+		status:      resp.StatusCode,
+		contentType: contentType,
+		cookie:      strings.Join(cookieParts, "; "),
+		body:        responseBody,
 	}
 	if len(strings.TrimSpace(string(responseBody))) == 0 {
-		return nil, resp.StatusCode, nil
+		response.diagnostic = watchDiagnosticEndpointFromURL("login", http.MethodPost, endpoint, false)
+		response.diagnostic.StatusCode = resp.StatusCode
+		response.diagnostic.ContentType = contentType
+		response.diagnostic.Status = "error"
+		response.diagnostic.ErrorCode = "empty_response"
+		response.diagnostic.Reason = "登录接口返回空响应"
+		return response
 	}
 	var payload any
 	if err = json.Unmarshal(responseBody, &payload); err != nil {
-		return nil, resp.StatusCode, ErrWatchSourcePasswordAuthInvalidResponse
+		response.err = ErrWatchSourcePasswordAuthInvalidResponse
+		response.diagnostic = watchDiagnosticEndpointFromURL("login", http.MethodPost, endpoint, false)
+		response.diagnostic.StatusCode = resp.StatusCode
+		response.diagnostic.ContentType = contentType
+		response.diagnostic.Status = "error"
+		response.diagnostic.ErrorCode = "invalid_response"
+		response.diagnostic.Reason = "登录接口返回网页或非 JSON"
+		return response
 	}
-	return payload, resp.StatusCode, nil
+	response.payload = payload
+	response.diagnostic = watchDiagnosticEndpointFromURL("login", http.MethodPost, endpoint, false)
+	response.diagnostic.StatusCode = resp.StatusCode
+	response.diagnostic.ContentType = contentType
+	response.diagnostic.JSON = true
+	response.diagnostic.Status = "success"
+	response.diagnostic.Reason = "登录接口返回 JSON"
+	response.diagnostic.ResponseKeys = watchDiagnosticKeys(payload)
+	encoded, _ := json.Marshal(redactWatchDiagnosticValue(payload))
+	response.diagnostic.ResponsePreview = truncateWatchDiagnosticPreview(string(encoded))
+	return response
 }
 
 func watchLoginAccessToken(payload any) string {
 	if record, ok := payload.(map[string]any); ok {
-		for _, key := range []string{"access_token", "accessToken", "token"} {
+		for _, key := range []string{"access_token", "accessToken", "token", "session", "session_token", "sessionToken"} {
 			if value, ok := record[key].(string); ok && strings.TrimSpace(value) != "" {
 				return strings.TrimSpace(value)
 			}
 		}
-		for _, key := range []string{"data", "result"} {
+		for _, key := range []string{"data", "result", "user", "auth", "login"} {
 			if token := watchLoginAccessToken(record[key]); token != "" {
 				return token
 			}
 		}
 	}
 	return ""
+}
+
+func credentialTypeForWatchCredential(credential WatchSourceCredential) string {
+	if strings.TrimSpace(credential.Cookie) != "" && strings.TrimSpace(credential.AccessToken) == "" && strings.TrimSpace(credential.APIKey) == "" {
+		return WatchCredentialCookie
+	}
+	if strings.TrimSpace(credential.APIKey) != "" && strings.TrimSpace(credential.AccessToken) == "" && strings.TrimSpace(credential.Cookie) == "" {
+		return WatchCredentialAPIKey
+	}
+	return WatchCredentialBearer
 }
 
 func watchLoginRejected(payload any) bool {

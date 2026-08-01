@@ -1088,6 +1088,32 @@ func (r *accountRepository) ListActive(ctx context.Context) ([]service.Account, 
 	return r.accountsToService(ctx, accounts)
 }
 
+// ListWatchMappingAccountPage keeps unschedulable active accounts visible so
+// administrators can see and repair their mapping participation state.
+func (r *accountRepository) ListWatchMappingAccountPage(ctx context.Context, params pagination.PaginationParams, platform string) ([]service.Account, *pagination.PaginationResult, error) {
+	q := r.client.Account.Query().Where(dbaccount.StatusEQ(service.StatusActive))
+	if platform = strings.TrimSpace(platform); platform != "" {
+		q = q.Where(dbaccount.PlatformEQ(platform))
+	}
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	accounts, err := q.
+		Offset(params.Offset()).
+		Limit(params.Limit()).
+		Order(dbent.Asc(dbaccount.FieldPriority), dbent.Asc(dbaccount.FieldID)).
+		All(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	out, err := r.accountsToService(ctx, accounts)
+	if err != nil {
+		return nil, nil, err
+	}
+	return out, paginationResultFromTotal(int64(total), params), nil
+}
+
 func (r *accountRepository) ListOAuthRefreshCandidatePage(ctx context.Context, options service.OAuthRefreshPageOptions) (*service.OAuthRefreshCandidatePage, error) {
 	if r.sql == nil {
 		return nil, errors.New("account repository SQL executor not configured")

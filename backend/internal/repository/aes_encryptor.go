@@ -15,7 +15,8 @@ import (
 
 // AESEncryptor implements SecretEncryptor using AES-256-GCM
 type AESEncryptor struct {
-	key []byte
+	key                     []byte
+	encryptionKeyConfigured bool
 }
 
 // NewAESEncryptor creates a new AES encryptor
@@ -29,7 +30,14 @@ func NewAESEncryptor(cfg *config.Config) (service.SecretEncryptor, error) {
 		return nil, fmt.Errorf("totp encryption key must be 32 bytes (64 hex chars), got %d bytes", len(key))
 	}
 
-	return &AESEncryptor{key: key}, nil
+	return &AESEncryptor{key: key, encryptionKeyConfigured: cfg.Totp.EncryptionKeyConfigured}, nil
+}
+
+// EncryptionKeyConfigured reports whether this encryptor was built from a fixed
+// configured key. When false, the key was generated for this process and
+// ciphertext persisted with it will be unreadable after restart.
+func (e *AESEncryptor) EncryptionKeyConfigured() bool {
+	return e != nil && e.encryptionKeyConfigured
 }
 
 // Encrypt encrypts plaintext using AES-256-GCM

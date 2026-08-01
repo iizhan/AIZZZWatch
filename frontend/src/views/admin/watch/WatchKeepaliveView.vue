@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="space-y-4">
+    <div class="watch-surface space-y-4">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div class="min-w-0">
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.keepaliveTitle') }}</h1>

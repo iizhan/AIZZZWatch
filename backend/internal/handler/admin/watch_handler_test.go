@@ -85,3 +85,17 @@ func TestWriteWatchPricingRuleErrorMapsInvalidAdjustmentStep(t *testing.T) {
 		t.Fatalf("reason = %q, want adjustment_step must be positive", body.Reason)
 	}
 }
+
+func TestListAccountMappingsRejectsInvalidPagination(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/watch/account-mappings?page=1&page_size=101", nil)
+
+	h := &WatchHandler{watchService: &service.WatchService{}}
+	h.ListAccountMappings(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}

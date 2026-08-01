@@ -273,6 +273,7 @@ export interface WatchSourceCredential {
   api_key?: string
   cookie?: string
   user_agent?: string
+  extra_headers?: Record<string, string>
 }
 
 export interface WatchSourceInput {
@@ -302,6 +303,32 @@ export interface WatchSourceInput {
   credential_type?: WatchCredentialType
   credential?: WatchSourceCredential
   clear_credential?: boolean
+}
+
+export interface WatchSourceEndpointDiagnostic {
+  name: string
+  method: string
+  path: string
+  url: string
+  status: 'pending' | 'success' | 'error' | 'needs_auth' | 'interactive_auth' | 'skipped'
+  error_code?: string
+  status_code?: number
+  content_type?: string
+  latency_ms: number
+  optional: boolean
+  json: boolean
+  response_keys?: string[]
+  response_preview?: string
+  reason?: string
+}
+
+export interface WatchSourceDiagnosticReport {
+  adapter_type: WatchSourceAdapter
+  base_url: string
+  api_base_url: string
+  auth_mode: WatchSourceAuthMode
+  generated_at: string
+  endpoints: WatchSourceEndpointDiagnostic[]
 }
 
 export interface WatchSourcePortableKDF {
@@ -504,6 +531,10 @@ export interface WatchAccountMappingsView {
   generated_at: string
   accounts: WatchAccountMappingRow[]
   sources: WatchSource[]
+  total: number
+  page: number
+  page_size: number
+  pages: number
 }
 
 export interface WatchAccountMappingCandidateGroup {
@@ -783,6 +814,11 @@ export async function createSource(input: WatchSourceInput): Promise<WatchSource
   return data
 }
 
+export async function diagnoseSourceInput(input: WatchSourceInput): Promise<WatchSourceDiagnosticReport> {
+  const { data } = await apiClient.post<WatchSourceDiagnosticReport>('/admin/watch/sources/diagnose-preview', input)
+  return data
+}
+
 export async function updateSource(id: number, input: WatchSourceInput): Promise<WatchSource> {
   const { data } = await apiClient.put<WatchSource>(`/admin/watch/sources/${id}`, input)
   return data
@@ -836,7 +872,7 @@ export async function listPriceChanges(params: {
   return data
 }
 
-export async function listAccountMappings(params: { target_group_id?: number; platform?: string } = {}): Promise<WatchAccountMappingsView> {
+export async function listAccountMappings(params: { target_group_id?: number; platform?: string; page?: number; page_size?: number } = {}): Promise<WatchAccountMappingsView> {
   const { data } = await apiClient.get<WatchAccountMappingsView>('/admin/watch/account-mappings', { params })
   return data
 }
@@ -881,6 +917,7 @@ export const watchAPI = {
   listSources,
   getSource,
   createSource,
+  diagnoseSourceInput,
   updateSource,
   deleteSource,
   diagnoseSource,

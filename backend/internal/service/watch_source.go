@@ -28,6 +28,7 @@ var (
 
 	ErrWatchSourceCredentialLoadFailed              = errors.New("watch source credential load failed")
 	ErrWatchSourceCredentialDecryptFailed           = errors.New("watch source credential decrypt failed")
+	ErrWatchSourceStableEncryptionRequired          = errors.New("watch source requires fixed secret encryption key")
 	ErrWatchSourceObservationPersistFailed          = errors.New("watch source observation persist failed")
 	ErrWatchSourceSnapshotUnavailable               = errors.New("watch source snapshot unavailable")
 	ErrWatchSourcePasswordAuthUnsupported           = errors.New("watch source password auth is unsupported for this adapter")
@@ -40,6 +41,7 @@ var (
 	ErrWatchSourceInteractiveAuthSessionNotFound    = errors.New("watch source interactive auth session not found")
 	ErrWatchSourceInteractiveAuthSessionExpired     = errors.New("watch source interactive auth session expired")
 	ErrWatchSourceInteractiveAuthCredentialMissing  = errors.New("watch source interactive auth credential is missing")
+	ErrWatchSourceInteractiveAuthCredentialInvalid  = errors.New("watch source interactive auth credential is invalid")
 	ErrWatchSourceInteractiveAuthCredentialTooLarge = errors.New("watch source interactive auth credential is too large")
 )
 
@@ -100,10 +102,11 @@ type WatchSource struct {
 }
 
 type WatchSourceCredential struct {
-	AccessToken string `json:"access_token,omitempty"`
-	APIKey      string `json:"api_key,omitempty"`
-	Cookie      string `json:"cookie,omitempty"`
-	UserAgent   string `json:"user_agent,omitempty"`
+	AccessToken  string            `json:"access_token,omitempty"`
+	APIKey       string            `json:"api_key,omitempty"`
+	Cookie       string            `json:"cookie,omitempty"`
+	UserAgent    string            `json:"user_agent,omitempty"`
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
 }
 
 type WatchSourceLoginCredential struct {
@@ -289,6 +292,10 @@ type WatchAccountMappingsView struct {
 	GeneratedAt   time.Time                `json:"generated_at"`
 	Accounts      []WatchAccountMappingRow `json:"accounts"`
 	Sources       []*WatchSource           `json:"sources"`
+	Total         int64                    `json:"total"`
+	Page          int                      `json:"page"`
+	PageSize      int                      `json:"page_size"`
+	Pages         int                      `json:"pages"`
 }
 
 type WatchAccountMappingScanRequest struct {

@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="space-y-6">
+    <div class="watch-surface space-y-6">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.autoPricingTitle') }}</h1>
@@ -229,7 +229,7 @@
     </div>
 
     <BaseDialog :show="showRuleEditor" :title="editingRule ? t('admin.watch.editPricingRule') : t('admin.watch.addPricingRule')" width="wide" @close="closeRuleEditor">
-      <form id="watch-pricing-rule-form" class="space-y-5" @submit.prevent="saveRule">
+      <form id="watch-pricing-rule-form" class="watch-surface space-y-5" @submit.prevent="saveRule">
         <div v-if="ruleFormError" id="watch-pricing-rule-error" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">{{ ruleFormError }}</div>
         <div class="watch-rule-form-grid">
           <label class="watch-rule-field"><span class="input-label">{{ t('common.name') }}</span><input v-model.trim="ruleForm.name" class="input watch-rule-input" required maxlength="100" /></label>

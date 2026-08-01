@@ -99,4 +99,23 @@ describe('Intelligent Operations integration surface', () => {
     expect(en.nav.priceChanges).toBeTruthy()
     expect(Object.keys(zh.admin.watch)).toEqual(Object.keys(en.admin.watch))
   })
+
+  it('opts all eight Intelligent Operations pages into the local control sizing contract', () => {
+    const pages = [
+      '../WatchOverviewView.vue',
+      '../WatchSourcesView.vue',
+      '../WatchPricingView.vue',
+      '../WatchMappingsView.vue',
+      '../WatchOperationsView.vue',
+      '../WatchAutoPricingView.vue',
+      '../WatchKeepaliveView.vue',
+      '../WatchIntegrationView.vue',
+    ]
+    for (const page of pages) {
+      expect(read(page)).toContain('watch-surface')
+    }
+    const styles = read('../../../../style.css')
+    expect(styles).toContain(".watch-surface .input:not(textarea):not(input[type='file'])")
+    expect(styles).toContain('@apply h-10 min-w-0;')
+  })
 })

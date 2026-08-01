@@ -1,6 +1,17 @@
 <template>
   <AppLayout>
-    <div class="space-y-6">
+    <div class="watch-surface space-y-6">
+      <div v-if="interactiveAuthSession && !showInteractiveAuthDialog" class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-100">
+        <div>
+          <div class="font-medium">{{ t('admin.watch.interactiveAuthSessionPaused') }}</div>
+          <div class="mt-1 text-xs text-amber-700 dark:text-amber-200">{{ interactiveAuthSource?.name || '-' }} · {{ interactiveAuthSession.auth_url }}</div>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button class="btn btn-secondary" type="button" @click="resumeInteractiveAuthDialog">{{ t('admin.watch.interactiveAuthResume') }}</button>
+          <button class="btn btn-secondary" type="button" @click="discardInteractiveAuthSession">{{ t('admin.watch.interactiveAuthDiscard') }}</button>
+        </div>
+      </div>
+
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.sourcesTitle') }}</h1>
@@ -101,7 +112,7 @@
     </div>
 
     <BaseDialog :show="showEditor" :title="editingSource ? t('admin.watch.editSource') : t('admin.watch.addSource')" width="wide" @close="closeEditor">
-      <form id="watch-source-form" class="space-y-5" @submit.prevent="saveSource">
+      <form id="watch-source-form" class="watch-surface space-y-5" @submit.prevent="saveSource">
         <div v-if="formError" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">{{ formError }}</div>
         <div class="grid gap-4 md:grid-cols-2">
           <label class="block"><span class="input-label">{{ t('common.name') }}</span><input v-model.trim="form.name" class="input" required maxlength="100" /></label>
@@ -222,11 +233,79 @@
           <label v-if="editingSource?.has_credential && form.auth_mode === 'manual'" class="mt-4 inline-flex items-center gap-2 text-sm text-red-600 dark:text-red-400"><input v-model="form.clear_credential" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-red-600" />{{ t('admin.watch.clearCredential') }}</label>
         </div>
       </form>
-      <template #footer><div class="flex justify-end gap-3"><button class="btn btn-secondary" type="button" @click="closeEditor">{{ t('common.cancel') }}</button><button class="btn btn-primary" type="submit" form="watch-source-form" :disabled="saving">{{ saving ? t('admin.watch.savingAndChecking') : t('common.save') }}</button></div></template>
+      <template #footer>
+        <div class="flex items-center justify-between gap-3">
+          <div class="text-xs text-gray-500 dark:text-gray-400">
+            <span v-if="diagnosticReport">{{ t('admin.watch.diagnosticGeneratedAt', { time: formatDate(diagnosticReport.generated_at) }) }}</span>
+          </div>
+          <div class="flex justify-end gap-3">
+            <button class="btn btn-secondary" type="button" :disabled="diagnosing" @click="runPreviewDiagnosis">
+              <Icon name="sync" size="sm" :class="{ 'animate-spin': diagnosing }" />
+              {{ diagnosing ? t('admin.watch.diagnosing') : t('admin.watch.diagnoseConfig') }}
+            </button>
+            <button class="btn btn-secondary" type="button" @click="closeEditor">{{ t('common.cancel') }}</button>
+            <button class="btn btn-primary" type="submit" form="watch-source-form" :disabled="saving">{{ saving ? t('admin.watch.savingAndChecking') : t('common.save') }}</button>
+          </div>
+        </div>
+      </template>
+    </BaseDialog>
+
+    <BaseDialog :show="Boolean(diagnosticReport)" :title="t('admin.watch.diagnosticTitle')" width="wide" @close="diagnosticReport = null">
+      <div v-if="diagnosticReport" class="space-y-4">
+        <div class="rounded-lg border border-blue-100 bg-blue-50/70 p-3 text-sm text-blue-800 dark:border-blue-900/50 dark:bg-blue-900/20 dark:text-blue-100">
+          {{ t('admin.watch.diagnosticSummary', { adapter: diagnosticReport.adapter_type, count: diagnosticReport.endpoints.length }) }}
+        </div>
+        <div class="overflow-x-auto rounded-lg border border-gray-200 dark:border-dark-700">
+          <table class="min-w-[900px] text-left text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 dark:bg-dark-800/70 dark:text-gray-400">
+              <tr>
+                <th class="px-3 py-2 font-medium">{{ t('admin.watch.diagnosticEndpoint') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('admin.watch.diagnosticStatus') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('admin.watch.diagnosticHttp') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('admin.watch.diagnosticLatency') }}</th>
+                <th class="px-3 py-2 font-medium">{{ t('admin.watch.diagnosticReason') }}</th>
+                <th class="px-3 py-2 text-right font-medium">{{ t('common.actions') }}</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
+              <tr v-for="item in diagnosticReport.endpoints" :key="`${item.name}-${item.path}`">
+                <td class="px-3 py-3">
+                  <div class="font-medium text-gray-900 dark:text-white">{{ diagnosticEndpointLabel(item.name) }}</div>
+                  <div class="mt-1 truncate font-mono text-xs text-gray-500 dark:text-gray-400" :title="item.url">{{ item.method }} {{ item.path || '-' }}</div>
+                </td>
+                <td class="px-3 py-3"><span :class="diagnosticStatusClass(item.status)">{{ diagnosticStatusLabel(item.status) }}</span></td>
+                <td class="px-3 py-3 text-gray-600 dark:text-gray-300">{{ item.status_code || '-' }}<span v-if="item.content_type" class="ml-2 text-xs text-gray-400">{{ item.content_type }}</span></td>
+                <td class="px-3 py-3 text-gray-600 dark:text-gray-300">{{ item.latency_ms }} ms</td>
+                <td class="max-w-[360px] px-3 py-3 text-xs text-gray-600 dark:text-gray-300">{{ item.reason || '-' }}</td>
+                <td class="px-3 py-3 text-right">
+                  <button class="btn btn-secondary px-2 py-1 text-xs" type="button" @click="diagnosticDetail = item">{{ t('admin.watch.viewDiagnosticDetail') }}</button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </BaseDialog>
+
+    <BaseDialog :show="Boolean(diagnosticDetail)" :title="t('admin.watch.diagnosticDetailTitle')" width="normal" @close="diagnosticDetail = null">
+      <div v-if="diagnosticDetail" class="space-y-4 text-sm">
+        <div class="font-medium text-gray-900 dark:text-white">{{ diagnosticEndpointLabel(diagnosticDetail.name) }} · {{ diagnosticDetail.path || '-' }}</div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div><div class="text-xs text-gray-500">{{ t('admin.watch.diagnosticStatus') }}</div><div class="mt-1">{{ diagnosticStatusLabel(diagnosticDetail.status) }}</div></div>
+          <div><div class="text-xs text-gray-500">{{ t('admin.watch.diagnosticHttp') }}</div><div class="mt-1">{{ diagnosticDetail.status_code || '-' }}</div></div>
+          <div><div class="text-xs text-gray-500">{{ t('admin.watch.diagnosticContentType') }}</div><div class="mt-1">{{ diagnosticDetail.content_type || '-' }}</div></div>
+          <div><div class="text-xs text-gray-500">{{ t('admin.watch.diagnosticResponseKeys') }}</div><div class="mt-1 break-all">{{ diagnosticDetail.response_keys?.join(', ') || '-' }}</div></div>
+        </div>
+        <div>
+          <div class="text-xs text-gray-500">{{ t('admin.watch.diagnosticResponsePreview') }}</div>
+          <pre class="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md bg-gray-900 p-3 text-xs text-gray-100">{{ diagnosticDetail.response_preview || '-' }}</pre>
+        </div>
+        <p class="text-xs text-amber-700 dark:text-amber-300">{{ t('admin.watch.diagnosticRedactionHint') }}</p>
+      </div>
     </BaseDialog>
 
     <BaseDialog :show="showExportDialog" :title="t('admin.watch.exportSources')" width="normal" @close="closeExportDialog">
-      <form id="watch-source-export-form" class="space-y-5" @submit.prevent="submitExport">
+      <form id="watch-source-export-form" class="watch-surface space-y-5" @submit.prevent="submitExport">
         <div v-if="portableError" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">{{ portableError }}</div>
         <p class="text-sm text-gray-600 dark:text-gray-300">{{ t('admin.watch.exportSourcesHint', { count: sources.length }) }}</p>
         <label class="block">
@@ -246,7 +325,7 @@
     </BaseDialog>
 
     <BaseDialog :show="showImportDialog" :title="t('admin.watch.importSources')" width="wide" @close="closeImportDialog">
-      <form id="watch-source-import-form" class="space-y-5" @submit.prevent="applyImport">
+      <form id="watch-source-import-form" class="watch-surface space-y-5" @submit.prevent="applyImport">
         <div v-if="portableError" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">{{ portableError }}</div>
         <div class="grid gap-4 md:grid-cols-2">
           <label class="block">
@@ -311,7 +390,7 @@
     </BaseDialog>
 
     <BaseDialog :show="showInteractiveAuthDialog" :title="t('admin.watch.interactiveAuthTitle')" width="wide" @close="closeInteractiveAuthDialog">
-      <form id="watch-source-interactive-auth-form" class="space-y-5" @submit.prevent="submitInteractiveAuth">
+      <form id="watch-source-interactive-auth-form" class="watch-surface space-y-5" @submit.prevent="submitInteractiveAuth">
         <div v-if="interactiveAuthError" class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">{{ interactiveAuthError }}</div>
         <div class="rounded-lg border border-blue-100 bg-blue-50/70 p-4 text-sm text-blue-800 dark:border-blue-900/50 dark:bg-blue-900/20 dark:text-blue-100">
           <div class="flex items-start gap-3">
@@ -353,7 +432,8 @@
           </label>
           <label class="block md:col-span-2">
             <span class="input-label">{{ interactiveAuthCredentialLabel }}</span>
-            <textarea v-model="interactiveAuthForm.secret" class="input min-h-[120px] resize-y font-mono text-xs" autocomplete="off" spellcheck="false" :placeholder="interactiveAuthSecretPlaceholder" maxlength="65536" />
+            <textarea v-model="interactiveAuthForm.secret" class="input min-h-[120px] resize-y font-mono text-xs" autocomplete="off" spellcheck="false" :placeholder="interactiveAuthSecretPlaceholder" maxlength="65536" @input="autoDetectInteractiveCredential" />
+            <p v-if="interactiveAuthDetectedHint" class="mt-1 text-xs text-blue-700 dark:text-blue-300">{{ interactiveAuthDetectedHint }}</p>
           </label>
           <label class="inline-flex items-center gap-2 text-sm text-gray-700 md:col-span-2 dark:text-gray-200">
             <input v-model="interactiveAuthValidate" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600" />
@@ -383,7 +463,7 @@ import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Icon from '@/components/icons/Icon.vue'
 import { useAppStore } from '@/stores/app'
-import { applySourceImport, completeSourceInteractiveAuth, createSource, deleteSource, diagnoseSource, exportSources as exportWatchSources, listSources, previewSourceImport, startSourceInteractiveAuth, updateSource, type WatchCredentialType, type WatchReadRecordMode, type WatchSource, type WatchSourceAdapter, type WatchSourceAuthMode, type WatchSourceCredential, type WatchSourceImportDecision, type WatchSourceImportPreviewItem, type WatchSourceImportResult, type WatchSourceInput, type WatchSourceInteractiveAuthSession, type WatchSourcePortableEnvelope, type WatchSourceReadMapping, type WatchSourceSnapshot } from '@/api/admin/watch'
+import { applySourceImport, completeSourceInteractiveAuth, createSource, deleteSource, diagnoseSource, diagnoseSourceInput, exportSources as exportWatchSources, listSources, previewSourceImport, startSourceInteractiveAuth, updateSource, type WatchCredentialType, type WatchReadRecordMode, type WatchSource, type WatchSourceAdapter, type WatchSourceAuthMode, type WatchSourceCredential, type WatchSourceDiagnosticReport, type WatchSourceEndpointDiagnostic, type WatchSourceImportDecision, type WatchSourceImportPreviewItem, type WatchSourceImportResult, type WatchSourceInput, type WatchSourceInteractiveAuthSession, type WatchSourcePortableEnvelope, type WatchSourceReadMapping, type WatchSourceSnapshot } from '@/api/admin/watch'
 import { watchReasonText, watchStatusLabel } from './watchText'
 
 const { t, locale } = useI18n()
@@ -414,12 +494,17 @@ const interactiveAuthSource = ref<WatchSource | null>(null)
 const interactiveAuthSession = ref<WatchSourceInteractiveAuthSession | null>(null)
 const interactiveAuthBusy = ref(false)
 const interactiveAuthError = ref('')
+const interactiveAuthDetectedHint = ref('')
 const interactiveAuthValidate = ref(true)
 const interactiveAuthForm = reactive({
   credential_type: 'bearer' as WatchCredentialType,
   secret: '',
-  user_agent: ''
+  user_agent: '',
+  extra_headers: {} as Record<string, string>
 })
+const diagnosing = ref(false)
+const diagnosticReport = ref<WatchSourceDiagnosticReport | null>(null)
+const diagnosticDetail = ref<WatchSourceEndpointDiagnostic | null>(null)
 const nowTick = ref(Date.now())
 let tickTimer: ReturnType<typeof setInterval> | undefined
 let sourceRefreshTimer: ReturnType<typeof setInterval> | undefined
@@ -733,6 +818,8 @@ function openCreate() {
   editingSource.value = null
   resetForm()
   formError.value = ''
+  diagnosticReport.value = null
+  diagnosticDetail.value = null
   showEditor.value = true
 }
 
@@ -768,6 +855,8 @@ function openEdit(source: WatchSource) {
   })
   fillReadMappingForm(source.read_mapping)
   formError.value = ''
+  diagnosticReport.value = null
+  diagnosticDetail.value = null
   showEditor.value = true
 }
 
@@ -777,9 +866,27 @@ function clearSensitiveFormFields() {
 }
 
 function closeEditor() {
-  if (!saving.value) {
+  if (!saving.value && !diagnosing.value) {
     clearSensitiveFormFields()
     showEditor.value = false
+    diagnosticReport.value = null
+    diagnosticDetail.value = null
+  }
+}
+
+async function runPreviewDiagnosis() {
+  const formElement = document.getElementById('watch-source-form') as HTMLFormElement | null
+  if (formElement && !formElement.reportValidity()) return
+  diagnosing.value = true
+  formError.value = ''
+  diagnosticReport.value = null
+  diagnosticDetail.value = null
+  try {
+    diagnosticReport.value = await diagnoseSourceInput(buildInput())
+  } catch (err) {
+    formError.value = errorMessage(err, t('admin.watch.diagnoseConfigFailed'))
+  } finally {
+    diagnosing.value = false
   }
 }
 
@@ -962,13 +1069,15 @@ async function applyImport() {
 async function openInteractiveAuth(source: WatchSource) {
   interactiveAuthBusy.value = true
   interactiveAuthError.value = ''
+  interactiveAuthDetectedHint.value = ''
   interactiveAuthSource.value = source
   interactiveAuthSession.value = null
   interactiveAuthValidate.value = true
   Object.assign(interactiveAuthForm, {
     credential_type: source.credential_type || 'bearer',
     secret: '',
-    user_agent: ''
+    user_agent: '',
+    extra_headers: {}
   })
   showInteractiveAuthDialog.value = true
   try {
@@ -982,8 +1091,21 @@ async function openInteractiveAuth(source: WatchSource) {
 
 function closeInteractiveAuthDialog() {
   if (interactiveAuthBusy.value) return
-  Object.assign(interactiveAuthForm, { secret: '', user_agent: '' })
   interactiveAuthError.value = ''
+  interactiveAuthDetectedHint.value = ''
+  showInteractiveAuthDialog.value = false
+}
+
+function resumeInteractiveAuthDialog() {
+  if (!interactiveAuthSession.value || interactiveAuthBusy.value) return
+  showInteractiveAuthDialog.value = true
+}
+
+function discardInteractiveAuthSession() {
+  if (interactiveAuthBusy.value) return
+  Object.assign(interactiveAuthForm, { secret: '', user_agent: '', extra_headers: {} })
+  interactiveAuthError.value = ''
+  interactiveAuthDetectedHint.value = ''
   interactiveAuthSession.value = null
   interactiveAuthSource.value = null
   showInteractiveAuthDialog.value = false
@@ -1006,11 +1128,104 @@ function normalizeInteractiveSecret() {
   return secret
 }
 
+function cleanPastedCredentialValue(value: string | undefined) {
+  return (value || '')
+    .trim()
+    .replace(/\\\r?\n/g, '')
+    .replace(/\\(['"\\])/g, '$1')
+    .replace(/\\$/g, '')
+    .trim()
+}
+
+function extractCurlFlagValue(raw: string, flagPattern: RegExp) {
+  flagPattern.lastIndex = 0
+  const match = flagPattern.exec(raw)
+  if (!match) return ''
+  return cleanPastedCredentialValue(match[1] || match[2] || match[3])
+}
+
+function extractPastedHeader(raw: string, headerName: string) {
+  const escapedName = headerName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const directMatch = raw.match(new RegExp(`(?:^|[\\r\\n])\\s*${escapedName}\\s*:\\s*([^\\r\\n]+)`, 'i'))
+  if (directMatch) return cleanPastedCredentialValue(directMatch[1])
+
+  const headerFlagPattern = /(?:^|\s)-H\s+(?:"((?:\\.|[^"])*)"|'([^']*)'|([^\s\\]+))/gi
+  let match: RegExpExecArray | null
+  while ((match = headerFlagPattern.exec(raw))) {
+    const headerLine = cleanPastedCredentialValue(match[1] || match[2] || match[3])
+    const separatorIndex = headerLine.indexOf(':')
+    if (separatorIndex <= 0) continue
+    if (headerLine.slice(0, separatorIndex).trim().toLowerCase() === headerName.toLowerCase()) {
+      return cleanPastedCredentialValue(headerLine.slice(separatorIndex + 1))
+    }
+  }
+
+  return ''
+}
+
+function extractPastedCookie(raw: string) {
+  const headerCookie = extractPastedHeader(raw, 'cookie')
+  if (headerCookie) return headerCookie
+  return extractCurlFlagValue(raw, /(?:^|\s)(?:-b|--cookie)\s+(?:"((?:\\.|[^"])*)"|'([^']*)'|([^\s\\]+))/i)
+    || extractCurlFlagValue(raw, /(?:^|\s)--cookie=(?:"((?:\\.|[^"])*)"|'([^']*)'|([^\s\\]+))/i)
+}
+
+function looksLikePastedHTTPAuthorization(raw: string) {
+  return /^\s*curl\s/i.test(raw)
+    || /(?:^|[\r\n])\s*(?:authorization|cookie|x-api-key|api-key|new-api-user|user-agent)\s*:/i.test(raw)
+    || /(?:^|\s)(?:-H|-b|--header|--cookie)(?:\s|=)/i.test(raw)
+}
+
+function autoDetectInteractiveCredential(event?: Event) {
+  const raw = ((event?.target as HTMLTextAreaElement | null)?.value || interactiveAuthForm.secret).trim()
+  const userAgent = extractPastedHeader(raw, 'user-agent')
+  if (userAgent) {
+    interactiveAuthForm.user_agent = userAgent
+  }
+  const newApiUser = extractPastedHeader(raw, 'new-api-user')
+  if (newApiUser) {
+    interactiveAuthForm.extra_headers = { 'new-api-user': newApiUser }
+  } else if (looksLikePastedHTTPAuthorization(raw)) {
+    interactiveAuthForm.extra_headers = {}
+  }
+
+  const cookie = extractPastedCookie(raw)
+  const apiKey = extractPastedHeader(raw, 'x-api-key') || extractPastedHeader(raw, 'api-key')
+  const authorization = extractPastedHeader(raw, 'authorization')
+  const bearerMatch = authorization.match(/^bearer\s+(.+)$/i) || raw.match(/(?:^|\s)bearer\s+([^\s'"]+)/i)
+  if (cookie) {
+    interactiveAuthForm.credential_type = 'cookie'
+    interactiveAuthForm.secret = cookie
+    interactiveAuthDetectedHint.value = t('admin.watch.interactiveAuthDetectedCookie')
+    return
+  }
+  if (apiKey) {
+    interactiveAuthForm.credential_type = 'api_key'
+    interactiveAuthForm.secret = apiKey
+    interactiveAuthDetectedHint.value = t('admin.watch.interactiveAuthDetectedApiKey')
+    return
+  }
+  if (bearerMatch) {
+    interactiveAuthForm.credential_type = 'bearer'
+    interactiveAuthForm.secret = cleanPastedCredentialValue(bearerMatch[1])
+    interactiveAuthDetectedHint.value = t('admin.watch.interactiveAuthDetectedBearer')
+    return
+  }
+  if (/^bearer\s+/i.test(raw)) {
+    interactiveAuthForm.credential_type = 'bearer'
+    interactiveAuthForm.secret = raw.replace(/^bearer\s+/i, '').trim()
+    interactiveAuthDetectedHint.value = t('admin.watch.interactiveAuthDetectedBearer')
+  }
+}
+
 function buildInteractiveCredential(): WatchSourceCredential | null {
   const secret = normalizeInteractiveSecret()
   if (!secret) return null
   const credential: WatchSourceCredential = {
     user_agent: interactiveAuthForm.user_agent.trim() || undefined
+  }
+  if (interactiveAuthForm.extra_headers['new-api-user']) {
+    credential.extra_headers = { 'new-api-user': interactiveAuthForm.extra_headers['new-api-user'] }
   }
   if (interactiveAuthForm.credential_type === 'api_key') credential.api_key = secret
   else if (interactiveAuthForm.credential_type === 'cookie') credential.cookie = secret
@@ -1022,6 +1237,7 @@ async function submitInteractiveAuth() {
   const source = interactiveAuthSource.value
   const session = interactiveAuthSession.value
   if (!source || !session) return
+  autoDetectInteractiveCredential()
   const credential = buildInteractiveCredential()
   if (!credential) {
     interactiveAuthError.value = t('admin.watch.interactiveAuthCredentialRequired')
@@ -1036,7 +1252,7 @@ async function submitInteractiveAuth() {
       credential,
       validate: interactiveAuthValidate.value
     })
-    Object.assign(interactiveAuthForm, { secret: '', user_agent: '' })
+    Object.assign(interactiveAuthForm, { secret: '', user_agent: '', extra_headers: {} })
     await loadSources()
     const warning = result.snapshot ? diagnosticWarning(result.snapshot) : ''
     if (warning) {
@@ -1141,6 +1357,27 @@ async function confirmDelete() {
 
 function adapterSummary(adapter: WatchSourceAdapter) {
   return t(`admin.watch.adapterSummary_${adapter}`)
+}
+
+function diagnosticEndpointLabel(name: string) {
+  const key = `admin.watch.diagnosticEndpoint_${name}`
+  const translated = t(key)
+  return translated === key ? name : translated
+}
+
+function diagnosticStatusLabel(status: string) {
+  const key = `admin.watch.diagnosticStatus_${status}`
+  const translated = t(key)
+  return translated === key ? status : translated
+}
+
+function diagnosticStatusClass(status: string) {
+  const base = 'inline-flex rounded-full px-2.5 py-1 text-xs font-medium '
+  if (status === 'success') return base + 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+  if (status === 'interactive_auth') return base + 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+  if (status === 'needs_auth') return base + 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300'
+  if (status === 'error') return base + 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+  return base + 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
 }
 
 function statusLabel(status?: string) {

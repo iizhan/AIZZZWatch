@@ -147,6 +147,7 @@ func registerWatchRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
 		watch.GET("/audits", h.Admin.Watch.ListPriceAudits)
 		watch.GET("/sources", h.Admin.Watch.ListSources)
 		watch.POST("/sources", h.Admin.Watch.CreateSource)
+		watch.POST("/sources/diagnose-preview", h.Admin.Watch.DiagnoseSourcePreview)
 		watch.POST("/sources/export", h.Admin.Watch.ExportSources)
 		watch.POST("/sources/import/preview", h.Admin.Watch.PreviewImportSources)
 		watch.POST("/sources/import/apply", h.Admin.Watch.ApplyImportSources)

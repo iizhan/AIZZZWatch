@@ -1,10 +1,10 @@
 <template>
   <AppLayout>
-    <div class="space-y-4">
-      <div class="flex flex-wrap items-start justify-between gap-4">
+    <div class="watch-surface space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.pricingTitle') }}</h1>
-          <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.pricingBoardDescription') }}</p>
+          <p class="mt-0.5 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.pricingBoardDescription') }}</p>
         </div>
         <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadBoard">
           <Icon name="refresh" size="sm" :class="{ 'animate-spin': loading }" />
@@ -17,199 +17,187 @@
         <button class="font-medium underline" type="button" @click="loadBoard">{{ t('admin.watch.retry') }}</button>
       </div>
 
-      <section class="rounded-xl border border-gray-200 bg-white p-4 shadow-sm dark:border-dark-700 dark:bg-dark-800">
-        <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
+      <dl class="grid grid-cols-5 divide-x divide-gray-200 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:divide-dark-700 dark:border-dark-700 dark:bg-dark-800">
+        <div v-for="item in summaryItems" :key="item.label" class="min-w-0 px-2.5 py-2 sm:px-3">
+          <dt class="truncate text-[11px] text-gray-500 dark:text-gray-400" :title="item.label">{{ item.label }}</dt>
+          <dd class="mt-0.5 truncate text-base font-semibold tabular-nums text-gray-900 dark:text-white" :title="String(item.value)">{{ item.value }}</dd>
+        </div>
+      </dl>
+
+      <section class="rounded-lg border border-gray-200 bg-white p-3 shadow-sm dark:border-dark-700 dark:bg-dark-800">
+        <div class="grid gap-2.5 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-[repeat(4,minmax(0,1fr))_minmax(220px,1.5fr)_40px]">
+          <label class="block text-xs text-gray-600 dark:text-gray-300">
             {{ t('admin.watch.source') }}
-            <select v-model.number="filters.source_id" class="input mt-1 w-full" @change="loadBoard">
+            <select v-model.number="filters.source_id" class="input mt-1 w-full" @change="applyFilters">
               <option :value="0">{{ t('admin.watch.allSources') }}</option>
               <option v-for="source in sources" :key="source.id" :value="source.id">{{ source.name }}</option>
             </select>
           </label>
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
+          <label class="block text-xs text-gray-600 dark:text-gray-300">
             {{ t('admin.watch.platform') }}
-            <select v-model="filters.platform" class="input mt-1 w-full" @change="loadBoard">
+            <select v-model="filters.platform" class="input mt-1 w-full" @change="applyFilters">
               <option value="">{{ t('admin.watch.allPlatforms') }}</option>
               <option v-for="platform in platformOptions" :key="platform.value" :value="platform.value">{{ platform.label }}</option>
             </select>
           </label>
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
+          <label class="block text-xs text-gray-600 dark:text-gray-300">
             {{ t('admin.watch.changeDirection') }}
-            <select v-model="filters.change_kind" class="input mt-1 w-full" @change="loadBoard">
+            <select v-model="filters.change_kind" class="input mt-1 w-full" @change="applyFilters">
               <option value="all">{{ t('admin.watch.allChanges') }}</option>
               <option value="increase">{{ t('admin.watch.increase') }}</option>
               <option value="decrease">{{ t('admin.watch.decrease') }}</option>
             </select>
           </label>
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
+          <label class="block text-xs text-gray-600 dark:text-gray-300">
             {{ t('admin.watch.usageState') }}
-            <select v-model="filters.in_use" class="input mt-1 w-full" @change="loadBoard">
+            <select v-model="filters.in_use" class="input mt-1 w-full" @change="applyFilters">
               <option value="all">{{ t('admin.watch.allUsageStates') }}</option>
               <option value="true">{{ t('admin.watch.inUse') }}</option>
               <option value="false">{{ t('admin.watch.notInUse') }}</option>
             </select>
           </label>
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
-            {{ t('admin.watch.sortBy') }}
-            <select v-model="filters.sort" class="input mt-1 w-full" @change="loadBoard">
-              <option value="final_multiplier">{{ t('admin.watch.finalMultiplier') }}</option>
-              <option value="observed_at">{{ t('admin.watch.observedAt') }}</option>
-              <option value="source">{{ t('admin.watch.source') }}</option>
-              <option value="change">{{ t('admin.watch.changeDirection') }}</option>
-              <option value="in_use">{{ t('admin.watch.usageState') }}</option>
-            </select>
-          </label>
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
+          <label class="block text-xs text-gray-600 dark:text-gray-300">
             {{ t('admin.watch.search') }}
-            <input v-model.trim="filters.search" class="input mt-1 w-full" :placeholder="t('admin.watch.searchPricingPlaceholder')" @keyup.enter="loadBoard" />
+            <input v-model.trim="filters.search" class="input mt-1 w-full" :placeholder="t('admin.watch.searchPricingPlaceholder')" @keyup.enter="applyFilters" />
           </label>
-        </div>
-        <div class="mt-3 flex flex-wrap items-center justify-between gap-3">
-          <p class="text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.watch.pricingBoardHint') }}</p>
-          <div class="flex items-center gap-2">
-            <button class="btn btn-secondary btn-sm" type="button" @click="toggleOrder">
-              <Icon :name="filters.order === 'asc' ? 'arrowUp' : 'arrowDown'" size="xs" />
-              {{ filters.order === 'asc' ? t('admin.watch.ascending') : t('admin.watch.descending') }}
-            </button>
-            <button class="btn btn-primary btn-sm" type="button" :disabled="loading" @click="loadBoard">{{ t('admin.watch.applyFilters') }}</button>
-          </div>
+          <button class="btn btn-primary mt-auto h-10 w-10 p-0" type="button" :disabled="loading" :title="t('admin.watch.applyFilters')" :aria-label="t('admin.watch.applyFilters')" @click="applyFilters">
+            <Icon name="search" size="sm" />
+          </button>
         </div>
       </section>
 
-      <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <div v-for="item in summaryItems" :key="item.label" class="rounded-xl border border-gray-200 bg-white p-3 shadow-sm dark:border-dark-700 dark:bg-dark-800">
-          <div class="text-xs text-gray-500 dark:text-gray-400">{{ item.label }}</div>
-          <div class="mt-1 text-xl font-semibold text-gray-900 dark:text-white">{{ item.value }}</div>
-          <div v-if="item.hint" class="mt-1 line-clamp-2 text-xs text-gray-500 dark:text-gray-400">{{ item.hint }}</div>
-        </div>
-      </div>
-
-      <section class="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
-        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-5 py-4 dark:border-dark-700">
-          <div>
-            <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.procurementPriceBoard') }}</h2>
-            <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.watch.procurementPriceBoardHint') }}</p>
+      <section class="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-dark-700 dark:bg-dark-800">
+        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-gray-200 px-4 py-2.5 dark:border-dark-700">
+          <div class="flex min-w-0 items-center gap-2">
+            <h2 class="whitespace-nowrap text-sm font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.procurementPriceBoard') }}</h2>
+            <span class="truncate text-xs text-gray-500 dark:text-gray-400">{{ t('admin.watch.pricingBoardHint') }}</span>
           </div>
-          <span class="text-xs text-gray-500 dark:text-gray-400">{{ board ? formatDate(board.generated_at) : '-' }}</span>
+          <span class="whitespace-nowrap text-xs text-gray-500 dark:text-gray-400">{{ board ? formatDate(board.generated_at) : '-' }}</span>
         </div>
 
         <div v-if="loading && !board" class="py-16 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('common.loading') }}</div>
-        <div v-else-if="rows.length === 0" class="py-16 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.noPricingRows') }}</div>
-        <div v-else class="max-w-full overflow-x-auto">
-          <table class="w-full min-w-[1720px] text-left text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 dark:bg-dark-800/70 dark:text-gray-400">
+        <div v-else-if="rows.length === 0" class="flex min-h-56 flex-col items-center justify-center gap-3 px-4 text-center text-sm text-gray-500 dark:text-gray-400">
+          <span>{{ hasActiveFilters ? t('admin.watch.noPricingRowsForFilters') : t('admin.watch.noPricingRows') }}</span>
+          <button v-if="hasActiveFilters" class="btn btn-secondary btn-sm" type="button" @click="clearFilters">{{ t('admin.watch.clearPricingFilters') }}</button>
+        </div>
+        <div v-else data-testid="pricing-table-scroll" class="max-h-[clamp(360px,calc(100vh-19rem),680px)] min-h-[320px] max-w-full overflow-auto">
+          <table class="w-full min-w-[1040px] text-left text-sm">
+            <thead class="sticky top-0 z-10 bg-gray-50 text-xs text-gray-500 shadow-[0_1px_0_rgba(0,0,0,0.06)] dark:bg-dark-800 dark:text-gray-400">
               <tr>
-                <th class="min-w-[220px] whitespace-nowrap px-4 py-3 font-medium">
+                <th class="w-[270px] min-w-[270px] whitespace-nowrap px-3 py-2.5 font-medium">
                   <button class="inline-flex items-center gap-1.5 whitespace-nowrap hover:text-primary-600 dark:hover:text-primary-300" type="button" :title="sortButtonTitle('source')" :aria-label="sortButtonTitle('source')" @click="setSort('source')">
                     <Icon name="server" size="xs" />
-                    {{ t('admin.watch.source') }}
+                    {{ t('admin.watch.sourceAndGroup') }}
                     <Icon :name="sortIconName('source')" size="xs" :class="sortIconClass('source')" aria-hidden="true" />
                   </button>
                 </th>
-                <th class="min-w-[260px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.sourceGroup') }}</th>
-                <th class="min-w-[130px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.platform') }}</th>
-                <th class="min-w-[130px] whitespace-nowrap px-4 py-3 text-right font-medium">{{ t('admin.watch.rawMultiplier') }}</th>
-                <th class="min-w-[130px] whitespace-nowrap px-4 py-3 text-right font-medium">{{ t('admin.watch.rechargeRatio') }}</th>
-                <th class="min-w-[150px] whitespace-nowrap px-4 py-3 text-right font-medium">
+                <th class="w-[95px] min-w-[95px] whitespace-nowrap px-3 py-2.5 font-medium">{{ t('admin.watch.platform') }}</th>
+                <th class="w-[150px] min-w-[150px] whitespace-nowrap px-3 py-2.5 text-right font-medium">{{ t('admin.watch.costBreakdown') }}</th>
+                <th class="w-[120px] min-w-[120px] whitespace-nowrap px-3 py-2.5 text-right font-medium">
                   <button class="inline-flex items-center justify-end gap-1.5 whitespace-nowrap hover:text-primary-600 dark:hover:text-primary-300" type="button" :title="sortButtonTitle('final_multiplier')" :aria-label="sortButtonTitle('final_multiplier')" @click="setSort('final_multiplier')">
                     {{ t('admin.watch.finalMultiplier') }}
                     <Icon :name="sortIconName('final_multiplier')" size="xs" :class="sortIconClass('final_multiplier')" aria-hidden="true" />
                   </button>
                 </th>
-                <th class="min-w-[300px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.modelPriceSnapshot') }}</th>
-                <th class="min-w-[220px] whitespace-nowrap px-4 py-3 font-medium">
+                <th class="w-[160px] min-w-[160px] whitespace-nowrap px-3 py-2.5 font-medium">
                   <button class="inline-flex items-center gap-1.5 whitespace-nowrap hover:text-primary-600 dark:hover:text-primary-300" type="button" :title="sortButtonTitle('change')" :aria-label="sortButtonTitle('change')" @click="setSort('change')">
                     <Icon name="trendingUp" size="xs" />
                     {{ t('admin.watch.changeDirection') }}
                     <Icon :name="sortIconName('change')" size="xs" :class="sortIconClass('change')" aria-hidden="true" />
                   </button>
                 </th>
-                <th class="min-w-[150px] whitespace-nowrap px-4 py-3 font-medium">
+                <th class="w-[120px] min-w-[120px] whitespace-nowrap px-3 py-2.5 font-medium">
                   <button class="inline-flex items-center gap-1.5 whitespace-nowrap hover:text-primary-600 dark:hover:text-primary-300" type="button" :title="sortButtonTitle('in_use')" :aria-label="sortButtonTitle('in_use')" @click="setSort('in_use')">
                     {{ t('admin.watch.usageState') }}
                     <Icon :name="sortIconName('in_use')" size="xs" :class="sortIconClass('in_use')" aria-hidden="true" />
                   </button>
                 </th>
-                <th class="min-w-[170px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.status') }}</th>
-                <th class="min-w-[180px] whitespace-nowrap px-4 py-3 font-medium">
+                <th class="w-[180px] min-w-[180px] whitespace-nowrap px-3 py-2.5 font-medium">
                   <button class="inline-flex items-center gap-1.5 whitespace-nowrap hover:text-primary-600 dark:hover:text-primary-300" type="button" :title="sortButtonTitle('observed_at')" :aria-label="sortButtonTitle('observed_at')" @click="setSort('observed_at')">
                     <Icon name="clock" size="xs" />
-                    {{ t('admin.watch.observedAt') }}
+                    {{ t('admin.watch.healthAndObservedAt') }}
                     <Icon :name="sortIconName('observed_at')" size="xs" :class="sortIconClass('observed_at')" aria-hidden="true" />
                   </button>
                 </th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-              <tr v-for="row in rows" :key="`${row.source_id}:${row.group_external_id}`" class="bg-white align-top transition hover:bg-gray-50 dark:bg-dark-800 dark:hover:bg-dark-700/50">
-                <td class="max-w-[220px] whitespace-nowrap px-4 py-3">
-                  <div class="truncate font-medium text-gray-900 dark:text-white" :title="row.source_name">{{ row.source_name }}</div>
-                  <div class="mt-1 truncate text-xs text-gray-500 dark:text-gray-400">{{ adapterLabel(row.adapter_type) }}</div>
-                </td>
-                <td class="max-w-[260px] whitespace-nowrap px-4 py-3">
-                  <button class="block max-w-[230px] truncate text-left font-medium text-primary-600 hover:underline dark:text-primary-300" type="button" :title="row.group_name || row.group_external_id" @click="openHistory(row)">
+              <template v-for="row in pagedRows" :key="pricingRowKey(row)">
+                <tr data-testid="pricing-row" class="bg-white transition hover:bg-gray-50 dark:bg-dark-800 dark:hover:bg-dark-700/50">
+                <td class="max-w-[270px] px-3 py-2">
+                  <button class="block max-w-[246px] truncate text-left font-medium text-primary-600 hover:underline dark:text-primary-300" type="button" :title="row.group_name || row.group_external_id" @click="openHistory(row)">
                     {{ row.group_name || row.group_external_id }}
                   </button>
-                  <div class="mt-1 max-w-[230px] truncate font-mono text-xs text-gray-500 dark:text-gray-400" :title="row.group_external_id">{{ row.group_external_id }}</div>
+                  <div class="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                    <span class="max-w-[120px] truncate" :title="row.source_name">{{ row.source_name }}</span>
+                    <span aria-hidden="true">·</span>
+                    <span class="whitespace-nowrap">{{ adapterLabel(row.adapter_type) }}</span>
+                    <button class="inline-flex items-center gap-1 whitespace-nowrap text-primary-600 hover:underline dark:text-primary-300" type="button" :aria-expanded="expandedRowKey === pricingRowKey(row)" @click="toggleRowDetails(row)">
+                      {{ row.model_prices?.length ? t('admin.watch.modelPriceCount', { count: row.model_prices.length }) : t('admin.watch.pricingRowDetails') }}
+                      <Icon :name="expandedRowKey === pricingRowKey(row) ? 'chevronUp' : 'chevronDown'" size="xs" />
+                    </button>
+                  </div>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3">
-                  <span class="inline-flex whitespace-nowrap rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">{{ platformDisplay(row.platform) }}</span>
+                <td class="whitespace-nowrap px-3 py-2">
+                  <span class="inline-flex whitespace-nowrap rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">{{ platformDisplay(row.platform) }}</span>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3 text-right font-mono text-gray-700 dark:text-gray-200">
+                <td class="whitespace-nowrap px-3 py-2 text-right font-mono text-xs text-gray-700 dark:text-gray-200">
                   <button class="hover:text-primary-600 dark:hover:text-primary-300" type="button" @click="openHistory(row)">
-                    {{ formatValue(row.user_rate_multiplier ?? row.rate_multiplier) }}
+                    {{ formatValue(row.user_rate_multiplier ?? row.rate_multiplier) }} ÷ {{ formatValue(row.recharge_ratio) }}
                   </button>
-                  <div v-if="row.user_rate_multiplier != null" class="mt-1 text-xs text-gray-400">{{ t('admin.watch.userRateOverride') }}</div>
+                  <div v-if="row.user_rate_multiplier != null" class="mt-0.5 text-[11px] text-gray-400">{{ t('admin.watch.userRateOverride') }}</div>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3 text-right font-mono text-gray-700 dark:text-gray-200">{{ formatValue(row.recharge_ratio) }}</td>
-                <td class="whitespace-nowrap px-4 py-3 text-right font-mono font-semibold text-gray-900 dark:text-white">
+                <td class="whitespace-nowrap px-3 py-2 text-right font-mono font-semibold text-gray-900 dark:text-white">
                   <button class="hover:text-primary-600 dark:hover:text-primary-300" type="button" @click="openHistory(row)">
                     {{ formatValue(row.final_multiplier) }}
                   </button>
                 </td>
-                <td class="px-4 py-3">
-                  <div v-if="!row.model_prices?.length" class="text-xs text-gray-400">-</div>
-                  <div v-else class="space-y-1">
-                    <button
-                      v-for="price in row.model_prices.slice(0, 3)"
-                      :key="`${price.platform}:${price.model}`"
-                      class="block max-w-[280px] truncate text-left text-xs text-gray-600 hover:text-primary-600 dark:text-gray-300 dark:hover:text-primary-300"
-                      type="button"
-                      :title="modelPriceTitle(price)"
-                      @click="openHistory(row, price)"
-                    >
-                      {{ price.model }} · {{ compactModelPrice(price) }}
-                    </button>
-                    <div v-if="row.model_prices.length > 3" class="text-xs text-gray-400">+{{ row.model_prices.length - 3 }}</div>
-                  </div>
-                </td>
-                <td class="whitespace-nowrap px-4 py-3">
+                <td class="whitespace-nowrap px-3 py-2">
                   <button v-if="row.change_kind" :class="directionClass(row.change_kind)" type="button" @click="openHistory(row)">
                     <Icon :name="directionIcon(row.change_kind)" size="xs" />
                     {{ row.change_kind === 'increase' ? t('admin.watch.increase') : t('admin.watch.decrease') }}
-                    <span v-if="row.previous_value != null && row.next_value != null" class="ml-1 font-mono">{{ formatValue(row.previous_value) }} → {{ formatValue(row.next_value) }}</span>
                   </button>
                   <span v-else class="text-xs text-gray-400">{{ t('admin.watch.noRecentChange') }}</span>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3">
+                <td class="whitespace-nowrap px-3 py-2">
                   <span :class="row.in_use ? usageClass(true) : usageClass(false)">
                     <Icon :name="row.in_use ? 'checkCircle' : 'xCircle'" size="xs" />
                     {{ row.in_use ? t('admin.watch.inUse') : t('admin.watch.notInUse') }}
                   </span>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.watch.accountCount', { count: row.in_use_account_count }) }}</div>
+                  <div class="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">{{ t('admin.watch.accountCount', { count: row.in_use_account_count }) }}</div>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3">
+                <td class="whitespace-nowrap px-3 py-2">
                   <span :class="statusClass(row.source_status)">
                     <Icon :name="statusIcon(row.source_status)" size="xs" :class="{ 'animate-spin': row.source_status === 'checking' }" />
                     {{ statusLabel(row.source_status) }}
                   </span>
-                  <div v-if="row.source_error_code" class="mt-1 text-xs text-amber-600 dark:text-amber-300">{{ errorCodeLabel(row.source_error_code) }}</div>
+                  <div class="mt-0.5 max-w-[160px] truncate text-[11px] text-gray-500 dark:text-gray-400" :title="row.source_error_code ? errorCodeLabel(row.source_error_code) : formatDate(row.observed_at)">
+                    {{ row.source_error_code ? errorCodeLabel(row.source_error_code) : formatDate(row.observed_at) }}
+                  </div>
                 </td>
-                <td class="whitespace-nowrap px-4 py-3 text-xs text-gray-500 dark:text-gray-400">{{ formatDate(row.observed_at) }}</td>
               </tr>
+                <tr v-if="expandedRowKey === pricingRowKey(row)" class="bg-gray-50/80 dark:bg-dark-900/30">
+                  <td colspan="7" class="px-4 py-3">
+                    <div class="flex flex-wrap items-start gap-x-6 gap-y-2 text-xs">
+                      <div class="min-w-0">
+                        <span class="text-gray-500 dark:text-gray-400">{{ t('admin.watch.externalId') }}：</span>
+                        <span class="font-mono text-gray-700 dark:text-gray-200">{{ row.group_external_id }}</span>
+                      </div>
+                      <div class="min-w-0 flex-1">
+                        <span class="mr-2 text-gray-500 dark:text-gray-400">{{ t('admin.watch.modelPriceSnapshot') }}：</span>
+                        <span v-if="!row.model_prices?.length" class="text-gray-400">-</span>
+                        <button v-for="price in row.model_prices" :key="`${price.platform}:${price.model}`" class="mr-3 inline-flex max-w-[320px] truncate text-primary-600 hover:underline dark:text-primary-300" type="button" :title="modelPriceTitle(price)" @click="openHistory(row, price)">
+                          {{ price.model }} · {{ compactModelPrice(price) }}
+                        </button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>
+        <Pagination v-if="rows.length" :total="rows.length" :page="pagination.page" :page-size="pagination.page_size" :page-size-options="[20, 50, 100]" @update:page="changePage" @update:page-size="changePageSize" />
       </section>
     </div>
 
@@ -277,6 +265,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import BaseDialog from '@/components/common/BaseDialog.vue'
+import Pagination from '@/components/common/Pagination.vue'
 import Icon from '@/components/icons/Icon.vue'
 import {
   getPricingHistory,
@@ -315,6 +304,7 @@ const historyChangeKind = ref<'all' | 'increase' | 'decrease'>('all')
 let sourceRefreshTimer: ReturnType<typeof setInterval> | undefined
 let sourceRefreshInFlight = false
 let lastOpenedHistoryQueryKey = ''
+const expandedRowKey = ref('')
 type SortKey = 'final_multiplier' | 'observed_at' | 'source' | 'change' | 'in_use'
 
 const filters = reactive<{
@@ -335,18 +325,31 @@ const filters = reactive<{
   search: String(route.query.search || ''),
 })
 
+const pagination = reactive({
+  page: normalizePage(route.query.page),
+  page_size: normalizePageSize(route.query.page_size),
+})
+
 const rows = computed(() => board.value?.rows ?? [])
+const totalPages = computed(() => Math.max(1, Math.ceil(rows.value.length / pagination.page_size)))
+const pagedRows = computed(() => {
+  const start = (pagination.page - 1) * pagination.page_size
+  return rows.value.slice(start, start + pagination.page_size)
+})
+const hasActiveFilters = computed(() => Boolean(
+  filters.source_id || filters.platform || filters.change_kind !== 'all' || filters.in_use !== 'all' || filters.search
+))
 const platformOptions = GROUP_PLATFORMS.map((value) => ({ value, label: platformLabel(value) }))
 const summaryItems = computed(() => {
   const inUseRows = rows.value.filter((row) => row.in_use)
   const changedRows = rows.value.filter((row) => row.change_kind)
   const min = rows.value.length ? Math.min(...rows.value.map((row) => row.final_multiplier)) : undefined
   return [
-    { label: t('admin.watch.boardRows'), value: rows.value.length, hint: t('admin.watch.boardRowsHint') },
-    { label: t('admin.watch.inUseGroups'), value: inUseRows.length, hint: t('admin.watch.inUseGroupsHint') },
-    { label: t('admin.watch.changedGroups'), value: changedRows.length, hint: t('admin.watch.changedGroupsHint') },
-    { label: t('admin.watch.lowestFinalMultiplier'), value: formatValue(min), hint: t('admin.watch.lowestFinalMultiplierHint') },
-    { label: t('admin.watch.sourceCount'), value: sources.value.length, hint: t('admin.watch.sourceCountHint') },
+    { label: t('admin.watch.boardRows'), value: rows.value.length },
+    { label: t('admin.watch.inUseGroups'), value: inUseRows.length },
+    { label: t('admin.watch.changedGroups'), value: changedRows.length },
+    { label: t('admin.watch.lowestFinalMultiplier'), value: formatValue(min) },
+    { label: t('admin.watch.sourceCount'), value: sources.value.length },
   ]
 })
 
@@ -394,7 +397,9 @@ async function loadBoard() {
     const [nextBoard, nextSources] = await Promise.all([listPricingBoard(params), listSources()])
     board.value = nextBoard
     sources.value = nextSources
-    await router.replace({ query: { ...cleanQuery(params), ...historyQueryFromRoute() } })
+    const nextTotalPages = Math.max(1, Math.ceil(nextBoard.rows.length / pagination.page_size))
+    pagination.page = Math.min(pagination.page, nextTotalPages)
+    await router.replace({ query: { ...cleanQuery(params), ...paginationQuery(), ...historyQueryFromRoute() } })
     openHistoryFromRouteRows(nextBoard.rows)
   } catch (err) {
     error.value = errorMessage(err, t('admin.watch.pricingBoardLoadFailed'))
@@ -420,9 +425,67 @@ function cleanQuery(params: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(params).filter(([, value]) => value !== undefined && value !== '' && value !== 'all')) as Record<string, string | number>
 }
 
-function toggleOrder() {
-  filters.order = filters.order === 'asc' ? 'desc' : 'asc'
+function paginationQuery() {
+  return {
+    page: pagination.page > 1 ? pagination.page : undefined,
+    page_size: pagination.page_size !== 20 ? pagination.page_size : undefined,
+  }
+}
+
+function applyFilters() {
+  pagination.page = 1
   loadBoard()
+}
+
+function clearFilters() {
+  filters.source_id = 0
+  filters.platform = ''
+  filters.change_kind = 'all'
+  filters.in_use = 'all'
+  filters.search = ''
+  pagination.page = 1
+  loadBoard()
+}
+
+function changePage(page: number) {
+  pagination.page = Math.min(Math.max(page, 1), totalPages.value)
+  expandedRowKey.value = ''
+  syncPaginationQuery()
+}
+
+function changePageSize(pageSize: number) {
+  pagination.page_size = normalizePageSize(pageSize)
+  pagination.page = 1
+  expandedRowKey.value = ''
+  syncPaginationQuery()
+}
+
+function syncPaginationQuery() {
+  router.replace({
+    query: {
+      ...cleanQuery({
+        source_id: filters.source_id || undefined,
+        platform: filters.platform || undefined,
+        change_kind: filters.change_kind,
+        in_use: filters.in_use,
+        sort: filters.sort,
+        order: filters.order,
+        search: filters.search || undefined,
+      }),
+      ...paginationQuery(),
+      ...historyQueryFromRoute(),
+    },
+  })
+}
+
+function normalizePage(value: unknown) {
+  const page = Number(value)
+  return Number.isInteger(page) && page > 0 ? page : 1
+}
+
+function normalizePageSize(value: unknown) {
+  const size = Number(value)
+  return [20, 50, 100].includes(size) ? size : 20
 }
 
 function normalizeSort(value: unknown): SortKey {
@@ -442,7 +505,17 @@ function setSort(sort: SortKey) {
     filters.sort = sort
     filters.order = sort === 'source' ? 'asc' : 'desc'
   }
+  pagination.page = 1
   loadBoard()
+}
+
+function pricingRowKey(row: WatchPricingBoardRow) {
+  return `${row.source_id}:${row.group_external_id}:${row.platform || ''}`
+}
+
+function toggleRowDetails(row: WatchPricingBoardRow) {
+  const key = pricingRowKey(row)
+  expandedRowKey.value = expandedRowKey.value === key ? '' : key
 }
 
 function sortIconName(sort: SortKey): 'sort' | 'arrowUp' | 'arrowDown' {
@@ -683,6 +756,8 @@ watch(
     const nextSort = normalizeSort(route.query.sort)
     const nextOrder = String(route.query.order || 'asc') === 'desc' ? 'desc' : 'asc'
     const nextSearch = String(route.query.search || '')
+    const nextPage = normalizePage(route.query.page)
+    const nextPageSize = normalizePageSize(route.query.page_size)
     const changed = filters.source_id !== nextSourceID ||
       filters.platform !== nextPlatform ||
       filters.change_kind !== nextChangeKind ||
@@ -698,9 +773,13 @@ watch(
       filters.sort = nextSort
       filters.order = nextOrder
       filters.search = nextSearch
+      pagination.page = nextPage
+      pagination.page_size = nextPageSize
       loadBoard()
       return
     }
+    pagination.page_size = nextPageSize
+    pagination.page = Math.min(nextPage, totalPages.value)
     openHistoryFromRouteRows(rows.value)
   },
   { deep: true }

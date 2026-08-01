@@ -210,6 +210,20 @@ func (h *WatchHandler) ExportSources(c *gin.Context) {
 	response.Success(c, envelope)
 }
 
+func (h *WatchHandler) DiagnoseSourcePreview(c *gin.Context) {
+	var req watchSourceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "上游站点检测参数无效")
+		return
+	}
+	report, err := h.watchSourceService.DiagnoseInput(c.Request.Context(), service.WatchSourceDiagnosticRequest{Input: req.serviceInput()})
+	if err != nil {
+		response.BadRequest(c, "上游站点检测配置无效，请检查站点地址、接口路径和凭据。")
+		return
+	}
+	response.Success(c, report)
+}
+
 func (h *WatchHandler) PreviewImportSources(c *gin.Context) {
 	var req watchSourceImportPreviewRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -496,7 +510,13 @@ func (h *WatchHandler) ListAccountMappings(c *gin.Context) {
 		return
 	}
 	targetGroupID, _ := strconv.ParseInt(c.DefaultQuery("target_group_id", "0"), 10, 64)
-	view, err := h.watchService.ListAccountMappings(c.Request.Context(), targetGroupID, c.Query("platform"))
+	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, pageSizeErr := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if pageErr != nil || pageSizeErr != nil || page < 1 || pageSize < 1 || pageSize > 100 {
+		response.BadRequest(c, "invalid watch account mapping pagination")
+		return
+	}
+	view, err := h.watchService.ListAccountMappings(c.Request.Context(), targetGroupID, c.Query("platform"), page, pageSize)
 	if err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "Watch account mappings unavailable")
 		return
@@ -608,6 +628,8 @@ func writeWatchSourceError(c *gin.Context, err error) {
 		response.ErrorWithDetails(c, http.StatusBadRequest, "上游站点未配置凭据，请先配置 Token/API Key/Cookie，或使用 Sub2API 账号密码授权。", "watch_source_credential_missing", nil)
 	case errors.Is(err, service.ErrWatchSourceCredentialLoadFailed):
 		response.ErrorWithDetails(c, http.StatusServiceUnavailable, "读取上游站点凭据失败，请检查数据库状态后重试。", "watch_source_credential_load_failed", nil)
+	case errors.Is(err, service.ErrWatchSourceStableEncryptionRequired):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "当前服务未配置固定 TOTP_ENCRYPTION_KEY，保存后重启会导致凭据无法解密。请先配置固定密钥并重启服务。", "watch_source_stable_encryption_required", nil)
 	case errors.Is(err, service.ErrWatchSourceObservationPersistFailed):
 		response.ErrorWithDetails(c, http.StatusServiceUnavailable, "上游诊断已执行，但检测记录写入失败，请确认 Watch 数据表迁移已完成。", "watch_source_observation_persist_failed", nil)
 	case errors.Is(err, service.ErrWatchSourceSnapshotUnavailable):
@@ -623,6 +645,8 @@ func writeWatchSourceMutationError(c *gin.Context, err error) {
 		return
 	}
 	switch {
+	case errors.Is(err, service.ErrWatchSourceStableEncryptionRequired):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "当前服务未配置固定 TOTP_ENCRYPTION_KEY，不能保存上游凭据。请先配置固定密钥并重启服务。", "watch_source_stable_encryption_required", nil)
 	case errors.Is(err, service.ErrWatchSourcePasswordAuthUnsupported):
 		response.BadRequest(c, "当前站点类型暂不支持账号密码授权，请使用手动 Token/API Key/Cookie。")
 	case errors.Is(err, service.ErrWatchSourceInteractiveAuthRequired):
@@ -654,8 +678,12 @@ func writeWatchSourceInteractiveAuthError(c *gin.Context, err error) {
 		response.ErrorWithDetails(c, http.StatusBadRequest, "授权登录会话已过期，请重新打开授权窗口。", "watch_source_interactive_auth_session_expired", nil)
 	case errors.Is(err, service.ErrWatchSourceInteractiveAuthCredentialMissing):
 		response.ErrorWithDetails(c, http.StatusBadRequest, "请填写授权后获得的 Token 或 Cookie。", "watch_source_interactive_auth_credential_missing", nil)
+	case errors.Is(err, service.ErrWatchSourceInteractiveAuthCredentialInvalid):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "授权凭据包含不支持的请求头，请只保留 Token、Cookie 或系统支持的兼容头。", "watch_source_interactive_auth_credential_invalid", nil)
 	case errors.Is(err, service.ErrWatchSourceInteractiveAuthCredentialTooLarge):
 		response.ErrorWithDetails(c, http.StatusBadRequest, "授权凭据过长，请确认只粘贴必要的 Token 或 Cookie。", "watch_source_interactive_auth_credential_too_large", nil)
+	case errors.Is(err, service.ErrWatchSourceStableEncryptionRequired):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "当前服务未配置固定 TOTP_ENCRYPTION_KEY，不能保存授权凭据。请先配置固定密钥并重启服务。", "watch_source_stable_encryption_required", nil)
 	case strings.Contains(err.Error(), "unsupported watch source credential type"):
 		response.ErrorWithDetails(c, http.StatusBadRequest, "请选择 Bearer Token、API Key 或 Cookie。", "watch_source_credential_type_invalid", nil)
 	case errors.Is(err, service.ErrWatchSourceCredentialAbsent):
@@ -689,6 +717,8 @@ func writeWatchSourcePortableError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrWatchSourceCredentialDecryptFailed),
 		errors.Is(err, service.ErrWatchSourceCredentialLoadFailed):
 		response.BadRequest(c, "上游站点凭据无法解密，请检查当前服务密钥或重新导出")
+	case errors.Is(err, service.ErrWatchSourceStableEncryptionRequired):
+		response.BadRequest(c, "当前服务未配置固定 TOTP_ENCRYPTION_KEY，不能导入带凭据的上游站点包")
 	default:
 		response.BadRequest(c, "上游站点导入/导出失败，请检查配置后重试")
 	}

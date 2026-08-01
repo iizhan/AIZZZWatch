@@ -273,6 +273,7 @@ func requestWatchJSON(ctx context.Context, client *http.Client, endpoint, creden
 	} else {
 		req.Header.Set("User-Agent", "Sub2API-Watch/1")
 	}
+	applyWatchSourceExtraHeaders(req, credential)
 	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
@@ -317,6 +318,20 @@ func requestWatchJSON(ctx context.Context, client *http.Client, endpoint, creden
 		}
 	}
 	return payload, nil
+}
+
+func applyWatchSourceExtraHeaders(req *http.Request, credential WatchSourceCredential) {
+	for key, value := range credential.ExtraHeaders {
+		name := strings.ToLower(strings.TrimSpace(key))
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		switch name {
+		case "new-api-user":
+			req.Header.Set("new-api-user", trimmed)
+		}
+	}
 }
 
 func unwrapWatchPayload(payload any) any {

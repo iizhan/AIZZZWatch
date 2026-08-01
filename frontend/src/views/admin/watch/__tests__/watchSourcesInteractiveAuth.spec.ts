@@ -5,12 +5,14 @@ import WatchSourcesView from '../WatchSourcesView.vue'
 
 const {
   listSourcesMock,
+  diagnoseSourceInputMock,
   startSourceInteractiveAuthMock,
   completeSourceInteractiveAuthMock,
   showSuccessMock,
   showWarningMock,
 } = vi.hoisted(() => ({
   listSourcesMock: vi.fn(),
+  diagnoseSourceInputMock: vi.fn(),
   startSourceInteractiveAuthMock: vi.fn(),
   completeSourceInteractiveAuthMock: vi.fn(),
   showSuccessMock: vi.fn(),
@@ -30,6 +32,9 @@ vi.mock('vue-i18n', async (importOriginal) => ({
         'admin.watch.interactiveAuthModeSwitchHint': '保存后切换为手动凭据模式。',
         'admin.watch.interactiveAuthOpen': '打开上游登录页',
         'admin.watch.interactiveAuthComplete': '我已完成登录，保存凭据',
+        'admin.watch.interactiveAuthSessionPaused': '授权会话已保留，点击继续完成登录。',
+        'admin.watch.interactiveAuthResume': '继续授权',
+        'admin.watch.interactiveAuthDiscard': '取消会话',
         'admin.watch.interactiveAuthSource': '授权站点',
         'admin.watch.interactiveAuthCredentialType': '凭据类型',
         'admin.watch.interactiveAuthUserAgent': 'User-Agent（可选）',
@@ -48,6 +53,29 @@ vi.mock('vue-i18n', async (importOriginal) => ({
         'admin.watch.checkStatus': '检测状态',
         'admin.watch.lastCheck': '最近检测',
         'admin.watch.runCheck': '执行诊断',
+        'admin.watch.diagnoseConfig': '检测接口',
+        'admin.watch.diagnosing': '诊断中...',
+        'admin.watch.diagnosticTitle': '接口检测结果',
+        'admin.watch.diagnosticSummary': '已检测 {count} 个接口',
+        'admin.watch.diagnosticEndpoint_login': '登录',
+        'admin.watch.diagnosticEndpoint_profile': '用户信息/余额',
+        'admin.watch.diagnosticEndpoint_groups': '分组',
+        'admin.watch.diagnosticEndpoint_heartbeat': '保活',
+        'admin.watch.diagnosticStatus_success': '成功',
+        'admin.watch.diagnosticStatus_error': '失败',
+        'admin.watch.diagnosticStatus_needs_auth': '需要授权',
+        'admin.watch.diagnosticStatus_skipped': '跳过',
+        'admin.watch.diagnosticStatus_pending': '准备中',
+        'admin.watch.diagnosticHttp': 'HTTP',
+        'admin.watch.diagnosticLatency': '耗时',
+        'admin.watch.diagnosticReason': '结论',
+        'admin.watch.diagnosticGeneratedAt': `检测时间：${params?.time ?? ''}`,
+        'admin.watch.viewDiagnosticDetail': '查看详情',
+        'admin.watch.diagnosticDetailTitle': '接口返回详情',
+        'admin.watch.diagnosticContentType': '响应类型',
+        'admin.watch.diagnosticResponseKeys': '响应字段',
+        'admin.watch.diagnosticResponsePreview': '脱敏响应摘要',
+        'admin.watch.diagnosticRedactionHint': '响应已脱敏',
         'common.actions': '操作',
         'common.balance': '余额',
         'common.refresh': '刷新',
@@ -73,6 +101,7 @@ vi.mock('@/api/admin/watch', () => ({
   createSource: vi.fn(),
   deleteSource: vi.fn(),
   diagnoseSource: vi.fn(),
+  diagnoseSourceInput: diagnoseSourceInputMock,
   exportSources: vi.fn(),
   listSources: listSourcesMock,
   previewSourceImport: vi.fn(),
@@ -154,6 +183,28 @@ async function mountView() {
 describe('WatchSourcesView interactive authorization', () => {
   beforeEach(() => {
     listSourcesMock.mockReset().mockResolvedValue([source])
+    diagnoseSourceInputMock.mockReset().mockResolvedValue({
+      adapter_type: 'sub2api',
+      base_url: source.base_url,
+      api_base_url: source.api_base_url,
+      auth_mode: 'manual',
+      generated_at: '2026-07-31T00:00:00Z',
+      endpoints: [{
+        name: 'profile',
+        method: 'GET',
+        path: '/user/profile',
+        url: `${source.api_base_url}/user/profile`,
+        status: 'success',
+        status_code: 200,
+        content_type: 'application/json',
+        latency_ms: 12,
+        optional: false,
+        json: true,
+        response_keys: ['balance'],
+        response_preview: '{"balance":0}',
+        reason: '接口响应正常',
+      }],
+    })
     startSourceInteractiveAuthMock.mockReset().mockResolvedValue({
       session_id: 'session-1',
       source_id: 7,
@@ -216,5 +267,147 @@ describe('WatchSourcesView interactive authorization', () => {
 
     expect(completeSourceInteractiveAuthMock).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('请填写授权后获得的 Token 或 Cookie')
+  })
+
+  it('auto-detects cookie and api key formats from pasted authorization text', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      autoDetectInteractiveCredential: () => void
+      interactiveAuthForm: { credential_type: string; secret: string; user_agent: string }
+    }
+
+    vm.interactiveAuthForm.secret = 'Cookie: session=fake-session'
+    vm.autoDetectInteractiveCredential()
+    expect(vm.interactiveAuthForm.credential_type).toBe('cookie')
+    expect(vm.interactiveAuthForm.secret).toBe('session=fake-session')
+
+    vm.interactiveAuthForm.secret = 'x-api-key: fake-api-key'
+    vm.autoDetectInteractiveCredential()
+    expect(vm.interactiveAuthForm.credential_type).toBe('api_key')
+    expect(vm.interactiveAuthForm.secret).toBe('fake-api-key')
+  })
+
+  it('auto-detects cookie and user agent from a pasted curl command', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      autoDetectInteractiveCredential: () => void
+      interactiveAuthForm: { credential_type: string; secret: string; user_agent: string; extra_headers: Record<string, string> }
+    }
+
+    vm.interactiveAuthForm.secret = `curl 'https://upstream.example/api/user/self' \\
+  -H 'accept: application/json' \\
+  -H 'new-api-user: 123' \\
+  -b 'session=fake-session; cf_clearance=fake-clearance' \\
+  -H 'user-agent: Mozilla/5.0 Test Browser'`
+    vm.autoDetectInteractiveCredential()
+
+    expect(vm.interactiveAuthForm.credential_type).toBe('cookie')
+    expect(vm.interactiveAuthForm.secret).toBe('session=fake-session; cf_clearance=fake-clearance')
+    expect(vm.interactiveAuthForm.user_agent).toBe('Mozilla/5.0 Test Browser')
+    expect(vm.interactiveAuthForm.extra_headers).toEqual({ 'new-api-user': '123' })
+  })
+
+  it('submits new-api-user with a pasted cookie curl command', async () => {
+    const wrapper = await mountView()
+
+    await (wrapper.vm as unknown as { openInteractiveAuth: (value: typeof source) => Promise<void> }).openInteractiveAuth(source)
+    await flushPromises()
+
+    const dialog = wrapper.find('[data-testid="base-dialog"]')
+    await dialog.find('textarea').setValue(`curl 'https://upstream.example/api/user/self' \\
+  -H 'new-api-user: 123' \\
+  -b 'session=fake-session' \\
+  -H 'user-agent: Mozilla/5.0 Test Browser'`)
+    await dialog.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(completeSourceInteractiveAuthMock).toHaveBeenCalledWith(7, expect.objectContaining({
+      credential_type: 'cookie',
+      credential: {
+        cookie: 'session=fake-session',
+        user_agent: 'Mozilla/5.0 Test Browser',
+        extra_headers: { 'new-api-user': '123' },
+      },
+    }))
+  })
+
+  it('parses the full curl again on submit when input auto-detection has not run yet', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      openInteractiveAuth: (value: typeof source) => Promise<void>
+      submitInteractiveAuth: () => Promise<void>
+      interactiveAuthForm: { credential_type: string; secret: string; user_agent: string; extra_headers: Record<string, string> }
+    }
+
+    await vm.openInteractiveAuth(source)
+    await flushPromises()
+
+    vm.interactiveAuthForm.secret = `curl 'https://upstream.example/api/user/self' \\
+  -H 'new-api-user: 123' \\
+  -b 'session=fake-session' \\
+  -H 'user-agent: Mozilla/5.0 Test Browser'`
+    vm.interactiveAuthForm.extra_headers = {}
+    await vm.submitInteractiveAuth()
+    await flushPromises()
+
+    expect(completeSourceInteractiveAuthMock).toHaveBeenCalledWith(7, expect.objectContaining({
+      credential_type: 'cookie',
+      credential: {
+        cookie: 'session=fake-session',
+        user_agent: 'Mozilla/5.0 Test Browser',
+        extra_headers: { 'new-api-user': '123' },
+      },
+    }))
+  })
+
+  it('auto-detects bearer credentials from pasted multiline request headers', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      autoDetectInteractiveCredential: () => void
+      interactiveAuthForm: { credential_type: string; secret: string; user_agent: string }
+    }
+
+    vm.interactiveAuthForm.secret = `Accept: application/json
+Authorization: Bearer fake-bearer-token
+User-Agent: Mozilla/5.0 Header Browser`
+    vm.autoDetectInteractiveCredential()
+
+    expect(vm.interactiveAuthForm.credential_type).toBe('bearer')
+    expect(vm.interactiveAuthForm.secret).toBe('fake-bearer-token')
+    expect(vm.interactiveAuthForm.user_agent).toBe('Mozilla/5.0 Header Browser')
+  })
+
+  it('runs a non-persistent endpoint diagnosis and renders the result dialog', async () => {
+    const wrapper = await mountView()
+    await (wrapper.vm as unknown as { openEdit: (value: typeof source) => Promise<void> }).openEdit(source)
+    await flushPromises()
+
+    await (wrapper.vm as unknown as { runPreviewDiagnosis: () => Promise<void> }).runPreviewDiagnosis()
+    await flushPromises()
+
+    expect(diagnoseSourceInputMock).toHaveBeenCalled()
+    expect(wrapper.text()).toContain('接口检测结果')
+    expect(wrapper.text()).toContain('用户信息/余额')
+    expect(wrapper.text()).toContain('成功')
+  })
+
+  it('keeps the interactive auth session available after closing the dialog', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      openInteractiveAuth: (value: typeof source) => Promise<void>
+      closeInteractiveAuthDialog: () => void
+      resumeInteractiveAuthDialog: () => void
+    }
+
+    await vm.openInteractiveAuth(source)
+    await flushPromises()
+    vm.closeInteractiveAuthDialog()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('授权会话已保留，点击继续完成登录。')
+
+    vm.resumeInteractiveAuthDialog()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="base-dialog"]').text()).toContain('交互式授权登录')
   })
 })

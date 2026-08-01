@@ -56,13 +56,25 @@ type WatchSourceService struct {
 	interactiveAuth     map[string]WatchSourceInteractiveAuthSession
 }
 
+type stableSecretEncryptor interface {
+	EncryptionKeyConfigured() bool
+}
+
 const (
-	watchSourceMaxAttempts = 3
-	watchSourceRetryDelay  = 200 * time.Millisecond
+	watchSourceMaxAttempts                     = 3
+	watchSourceRetryDelay                      = 200 * time.Millisecond
+	watchSourceInteractiveExtraHeaderMaxLength = 256
 )
 
 func NewWatchSourceService(repo WatchSourceRepository, encryptor SecretEncryptor) *WatchSourceService {
 	return &WatchSourceService{repo: repo, encryptor: encryptor, now: time.Now, passwordLogin: loginWatchSourceWithPassword, interactiveAuth: map[string]WatchSourceInteractiveAuthSession{}}
+}
+
+func (s *WatchSourceService) ensureStableEncryptionForCredentialWrite() error {
+	if checker, ok := s.encryptor.(stableSecretEncryptor); ok && !checker.EncryptionKeyConfigured() {
+		return ErrWatchSourceStableEncryptionRequired
+	}
+	return nil
 }
 
 func newWatchSourceServiceForTest(repo WatchSourceRepository, encryptor SecretEncryptor, allowPrivate bool) *WatchSourceService {
@@ -267,7 +279,11 @@ func normalizeWatchSourceInteractiveCredential(credentialType string, credential
 	if credential == nil {
 		return WatchSourceCredential{}, ErrWatchSourceInteractiveAuthCredentialMissing
 	}
-	normalized := WatchSourceCredential{UserAgent: strings.TrimSpace(credential.UserAgent)}
+	extraHeaders, err := normalizeWatchSourceCredentialExtraHeaders(credential.ExtraHeaders)
+	if err != nil {
+		return WatchSourceCredential{}, err
+	}
+	normalized := WatchSourceCredential{UserAgent: strings.TrimSpace(credential.UserAgent), ExtraHeaders: extraHeaders}
 	if len(normalized.UserAgent) > watchSourceInteractiveUserAgentMaxLength {
 		return WatchSourceCredential{}, ErrWatchSourceInteractiveAuthCredentialTooLarge
 	}
@@ -285,6 +301,31 @@ func normalizeWatchSourceInteractiveCredential(credentialType string, credential
 	}
 	if len(normalized.SecretFor(credentialType)) > watchSourceInteractiveCredentialMaxLength {
 		return WatchSourceCredential{}, ErrWatchSourceInteractiveAuthCredentialTooLarge
+	}
+	return normalized, nil
+}
+
+func normalizeWatchSourceCredentialExtraHeaders(headers map[string]string) (map[string]string, error) {
+	if len(headers) == 0 {
+		return nil, nil
+	}
+	normalized := make(map[string]string, 1)
+	for key, value := range headers {
+		name := strings.ToLower(strings.TrimSpace(key))
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if name != "new-api-user" {
+			return nil, ErrWatchSourceInteractiveAuthCredentialInvalid
+		}
+		if len(trimmed) > watchSourceInteractiveExtraHeaderMaxLength || strings.ContainsAny(trimmed, "\r\n") {
+			return nil, ErrWatchSourceInteractiveAuthCredentialInvalid
+		}
+		normalized["new-api-user"] = trimmed
+	}
+	if len(normalized) == 0 {
+		return nil, nil
 	}
 	return normalized, nil
 }
@@ -419,6 +460,9 @@ func (s *WatchSourceService) prepareMutation(ctx context.Context, input WatchSou
 		if input.Credential.SecretFor(credentialType) == "" {
 			return nil, fmt.Errorf("watch source credential is empty")
 		}
+		if err := s.ensureStableEncryptionForCredentialWrite(); err != nil {
+			return nil, err
+		}
 		payload, marshalErr := json.Marshal(input.Credential)
 		if marshalErr != nil {
 			return nil, fmt.Errorf("encode watch source credential: %w", marshalErr)
@@ -437,18 +481,20 @@ func (s *WatchSourceService) prepareMutation(ctx context.Context, input WatchSou
 		if input.Credential != nil {
 			loginCredential.UserAgent = input.Credential.UserAgent
 		}
-		credentialType = WatchCredentialBearer
 		username := firstNonEmptyWatchString(input.LoginUsername, input.LoginEmail)
 		password := strings.TrimSpace(input.LoginPassword)
 		if password == "" {
 			if existing != nil && existing.HasLoginCredential {
-				mutation.CredentialType = credentialType
+				mutation.CredentialType = firstNonEmptyWatchString(existing.CredentialType, WatchCredentialBearer)
 				return mutation, nil
 			}
 			return nil, ErrWatchSourcePasswordAuthMissingDetails
 		}
 		if strings.TrimSpace(username) == "" {
 			return nil, ErrWatchSourcePasswordAuthMissingDetails
+		}
+		if err := s.ensureStableEncryptionForCredentialWrite(); err != nil {
+			return nil, err
 		}
 		source.LoginUsernameHint = maskWatchLoginUsername(username)
 		loginFunc := s.passwordLogin
@@ -459,6 +505,7 @@ func (s *WatchSourceService) prepareMutation(ctx context.Context, input WatchSou
 		if loginErr != nil {
 			return nil, loginErr
 		}
+		credentialType = credentialTypeForWatchCredential(credential)
 		credentialPayload, marshalErr := json.Marshal(credential)
 		if marshalErr != nil {
 			return nil, fmt.Errorf("encode watch source credential: %w", marshalErr)
@@ -822,6 +869,9 @@ func (s *WatchSourceService) resolveKeepaliveCredential(ctx context.Context, sou
 		if err != nil {
 			return WatchSourceCredential{}, false, err
 		}
+		if err = s.ensureStableEncryptionForCredentialWrite(); err != nil {
+			return WatchSourceCredential{}, false, err
+		}
 		payload, err := json.Marshal(exchanged)
 		if err != nil {
 			return WatchSourceCredential{}, false, fmt.Errorf("encode watch source credential: %w", err)
@@ -830,7 +880,7 @@ func (s *WatchSourceService) resolveKeepaliveCredential(ctx context.Context, sou
 		if err != nil {
 			return WatchSourceCredential{}, false, fmt.Errorf("encrypt watch source credential: %w", err)
 		}
-		if err = s.repo.UpdateSourceCredential(ctx, source.ID, WatchCredentialBearer, encrypted, now); err != nil {
+		if err = s.repo.UpdateSourceCredential(ctx, source.ID, credentialTypeForWatchCredential(exchanged), encrypted, now); err != nil {
 			return WatchSourceCredential{}, false, err
 		}
 		return exchanged, true, nil

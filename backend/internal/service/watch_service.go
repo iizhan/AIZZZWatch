@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
 
 var (
@@ -413,11 +415,15 @@ func (s *WatchService) ListPriceAudits(ctx context.Context, limit int) ([]WatchP
 	return s.sources.ListPriceAudits(ctx, limit)
 }
 
-func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID int64, platform string) (*WatchAccountMappingsView, error) {
+type watchMappingAccountPager interface {
+	ListWatchMappingAccountPage(ctx context.Context, params pagination.PaginationParams, platform string) ([]Account, *pagination.PaginationResult, error)
+}
+
+func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID int64, platform string, page, pageSize int) (*WatchAccountMappingsView, error) {
 	if s == nil || s.accounts == nil || s.sources == nil {
 		return nil, fmt.Errorf("watch account mapping service is unavailable")
 	}
-	accounts, err := s.listMappingAccounts(ctx, targetGroupID, platform)
+	accounts, pageResult, err := s.listMappingAccountPage(ctx, targetGroupID, platform, page, pageSize)
 	if err != nil {
 		return nil, fmt.Errorf("list watch mapping accounts: %w", err)
 	}
@@ -458,7 +464,16 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID in
 		}
 		rows = append(rows, row)
 	}
-	return &WatchAccountMappingsView{TargetGroupID: targetGroupID, GeneratedAt: time.Now().UTC(), Accounts: rows, Sources: sources}, nil
+	return &WatchAccountMappingsView{
+		TargetGroupID: targetGroupID,
+		GeneratedAt:   time.Now().UTC(),
+		Accounts:      rows,
+		Sources:       sources,
+		Total:         pageResult.Total,
+		Page:          pageResult.Page,
+		PageSize:      pageResult.PageSize,
+		Pages:         pageResult.Pages,
+	}, nil
 }
 
 func (s *WatchService) SaveAccountMapping(ctx context.Context, input WatchAccountMappingInput, actorUserID int64) (*WatchAccountUpstreamMapping, error) {
@@ -790,6 +805,33 @@ func (s *WatchService) listMappingAccounts(ctx context.Context, targetGroupID in
 		}
 	}
 	return filtered, nil
+}
+
+func (s *WatchService) listMappingAccountPage(ctx context.Context, targetGroupID int64, platform string, page, pageSize int) ([]Account, *pagination.PaginationResult, error) {
+	platform = strings.TrimSpace(platform)
+	params := pagination.PaginationParams{Page: page, PageSize: pageSize, SortBy: "priority", SortOrder: pagination.SortOrderAsc}
+	if pager, ok := s.accounts.(watchMappingAccountPager); ok {
+		return pager.ListWatchMappingAccountPage(ctx, params, platform)
+	}
+
+	accounts, err := s.listMappingAccounts(ctx, targetGroupID, platform)
+	if err != nil {
+		return nil, nil, err
+	}
+	total := len(accounts)
+	start := params.Offset()
+	if start > total {
+		start = total
+	}
+	end := start + params.Limit()
+	if end > total {
+		end = total
+	}
+	pages := 0
+	if total > 0 {
+		pages = (total + params.Limit() - 1) / params.Limit()
+	}
+	return accounts[start:end], &pagination.PaginationResult{Total: int64(total), Page: page, PageSize: params.Limit(), Pages: pages}, nil
 }
 
 func applyWatchAccountMappingParticipation(row *WatchAccountMappingRow, account Account, targetGroupID int64) {

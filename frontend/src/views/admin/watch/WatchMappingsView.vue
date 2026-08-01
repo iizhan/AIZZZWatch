@@ -1,6 +1,6 @@
 <template>
   <AppLayout>
-    <div class="space-y-6">
+    <div class="watch-surface space-y-6">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.mappingsTitle') }}</h1>
@@ -18,7 +18,7 @@
       </div>
 
       <section class="rounded-lg border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
-        <div class="grid gap-4 md:grid-cols-[minmax(240px,1fr)_minmax(180px,240px)_auto_auto] md:items-end">
+        <div class="grid gap-4 md:grid-cols-[minmax(240px,1fr)_minmax(200px,260px)_auto_auto] md:items-end">
           <label class="block text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.targetGroup') }}
             <select v-model.number="filters.target_group_id" class="input mt-1 w-full">
@@ -28,12 +28,15 @@
           </label>
           <label class="block text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.platform') }}
-            <input v-model.trim="filters.platform" class="input mt-1 w-full" placeholder="openai" />
+            <select v-model="filters.platform" class="input mt-1 w-full">
+              <option value="">{{ t('admin.watch.allPlatforms') }}</option>
+              <option v-for="platform in platformOptions" :key="platform.value" :value="platform.value">{{ platform.label }}</option>
+            </select>
           </label>
-          <button class="btn btn-primary" type="button" :disabled="loading" @click="loadMappings({ refreshScan: true })">
+          <button class="btn btn-primary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading" @click="applyFilters">
             {{ loading ? t('common.loading') : t('admin.watch.loadMappings') }}
           </button>
-          <button class="btn btn-secondary" type="button" :disabled="scanLoading" @click="runScan">
+          <button class="btn btn-secondary h-10 min-w-[112px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="runScan">
             <Icon name="search" size="sm" :class="{ 'animate-pulse': scanLoading }" />
             <span>{{ scanLoading ? t('common.loading') : t('admin.watch.scanMappings') }}</span>
           </button>
@@ -58,21 +61,23 @@
         </div>
 
         <div v-if="scanResult.candidates.length === 0" class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.noScanCandidates') }}</div>
-        <div v-else class="overflow-x-auto rounded-lg border border-blue-100 bg-white dark:border-blue-900/40 dark:bg-dark-800">
-          <table class="min-w-[1180px] w-full text-left text-sm">
-            <thead class="bg-blue-50 text-xs text-blue-900 dark:bg-blue-900/20 dark:text-blue-100">
+        <div v-else class="overflow-hidden rounded-lg border border-blue-100 bg-white dark:border-blue-900/40 dark:bg-dark-800">
+          <div class="max-h-[560px] overflow-auto">
+            <table class="w-full min-w-[1680px] table-fixed text-left text-sm">
+            <thead class="sticky top-0 z-10 bg-blue-50 text-xs text-blue-900 shadow-[0_1px_0_rgba(191,219,254,1)] dark:bg-blue-950 dark:text-blue-100 dark:shadow-[0_1px_0_rgba(30,58,138,0.8)]">
               <tr>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.select') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.account') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.source') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceKey') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceGroup') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.mappingStatus') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.reason') }}</th>
+                <th class="w-[72px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.select') }}</th>
+                <th class="w-[280px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.account') }}</th>
+                <th class="w-[140px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.platform') }}</th>
+                <th class="w-[200px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.source') }}</th>
+                <th class="w-[220px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.sourceKey') }}</th>
+                <th class="w-[280px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.sourceGroup') }}</th>
+                <th class="w-[150px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.mappingStatus') }}</th>
+                <th class="w-[330px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.reason') }}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-blue-50 dark:divide-dark-700">
-              <tr v-for="candidate in scanResult.candidates" :key="candidate.account_id" class="align-top">
+              <tr v-for="candidate in visibleScanCandidates" :key="candidate.account_id" class="align-top">
                 <td class="px-4 py-3">
                   <input
                     v-model="scanSelections[candidate.account_id]"
@@ -82,12 +87,18 @@
                   />
                 </td>
                 <td class="px-4 py-3">
-                  <div class="font-medium text-gray-900 dark:text-white">{{ candidate.account_name }}</div>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">#{{ candidate.account_id }} · {{ candidate.platform || '-' }}</div>
+                  <div class="truncate font-medium text-gray-900 dark:text-white" :title="candidate.account_name">{{ candidate.account_name }}</div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">#{{ candidate.account_id }}</div>
                   <div v-if="candidate.account_base_url" class="mt-1 max-w-[240px] truncate font-mono text-xs text-gray-400" :title="candidate.account_base_url">{{ candidate.account_base_url }}</div>
                   <p v-if="candidate.target_group_id && !candidate.in_target_group" class="mt-2 max-w-xs text-xs text-amber-600 dark:text-amber-300">
                     {{ watchReasonText(t, candidate.participation_reason) }}
                   </p>
+                </td>
+                <td class="px-4 py-3">
+                  <span class="inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                    <PlatformIcon :platform="platformValue(candidate.platform)" size="xs" />
+                    {{ platformLabel(candidate.platform) }}
+                  </span>
                 </td>
                 <td class="px-4 py-3 text-gray-700 dark:text-gray-200">{{ candidate.source_name || '-' }}</td>
                 <td class="px-4 py-3">
@@ -95,7 +106,7 @@
                   <div v-if="candidate.source_key_external_id" class="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{{ candidate.source_key_external_id }}</div>
                 </td>
                 <td class="px-4 py-3">
-                  <select v-if="candidate.status === 'needs_group'" v-model="scanGroupDrafts[candidate.account_id]" class="input w-64">
+                  <select v-if="candidate.status === 'needs_group'" v-model="scanGroupDrafts[candidate.account_id]" class="input w-full">
                     <option value="">{{ t('admin.watch.selectSourceGroup') }}</option>
                     <option v-for="group in candidate.groups || []" :key="group.external_id" :value="group.external_id">
                       {{ group.name }} · {{ formatNumber(group.final_cost) }}
@@ -107,13 +118,23 @@
                   </div>
                 </td>
                 <td class="px-4 py-3"><span :class="scanStatusClass(candidate.status)">{{ scanStatusText(candidate.status) }}</span></td>
-                <td class="px-4 py-3 text-xs text-gray-500 dark:text-gray-400">
+                <td class="break-words px-4 py-3 text-xs leading-5 text-gray-500 dark:text-gray-400">
                   <div>{{ watchReasonText(t, candidate.reason) }}</div>
                   <div v-if="candidate.target_group_id && !candidate.in_target_group" class="mt-1 text-amber-600 dark:text-amber-300">{{ t('admin.watch.targetGroupNonParticipant') }}</div>
                 </td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </div>
+          <Pagination
+            v-if="scanResult.candidates.length > 0"
+            :page="scanPagination.page"
+            :total="scanResult.candidates.length"
+            :page-size="scanPagination.page_size"
+            :page-size-options="mappingPageSizeOptions"
+            @update:page="handleScanPageChange"
+            @update:pageSize="handleScanPageSizeChange"
+          />
         </div>
       </section>
 
@@ -130,43 +151,51 @@
         <div v-else-if="!view || view.accounts.length === 0" class="border-y border-gray-200 py-16 text-center text-sm text-gray-500 dark:border-dark-700 dark:text-gray-400">
           {{ t('admin.watch.noMappingAccounts') }}
         </div>
-        <div v-else class="overflow-x-auto border-y border-gray-200 dark:border-dark-700">
-          <table class="min-w-[1120px] text-left text-sm">
-            <thead class="bg-gray-50 text-xs text-gray-500 dark:bg-dark-800/70 dark:text-gray-400">
+        <div v-else class="overflow-hidden border-y border-gray-200 dark:border-dark-700">
+          <div class="max-h-[560px] overflow-auto">
+            <table class="w-full min-w-[1560px] table-fixed text-left text-sm">
+            <thead class="sticky top-0 z-10 bg-gray-50 text-xs text-gray-500 shadow-[0_1px_0_rgba(229,231,235,1)] dark:bg-dark-800 dark:text-gray-300 dark:shadow-[0_1px_0_rgba(55,65,81,1)]">
               <tr>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.account') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.source') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceKey') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceGroup') }}</th>
-                <th class="px-4 py-3 font-medium">{{ t('admin.watch.mappingStatus') }}</th>
-                <th class="px-4 py-3 text-right font-medium">{{ t('common.actions') }}</th>
+                <th class="w-[280px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.account') }}</th>
+                <th class="w-[140px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.platform') }}</th>
+                <th class="w-[230px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.source') }}</th>
+                <th class="w-[240px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.sourceKey') }}</th>
+                <th class="w-[240px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.sourceGroup') }}</th>
+                <th class="w-[270px] whitespace-nowrap px-4 py-3 font-medium">{{ t('admin.watch.mappingStatus') }}</th>
+                <th class="w-[160px] whitespace-nowrap px-4 py-3 text-right font-medium">{{ t('common.actions') }}</th>
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
               <tr v-for="row in view.accounts" :key="row.account_id" class="bg-white align-top dark:bg-dark-800">
                 <td class="px-4 py-3">
-                  <div class="font-medium text-gray-900 dark:text-white">{{ row.account_name }}</div>
-                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">#{{ row.account_id }} · {{ row.platform || '-' }}</div>
+                  <div class="truncate font-medium text-gray-900 dark:text-white" :title="row.account_name">{{ row.account_name }}</div>
+                  <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">#{{ row.account_id }}</div>
                   <div v-if="row.account_base_url" class="mt-1 max-w-[220px] truncate font-mono text-xs text-gray-400" :title="row.account_base_url">{{ row.account_base_url }}</div>
                   <p v-if="row.target_group_id && !row.in_target_group" class="mt-2 max-w-xs text-xs text-amber-600 dark:text-amber-300">
                     {{ watchReasonText(t, row.participation_reason) }}
                   </p>
                 </td>
                 <td class="px-4 py-3">
-                  <select v-model.number="draftFor(row).source_id" class="input w-56" @change="onSourceChange(row)">
+                  <span class="inline-flex items-center gap-2 whitespace-nowrap rounded-md bg-gray-100 px-2.5 py-1.5 text-xs font-medium text-gray-700 dark:bg-dark-700 dark:text-gray-200">
+                    <PlatformIcon :platform="platformValue(row.platform)" size="xs" />
+                    {{ platformLabel(row.platform) }}
+                  </span>
+                </td>
+                <td class="px-4 py-3">
+                  <select v-model.number="draftFor(row).source_id" class="input w-full" @change="onSourceChange(row)">
                     <option :value="0">{{ t('admin.watch.selectSource') }}</option>
                     <option v-for="source in view.sources" :key="source.id" :value="source.id">{{ source.name }}</option>
                   </select>
                 </td>
                 <td class="px-4 py-3">
-                  <select v-model="draftFor(row).source_key_external_id" class="input w-56" :disabled="!draftFor(row).source_id || loadingSnapshotIds.has(draftFor(row).source_id)" @change="onKeyChange(row)">
+                  <select v-model="draftFor(row).source_key_external_id" class="input w-full" :disabled="!draftFor(row).source_id || loadingSnapshotIds.has(draftFor(row).source_id)" @change="onKeyChange(row)">
                     <option value="">{{ loadingSnapshotIds.has(draftFor(row).source_id) ? t('common.loading') : t('admin.watch.selectSourceKey') }}</option>
                     <option v-for="key in keysFor(row)" :key="key.external_id" :value="key.external_id">{{ key.label }} · {{ key.external_id }}</option>
                   </select>
                   <p v-if="selectedKey(row)?.summary" class="mt-1 max-w-xs text-xs text-gray-500 dark:text-gray-400">{{ selectedKey(row)?.summary }}</p>
                 </td>
                 <td class="px-4 py-3">
-                  <select v-model="draftFor(row).source_group_external_id" class="input w-52" :disabled="!draftFor(row).source_key_external_id">
+                  <select v-model="draftFor(row).source_group_external_id" class="input w-full" :disabled="!draftFor(row).source_key_external_id">
                     <option value="">{{ t('admin.watch.autoOrSingleGroup') }}</option>
                     <option v-for="group in groupsFor(row)" :key="group.external_id" :value="group.external_id">{{ group.name }} · {{ formatNumber(effectiveGroupCost(row, group.external_id)) }}</option>
                   </select>
@@ -189,7 +218,17 @@
                 </td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </div>
+          <Pagination
+            v-if="view.total > 0"
+            :page="view.page"
+            :total="view.total"
+            :page-size="view.page_size"
+            :page-size-options="mappingPageSizeOptions"
+            @update:page="handleMappingPageChange"
+            @update:pageSize="handleMappingPageSizeChange"
+          />
         </div>
       </section>
     </div>
@@ -201,8 +240,11 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
+import Pagination from '@/components/common/Pagination.vue'
+import PlatformIcon from '@/components/common/PlatformIcon.vue'
 import { groupsAPI } from '@/api/admin/groups'
 import { useAppStore } from '@/stores/app'
+import { GROUP_PLATFORMS, type GroupPlatform } from '@/types'
 import {
   confirmAccountMappingBatch,
   deleteAccountMapping,
@@ -238,8 +280,31 @@ const drafts = reactive<Record<number, { source_id: number; source_key_external_
 const scanSelections = reactive<Record<number, boolean>>({})
 const scanGroupDrafts = reactive<Record<number, string>>({})
 const filters = reactive({ target_group_id: 0, platform: '' })
+const mappingPagination = reactive({ page: 1, page_size: 20 })
+const scanPagination = reactive({ page: 1, page_size: 20 })
+const mappingPageSizeOptions = [20, 50, 100]
 let sourceRefreshTimer: ReturnType<typeof setInterval> | undefined
 let sourceRefreshInFlight = false
+let terminalSourceBaselineReady = false
+let pendingTerminalSourceRefresh = false
+let lastMappingRefreshAt = Date.now()
+const lastTerminalSourceMarkers = new Map<number, string>()
+const sourceRefreshCoalesceMs = 10_000
+
+const platformNames: Record<GroupPlatform, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  gemini: 'Gemini',
+  antigravity: 'Antigravity',
+  grok: 'Grok',
+  composite: 'Composite',
+}
+const platformOptions = GROUP_PLATFORMS.map((value) => ({ value, label: platformNames[value] }))
+const visibleScanCandidates = computed(() => {
+  const candidates = scanResult.value?.candidates || []
+  const start = (scanPagination.page - 1) * scanPagination.page_size
+  return candidates.slice(start, start + scanPagination.page_size)
+})
 
 const selectedConfirmItems = computed(() => {
   const result = scanResult.value
@@ -302,10 +367,24 @@ async function loadMappings(options: { refreshScan?: boolean } = {}) {
   error.value = ''
   let shouldRefreshScan = false
   try {
-    view.value = await listAccountMappings({
+    let nextView = await listAccountMappings({
       target_group_id: filters.target_group_id || undefined,
       platform: filters.platform || undefined,
+      page: mappingPagination.page,
+      page_size: mappingPagination.page_size,
     })
+    if (nextView.accounts.length === 0 && nextView.total > 0 && mappingPagination.page > 1) {
+      mappingPagination.page = Math.max(nextView.pages, 1)
+      nextView = await listAccountMappings({
+        target_group_id: filters.target_group_id || undefined,
+        platform: filters.platform || undefined,
+        page: mappingPagination.page,
+        page_size: mappingPagination.page_size,
+      })
+    }
+    view.value = nextView
+    mappingPagination.page = view.value.page
+    mappingPagination.page_size = view.value.page_size
     hydrateDrafts()
     await preloadMappedSources()
     shouldRefreshScan = Boolean(options.refreshScan)
@@ -317,6 +396,32 @@ async function loadMappings(options: { refreshScan?: boolean } = {}) {
   if (shouldRefreshScan) {
     await runScan()
   }
+}
+
+async function applyFilters() {
+  mappingPagination.page = 1
+  scanPagination.page = 1
+  await loadMappings({ refreshScan: true })
+}
+
+async function handleMappingPageChange(page: number) {
+  mappingPagination.page = page
+  await loadMappings()
+}
+
+async function handleMappingPageSizeChange(pageSize: number) {
+  mappingPagination.page_size = pageSize
+  mappingPagination.page = 1
+  await loadMappings()
+}
+
+function handleScanPageChange(page: number) {
+  scanPagination.page = page
+}
+
+function handleScanPageSizeChange(pageSize: number) {
+  scanPagination.page_size = pageSize
+  scanPagination.page = 1
 }
 
 async function preloadMappedSources() {
@@ -403,6 +508,7 @@ async function runScan() {
       target_group_id: filters.target_group_id || undefined,
       platform: filters.platform || undefined,
     })
+    scanPagination.page = 1
     for (const candidate of scanResult.value.candidates) {
       scanSelections[candidate.account_id] = false
       scanGroupDrafts[candidate.account_id] = candidate.source_group_external_id || ''
@@ -450,27 +556,46 @@ async function confirmSelectedMappings() {
   }
 }
 
-function sourceStateFingerprint(list: WatchSource[]) {
-  return list.map((source) => [
-    source.id,
-    source.last_check_status || '',
-    source.last_check_at || '',
-    source.last_error_code || '',
-    source.diagnostic_state || ''
-  ].join(':')).join('|')
+function terminalSourceMarker(source: WatchSource) {
+  const state = String(source.diagnostic_state || '').trim().toLowerCase()
+  const status = String(source.last_check_status || '').trim().toLowerCase()
+  const terminal = state === 'completed' || state === 'failed' || ['healthy', 'degraded', 'success', 'error'].includes(status)
+  if (!terminal || !source.last_check_at) return ''
+  return [source.id, source.last_check_at, status, source.last_error_code || ''].join(':')
+}
+
+function observeTerminalSourceChanges(sources: WatchSource[]) {
+  let changed = false
+  for (const source of sources) {
+    const marker = terminalSourceMarker(source)
+    if (!marker) continue
+    if (terminalSourceBaselineReady && lastTerminalSourceMarkers.get(source.id) !== marker) {
+      changed = true
+    }
+    lastTerminalSourceMarkers.set(source.id, marker)
+  }
+  terminalSourceBaselineReady = true
+  return changed
 }
 
 async function refreshMappingsAfterSourceDiagnostics() {
   if (sourceRefreshInFlight || loading.value || scanLoading.value) return
-  const currentSources = view.value?.sources || []
-  if (currentSources.length === 0) return
+  if (!view.value?.sources.length) return
   sourceRefreshInFlight = true
   try {
-    const before = sourceStateFingerprint(currentSources)
     const nextSources = await listSources()
-    const after = sourceStateFingerprint(nextSources)
-    if (before !== after) {
-      await loadMappings({ refreshScan: true })
+    if (observeTerminalSourceChanges(nextSources)) {
+      pendingTerminalSourceRefresh = true
+    }
+    const refreshDue = pendingTerminalSourceRefresh && Date.now() - lastMappingRefreshAt >= sourceRefreshCoalesceMs
+    if (refreshDue) {
+      await loadMappings()
+      if (view.value) {
+        view.value = { ...view.value, sources: nextSources }
+      }
+      await runScan()
+      pendingTerminalSourceRefresh = false
+      lastMappingRefreshAt = Date.now()
     } else if (view.value) {
       view.value = { ...view.value, sources: nextSources }
     }
@@ -523,7 +648,7 @@ function mappingStatusText(row: WatchAccountMappingRow) {
 }
 
 function mappingStatusClass(status: string) {
-  const base = 'inline-flex rounded-full px-2.5 py-1 text-xs font-medium '
+  const base = 'inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium '
   if (status === 'mapped') return base + 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
   if (status === 'auto_match_available') return base + 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
   return base + 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
@@ -534,12 +659,22 @@ function scanStatusText(status: WatchAccountMappingCandidate['status']) {
 }
 
 function scanStatusClass(status: WatchAccountMappingCandidate['status']) {
-  const base = 'inline-flex rounded-full px-2.5 py-1 text-xs font-medium '
+  const base = 'inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium '
   if (status === 'ready') return base + 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
   if (status === 'mapped') return base + 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
   if (status === 'needs_group') return base + 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
   if (status === 'multiple_match') return base + 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200'
   return base + 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'
+}
+
+function platformValue(value?: string): GroupPlatform | undefined {
+  const normalized = String(value || '').trim().toLowerCase()
+  return GROUP_PLATFORMS.find((platform) => platform === normalized)
+}
+
+function platformLabel(value?: string) {
+  const platform = platformValue(value)
+  return platform ? platformNames[platform] : value || '-'
 }
 
 function formatDate(value?: string) {

@@ -96,6 +96,10 @@ func TestNormalizeWatchSourceReadMappingRejectsUnsafePath(t *testing.T) {
 
 func TestFetchWatchSourceUsesCustomReadMapping(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("new-api-user") != "123" {
+			http.Error(w, "missing new-api-user", http.StatusUnauthorized)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/profile":
@@ -169,7 +173,7 @@ func TestFetchWatchSourceUsesCustomReadMapping(t *testing.T) {
 		},
 	}
 
-	observation, err := fetchWatchSource(context.Background(), source, WatchCredentialBearer, WatchSourceCredential{AccessToken: "token"}, true)
+	observation, err := fetchWatchSource(context.Background(), source, WatchCredentialBearer, WatchSourceCredential{AccessToken: "token", ExtraHeaders: map[string]string{"new-api-user": "123"}}, true)
 	if err != nil {
 		t.Fatalf("fetchWatchSource() error = %v", err)
 	}

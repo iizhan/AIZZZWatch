@@ -72,12 +72,44 @@ func (watchSourceAuthTestEncryptor) Decrypt(ciphertext string) (string, error) {
 	return strings.TrimPrefix(ciphertext, "enc:"), nil
 }
 
+type watchSourceUnstableEncryptor struct {
+	watchSourceAuthTestEncryptor
+}
+
+func (watchSourceUnstableEncryptor) EncryptionKeyConfigured() bool {
+	return false
+}
+
 type watchSourceRunCheckRepoStub struct {
 	WatchSourceRepository
 	credentialErr error
 	saveErr       error
 	snapshotErr   error
 	saved         []WatchSourceObservation
+}
+
+func TestWatchSourceCreateRejectsCredentialWhenEncryptionKeyIsEphemeral(t *testing.T) {
+	repo := &watchSourceAuthRepoStub{}
+	svc := NewWatchSourceService(repo, watchSourceUnstableEncryptor{})
+
+	_, err := svc.Create(context.Background(), WatchSourceInput{
+		Name:                   "Sub2API upstream",
+		AdapterType:            WatchSourceAdapterSub2API,
+		BaseURL:                "https://upstream.example",
+		RechargeRatio:          1,
+		PollingIntervalSeconds: 60,
+		RequestTimeoutSeconds:  15,
+		Enabled:                true,
+		AuthMode:               WatchSourceAuthModeManual,
+		CredentialType:         WatchCredentialBearer,
+		Credential:             &WatchSourceCredential{AccessToken: "fake-token"},
+	}, 7)
+	if !errors.Is(err, ErrWatchSourceStableEncryptionRequired) {
+		t.Fatalf("Create() error = %v, want ErrWatchSourceStableEncryptionRequired", err)
+	}
+	if repo.mutation != nil {
+		t.Fatal("CreateSource must not be called when encryption key is ephemeral")
+	}
 }
 
 func (r *watchSourceRunCheckRepoStub) GetSource(_ context.Context, id int64) (*WatchSource, error) {
@@ -315,6 +347,42 @@ func TestLoginWatchSourceWithPasswordReportsMissingTokenSeparately(t *testing.T)
 	}
 }
 
+func TestLoginWatchSourceWithPasswordAcceptsSessionCookieWhenTokenIsAbsent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "session-value", Path: "/"})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":{"user":{"id":1}}}`))
+	}))
+	defer server.Close()
+
+	credential, err := loginWatchSourceWithPassword(context.Background(), &WatchSource{
+		AdapterType:           WatchSourceAdapterNewAPI,
+		APIBaseURL:            server.URL,
+		LoginPath:             "/api/user/login",
+		RequestTimeoutSeconds: 3,
+	}, "root@example.com", "login-password", WatchSourceCredential{}, true)
+	if err != nil {
+		t.Fatalf("loginWatchSourceWithPassword() error = %v", err)
+	}
+	if credential.Cookie != "session=session-value" {
+		t.Fatalf("Cookie = %q, want session cookie", credential.Cookie)
+	}
+	if credential.AccessToken != "" {
+		t.Fatalf("AccessToken = %q, want empty when only cookie is returned", credential.AccessToken)
+	}
+}
+
+func TestWatchLoginAccessTokenFindsNestedSessionToken(t *testing.T) {
+	payload := map[string]any{
+		"data": map[string]any{
+			"user": map[string]any{"sessionToken": "nested-session-token"},
+		},
+	}
+	if got := watchLoginAccessToken(payload); got != "nested-session-token" {
+		t.Fatalf("watchLoginAccessToken() = %q, want nested-session-token", got)
+	}
+}
+
 func TestLoginWatchSourceWithPasswordDetectsChineseInteractiveAuthMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -497,7 +565,7 @@ func TestWatchSourceInteractiveAuthCompletesManualCredentialAndClearsPasswordMod
 	result, err := svc.CompleteInteractiveAuth(context.Background(), 1, 7, WatchSourceInteractiveAuthCompleteRequest{
 		SessionID:      session.SessionID,
 		CredentialType: WatchCredentialCookie,
-		Credential:     &WatchSourceCredential{Cookie: "session=authorized", UserAgent: "Watch Browser UA"},
+		Credential:     &WatchSourceCredential{Cookie: "session=authorized", UserAgent: "Watch Browser UA", ExtraHeaders: map[string]string{"New-Api-User": "123"}},
 	})
 	if err != nil {
 		t.Fatalf("CompleteInteractiveAuth() error = %v", err)
@@ -525,8 +593,8 @@ func TestWatchSourceInteractiveAuthCompletesManualCredentialAndClearsPasswordMod
 	if err = json.Unmarshal([]byte(plain), &stored); err != nil {
 		t.Fatalf("unmarshal stored credential: %v", err)
 	}
-	if stored.Cookie != "session=authorized" || stored.UserAgent != "Watch Browser UA" {
-		t.Fatalf("stored credential = %#v, want submitted cookie and user agent", stored)
+	if stored.Cookie != "session=authorized" || stored.UserAgent != "Watch Browser UA" || stored.ExtraHeaders["new-api-user"] != "123" {
+		t.Fatalf("stored credential = %#v, want submitted cookie, user agent, and new-api-user", stored)
 	}
 }
 
@@ -551,6 +619,15 @@ func TestWatchSourceInteractiveAuthNormalizesBearerCredentialAndRejectsOversized
 	})
 	if !errors.Is(err, ErrWatchSourceInteractiveAuthCredentialTooLarge) {
 		t.Fatalf("oversized user agent error = %v, want ErrWatchSourceInteractiveAuthCredentialTooLarge", err)
+	}
+
+	_, err = svc.CompleteInteractiveAuth(context.Background(), 1, 7, WatchSourceInteractiveAuthCompleteRequest{
+		SessionID:      session.SessionID,
+		CredentialType: WatchCredentialBearer,
+		Credential:     &WatchSourceCredential{AccessToken: "upstream-token", ExtraHeaders: map[string]string{"Authorization": "Bearer other-token"}},
+	})
+	if !errors.Is(err, ErrWatchSourceInteractiveAuthCredentialInvalid) {
+		t.Fatalf("unsupported extra header error = %v, want ErrWatchSourceInteractiveAuthCredentialInvalid", err)
 	}
 
 	result, err := svc.CompleteInteractiveAuth(context.Background(), 1, 7, WatchSourceInteractiveAuthCompleteRequest{

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
 )
 
 type watchPreviewGroupRepo struct {
@@ -132,6 +134,7 @@ type watchPreviewAccountRepo struct {
 	accounts      []Account
 	groupCalls    int
 	platformCalls int
+	pageParams    pagination.PaginationParams
 }
 
 func (r *watchPreviewAccountRepo) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
@@ -152,6 +155,29 @@ func (r *watchPreviewAccountRepo) ListSchedulableByGroupIDAndPlatform(ctx contex
 
 func (r *watchPreviewAccountRepo) ListActive(ctx context.Context) ([]Account, error) {
 	return r.accounts, nil
+}
+
+func (r *watchPreviewAccountRepo) ListWatchMappingAccountPage(_ context.Context, params pagination.PaginationParams, platform string) ([]Account, *pagination.PaginationResult, error) {
+	r.pageParams = params
+	filtered := make([]Account, 0, len(r.accounts))
+	for _, account := range r.accounts {
+		if platform == "" || strings.EqualFold(account.Platform, platform) {
+			filtered = append(filtered, account)
+		}
+	}
+	start := params.Offset()
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + params.Limit()
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	pages := 0
+	if len(filtered) > 0 {
+		pages = (len(filtered) + params.Limit() - 1) / params.Limit()
+	}
+	return filtered[start:end], &pagination.PaginationResult{Total: int64(len(filtered)), Page: params.Page, PageSize: params.Limit(), Pages: pages}, nil
 }
 
 func watchTestSourceSnapshot(source *WatchSource, observedAt, expiresAt time.Time, keys []WatchSourceKeyObservation, groups []WatchSourceGroupObservation, prices []WatchSourcePriceObservation) *WatchSourceSnapshot {
@@ -897,7 +923,7 @@ func TestListAccountMappingsMarksAccountsOutsideTargetGroup(t *testing.T) {
 	}}
 	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
 
-	view, err := svc.ListAccountMappings(context.Background(), 7, PlatformOpenAI)
+	view, err := svc.ListAccountMappings(context.Background(), 7, PlatformOpenAI, 1, 20)
 
 	if err != nil {
 		t.Fatalf("ListAccountMappings() error = %v", err)
@@ -908,6 +934,30 @@ func TestListAccountMappingsMarksAccountsOutsideTargetGroup(t *testing.T) {
 	row := view.Accounts[0]
 	if row.InTargetGroup || row.ParticipationReason != "account is not in target group" {
 		t.Fatalf("row participation = in_group:%v reason:%q, want explicit non-participant state", row.InTargetGroup, row.ParticipationReason)
+	}
+}
+
+func TestListAccountMappingsReturnsRequestedPageAndTotal(t *testing.T) {
+	sourceRepo := &watchPreviewSourceRepo{sources: []*WatchSource{}}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{
+		{ID: 11, Name: "first", Platform: PlatformOpenAI, Status: StatusActive},
+		{ID: 12, Name: "second", Platform: PlatformOpenAI, Status: StatusActive},
+		{ID: 13, Name: "third", Platform: PlatformAnthropic, Status: StatusActive},
+	}}
+	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
+
+	view, err := svc.ListAccountMappings(context.Background(), 0, PlatformOpenAI, 2, 1)
+	if err != nil {
+		t.Fatalf("ListAccountMappings() error = %v", err)
+	}
+	if len(view.Accounts) != 1 || view.Accounts[0].AccountID != 12 {
+		t.Fatalf("Accounts = %#v, want second OpenAI account", view.Accounts)
+	}
+	if view.Total != 2 || view.Page != 2 || view.PageSize != 1 || view.Pages != 2 {
+		t.Fatalf("pagination = total:%d page:%d page_size:%d pages:%d", view.Total, view.Page, view.PageSize, view.Pages)
+	}
+	if accountRepo.pageParams.SortBy != "priority" || accountRepo.pageParams.SortOrder != pagination.SortOrderAsc {
+		t.Fatalf("page params = %#v, want stable priority ordering", accountRepo.pageParams)
 	}
 }
 

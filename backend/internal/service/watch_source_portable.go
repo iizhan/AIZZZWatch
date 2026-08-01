@@ -485,6 +485,9 @@ func (s *WatchSourceService) preparePortableMutation(ctx context.Context, portab
 		return nil, fmt.Errorf("unsupported watch source credential type")
 	}
 	if portable.Credential != nil && portable.Credential.SecretFor(mutation.CredentialType) != "" {
+		if err := s.ensureStableEncryptionForCredentialWrite(); err != nil {
+			return nil, err
+		}
 		payload, err := json.Marshal(portable.Credential)
 		if err != nil {
 			return nil, fmt.Errorf("encode watch source credential: %w", err)
@@ -499,6 +502,9 @@ func (s *WatchSourceService) preparePortableMutation(ctx context.Context, portab
 	}
 	if authMode == WatchSourceAuthModePassword {
 		if portable.LoginCredential != nil && strings.TrimSpace(portable.LoginCredential.Username) != "" && strings.TrimSpace(portable.LoginCredential.Password) != "" {
+			if err := s.ensureStableEncryptionForCredentialWrite(); err != nil {
+				return nil, err
+			}
 			payload, err := json.Marshal(portable.LoginCredential)
 			if err != nil {
 				return nil, fmt.Errorf("encode watch source login credential: %w", err)
