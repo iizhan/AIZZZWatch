@@ -20,6 +20,8 @@ import (
 // This converts Responses API requests to Anthropic format, forwards to Anthropic
 // upstream, and converts responses back to Responses format.
 func (h *GatewayHandler) Responses(c *gin.Context) {
+	enableGatewayFailoverPolicy(c)
+
 	streamStarted := false
 
 	requestStart := time.Now()
@@ -159,7 +161,10 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(parsedReq)
 
 	// 3. Account selection + failover loop
-	fs := NewFailoverState(h.maxAccountSwitches, false)
+	fs := h.newFailoverState(c.Request.Context(), h.maxAccountSwitches, false)
+	requestPayloadHash := service.HashUsageRequestPayload(body)
+	attemptMeta := newGatewayFailoverAttemptMeta(c, subject.UserID, apiKey.ID, apiKey.GroupID, requestPayloadHash)
+	hasPendingReconciliation := false
 
 	for {
 		if requestCtx.Err() != nil {
@@ -223,6 +228,8 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 		accountReleaseFunc = wrapReleaseOnDone(c.Request.Context(), accountReleaseFunc)
 
 		// 5. Forward request
+		attemptNo := fs.BeginAttempt()
+		attemptStartedAt := beginGatewayFailoverAttempt(c, attemptNo, hasPendingReconciliation)
 		writerSizeBeforeForward := c.Writer.Size()
 		forwardBody := body
 		if channelMapping.Mapped {
@@ -252,7 +259,22 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				// Can't failover if streaming content already sent
-				if c.Writer.Size() != writerSizeBeforeForward {
+				responseStarted := c.Writer.Size() != writerSizeBeforeForward
+				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+					apiKey, account, subscription, service.GatewayFailoverEndpointResponses,
+					body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),
+					attemptNo, attemptStartedAt, failoverErr, responseStarted,
+				)
+				if settled {
+					hasPendingReconciliation = true
+				}
+				if billingErr != nil {
+					reqLog.Error("gateway.responses.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptNo), zap.Error(billingErr))
+					h.handleResponsesFailoverExhausted(c, failoverErr, streamStarted)
+					return
+				}
+				if responseStarted {
 					h.handleResponsesFailoverExhausted(c, failoverErr, true)
 					return
 				}
@@ -281,11 +303,13 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			)
 			return
 		}
+		if attemptNo > 1 || hasPendingReconciliation {
+			recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptNo, attemptStartedAt, nil, false)
+		}
 
 		// 6. Record usage
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
-		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := GetUpstreamEndpoint(c, account.Platform)
 

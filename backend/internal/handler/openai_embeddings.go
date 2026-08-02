@@ -21,6 +21,8 @@ import (
 // Embeddings handles the OpenAI-compatible Embeddings API.
 // POST /v1/embeddings
 func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
+	enableGatewayFailoverPolicy(c)
+
 	streamStarted := false
 	requestStart := time.Now()
 
@@ -110,11 +112,12 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 	failedAccountIDs := make(map[int64]struct{})
 	var lastFailoverErr *service.UpstreamFailoverError
 	switchCount := 0
-	maxAccountSwitches := h.maxAccountSwitches
-	if maxAccountSwitches <= 0 {
-		maxAccountSwitches = 3
-	}
+	maxAccountSwitches := h.effectiveMaxAccountSwitches(c.Request.Context())
 	routingStart := time.Now()
+	requestPayloadHash := service.HashUsageRequestPayload(body)
+	attemptMeta := newGatewayFailoverAttemptMeta(c, subject.UserID, apiKey.ID, apiKey.GroupID, requestPayloadHash)
+	attemptCount := 0
+	hasSettledFailoverCharge := false
 
 	for {
 		selection, _, err := h.gatewayService.SelectAccountWithSchedulerForCapability(
@@ -177,6 +180,8 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
+		attemptCount++
+		attemptStartedAt := beginGatewayFailoverAttempt(c, attemptCount, hasSettledFailoverCharge)
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
@@ -198,7 +203,22 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
-				if c.Writer.Size() != writerSizeBeforeForward {
+				responseStarted := c.Writer.Size() != writerSizeBeforeForward
+				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+					apiKey, account, subscription, service.GatewayFailoverEndpointEmbeddings,
+					body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),
+					attemptCount, attemptStartedAt, failoverErr, responseStarted,
+				)
+				if settled {
+					hasSettledFailoverCharge = true
+				}
+				if billingErr != nil {
+					reqLog.Error("openai_embeddings.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptCount), zap.Error(billingErr))
+					h.handleFailoverExhausted(c, failoverErr, false)
+					return
+				}
+				if responseStarted {
 					h.handleFailoverExhausted(c, failoverErr, true)
 					return
 				}
@@ -238,6 +258,9 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 		}
 
 		h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), true, nil)
+		if attemptCount > 1 || hasSettledFailoverCharge {
+			recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptCount, attemptStartedAt, nil, false)
+		}
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
 		inboundEndpoint := GetInboundEndpoint(c)
@@ -256,6 +279,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 				UpstreamEndpoint:   upstreamEndpoint,
 				UserAgent:          userAgent,
 				IPAddress:          clientIP,
+				RequestPayloadHash: requestPayloadHash,
 				APIKeyService:      h.apiKeyService,
 				QuotaPlatform:      quotaPlatform,
 				SessionID:          sessionID,

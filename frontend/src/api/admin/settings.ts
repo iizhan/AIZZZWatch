@@ -1221,6 +1221,31 @@ export async function updateRateLimit429CooldownSettings(
   return data;
 }
 
+// ==================== Gateway Account Failover Settings ====================
+
+export interface GatewayFailoverSettings {
+  enabled: boolean;
+  status_codes: string;
+  max_account_switches: number;
+}
+
+export async function getGatewayFailoverSettings(): Promise<GatewayFailoverSettings> {
+  const { data } = await apiClient.get<GatewayFailoverSettings>(
+    "/admin/settings/gateway-failover",
+  );
+  return data;
+}
+
+export async function updateGatewayFailoverSettings(
+  settings: GatewayFailoverSettings,
+): Promise<GatewayFailoverSettings> {
+  const { data } = await apiClient.put<GatewayFailoverSettings>(
+    "/admin/settings/gateway-failover",
+    settings,
+  );
+  return data;
+}
+
 // ==================== Panel Rate Limit Settings ====================
 
 /**
@@ -1480,6 +1505,8 @@ export const settingsAPI = {
   updateOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getGatewayFailoverSettings,
+  updateGatewayFailoverSettings,
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,

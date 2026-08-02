@@ -230,9 +230,28 @@ func NewOpenAIGatewayHandler(
 	}
 }
 
+func (h *OpenAIGatewayHandler) effectiveMaxAccountSwitches(ctx context.Context) int {
+	if h == nil {
+		return 0
+	}
+	if h.gatewayService == nil {
+		return 0
+	}
+	settings, err := h.gatewayService.GetGatewayFailoverSettings(ctx)
+	if err != nil {
+		return 0
+	}
+	if !settings.Enabled {
+		return 0
+	}
+	return settings.MaxAccountSwitches
+}
+
 // Responses handles OpenAI Responses API endpoint
 // POST /openai/v1/responses
 func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
+	enableGatewayFailoverPolicy(c)
+
 	// 局部兜底：确保该 handler 内部任何 panic 都不会击穿到进程级。
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
@@ -423,7 +442,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	requireCompact := isOpenAIRemoteCompactPath(c)
 
-	maxAccountSwitches := h.maxAccountSwitches
+	maxAccountSwitches := h.effectiveMaxAccountSwitches(c.Request.Context())
 	switchCount := 0
 	firstOutputTimeoutSwitchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
@@ -431,6 +450,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	var passthroughFailoverState openAIPassthroughFailoverState
+	requestPayloadHash := service.HashUsageRequestPayload(body)
+	attemptMeta := newGatewayFailoverAttemptMeta(c, subject.UserID, apiKey.ID, apiKey.GroupID, requestPayloadHash)
+	attemptCount := 0
+	hasPendingReconciliation := false
 
 	// 生图意图的 /v1/responses 请求必须调度到确实支持 Responses API 的账号，否则
 	// 会在 forward 阶段被静默降级为无法生图的 Chat Completions 直转（#4417）。
@@ -522,6 +545,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 
 		// Forward request
+		attemptCount++
+		attemptStartedAt := beginGatewayFailoverAttempt(c, attemptCount, hasPendingReconciliation)
 		service.SetOpsLatencyMs(c, service.OpsRoutingLatencyMsKey, time.Since(routingStart).Milliseconds())
 		forwardStart := time.Now()
 		// 用扣除 compact 心跳字节的口径快照：心跳注释不构成语义响应，
@@ -564,6 +589,21 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					responseStarted := !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr)
+					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+						apiKey, account, subscription, service.GatewayFailoverEndpointResponses,
+						body, reqModel, reqModel, gjson.GetBytes(body, "service_tier").String(), service.QuotaPlatform(c.Request.Context(), apiKey),
+						attemptCount, attemptStartedAt, failoverErr, responseStarted,
+					)
+					if settled {
+						hasPendingReconciliation = true
+					}
+					if billingErr != nil {
+						reqLog.Error("openai.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptCount), zap.Error(billingErr))
+						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						return
+					}
 					if failoverClientGone(c) {
 						reqLog.Info("openai.failover_aborted_client_disconnected",
 							zap.Int64("account_id", account.ID),
@@ -668,11 +708,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), openAIForwardSucceededForScheduling(result), nil)
 		}
+		if attemptCount > 1 || hasPendingReconciliation {
+			recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptCount, attemptStartedAt, nil, false)
+		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）
 		userAgent := c.GetHeader("User-Agent")
 		clientIP := ip.GetClientIP(c)
-		requestPayloadHash := service.HashUsageRequestPayload(body)
 		inboundEndpoint := GetInboundEndpoint(c)
 		upstreamEndpoint := resolveOpenAIUpstreamEndpoint(c, account, result)
 		quotaPlatform := service.QuotaPlatform(c.Request.Context(), apiKey)
@@ -866,6 +908,8 @@ func (h *OpenAIGatewayHandler) logOpenAIRemoteCompactOutcome(c *gin.Context, sta
 // Messages handles Anthropic Messages API requests routed to OpenAI platform.
 // POST /v1/messages (when group platform is OpenAI)
 func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
+	enableGatewayFailoverPolicy(c)
+
 	streamStarted := false
 	defer h.recoverAnthropicMessagesPanic(c, &streamStarted)
 
@@ -986,13 +1030,17 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	maxAccountSwitches := h.maxAccountSwitches
+	maxAccountSwitches := h.effectiveMaxAccountSwitches(c.Request.Context())
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
 	effectiveMappedModel := preferredMappedModel
+	requestPayloadHash := service.HashUsageRequestPayload(body)
+	attemptMeta := newGatewayFailoverAttemptMeta(c, subject.UserID, apiKey.ID, apiKey.GroupID, requestPayloadHash)
+	attemptCount := 0
+	hasSettledFailoverCharge := false
 
 	for {
 		if failoverClientGone(c) {
@@ -1069,6 +1117,8 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		defaultMappedModel := strings.TrimSpace(effectiveMappedModel)
 		// 应用渠道模型映射到请求体
 		forwardBody := mappedBodyForMessages(channelMappingMsg.Mapped, channelMappingMsg.MappedModel)
+		attemptCount++
+		attemptStartedAt := beginGatewayFailoverAttempt(c, attemptCount, hasSettledFailoverCharge)
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
@@ -1103,6 +1153,21 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					responseStarted := c.Writer.Size() != writerSizeBeforeForward
+					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+						apiKey, account, subscription, service.GatewayFailoverEndpointMessages,
+						body, reqModel, currentRoutingModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),
+						attemptCount, attemptStartedAt, failoverErr, responseStarted,
+					)
+					if settled {
+						hasSettledFailoverCharge = true
+					}
+					if billingErr != nil {
+						reqLog.Error("openai_messages.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptCount), zap.Error(billingErr))
+						h.handleAnthropicFailoverExhausted(c, failoverErr, streamStarted)
+						return
+					}
 					if failoverClientGone(c) {
 						reqLog.Info("openai_messages.failover_aborted_client_disconnected",
 							zap.Int64("account_id", account.ID),
@@ -1110,7 +1175,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						)
 						return
 					}
-					if c.Writer.Size() != writerSizeBeforeForward {
+					if responseStarted {
 						h.handleAnthropicFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -1181,6 +1246,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(currentRoutingModel), true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(currentRoutingModel), true, nil)
+		}
+		if attemptCount > 1 || hasSettledFailoverCharge {
+			recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptCount, attemptStartedAt, nil, false)
 		}
 
 		userAgent := c.GetHeader("User-Agent")

@@ -423,6 +423,9 @@ const (
 	// SettingKeyStreamTimeoutSettings stores JSON config for stream timeout handling.
 	SettingKeyStreamTimeoutSettings = "stream_timeout_settings"
 
+	// SettingKeyGatewayFailoverSettings stores the account failover policy used by gateway handlers.
+	SettingKeyGatewayFailoverSettings = "gateway_failover_settings"
+
 	// =========================
 	// Request Rectifier (请求整流器)
 	// =========================

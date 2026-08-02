@@ -514,6 +514,23 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int `json:"cooldown_seconds"`
 }
 
+// GatewayFailoverSettings controls whether a failed upstream request may switch accounts.
+// StatusCodes accepts comma-separated codes and inclusive ranges, for example
+// "502,524,500-599".
+type GatewayFailoverSettings struct {
+	Enabled            bool   `json:"enabled"`
+	StatusCodes        string `json:"status_codes"`
+	MaxAccountSwitches int    `json:"max_account_switches"`
+}
+
+func DefaultGatewayFailoverSettings() *GatewayFailoverSettings {
+	return &GatewayFailoverSettings{
+		Enabled:            false,
+		StatusCodes:        "502,524,500-599",
+		MaxAccountSwitches: 2,
+	}
+}
+
 // DefaultOverloadCooldownSettings 返回默认的过载冷却配置（启用，10分钟）
 func DefaultOverloadCooldownSettings() *OverloadCooldownSettings {
 	return &OverloadCooldownSettings{

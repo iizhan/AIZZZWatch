@@ -170,6 +170,15 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "watch_pricing_rules", "adjustment_step", "numeric", 0, false)
 	requireConstraintDefinitionContains(t, tx, "watch_pricing_rules", "watch_pricing_rules_adjustment_step_positive", "adjustment_step", "> 0")
 
+	// Gateway failover attempts keep a redacted, idempotent audit and reconciliation ledger.
+	requireColumn(t, tx, "gateway_failover_attempts", "request_id", "character varying", 128, false)
+	requireColumn(t, tx, "gateway_failover_attempts", "request_fingerprint", "character varying", 64, false)
+	requireColumn(t, tx, "gateway_failover_attempts", "billing_status", "character varying", 24, false)
+	requireColumn(t, tx, "gateway_failover_attempts", "settled_cost", "numeric", 0, false)
+	requireIndex(t, tx, "gateway_failover_attempts", "idx_gateway_failover_attempts_user_created")
+	requireIndex(t, tx, "gateway_failover_attempts", "idx_gateway_failover_attempts_billing_status")
+	requireConstraintDefinitionContains(t, tx, "gateway_failover_attempts", "gateway_failover_attempts_request_id_attempt_no_key", "request_id", "attempt_no")
+
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.user_allowed_groups')").Scan(&uagRegclass))

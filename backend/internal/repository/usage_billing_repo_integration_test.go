@@ -80,6 +80,93 @@ func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	require.Equal(t, 1, dedupCount)
 }
 
+func TestUsageBillingRepositorySettleGatewayFailoverAttempt_IsAtomicAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := NewUsageBillingRepository(client, integrationDB).(*usageBillingRepository)
+
+	user := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("failover-billing-user-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Balance:      100,
+	})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{
+		UserID: user.ID, Key: "sk-failover-billing-" + uuid.NewString(), Name: "failover-billing",
+		Quota: 100, RateLimit5h: 100,
+	})
+	account := mustCreateAccount(t, client, &service.Account{
+		Name: "failover-billing-account-" + uuid.NewString(), Type: service.AccountTypeAPIKey,
+	})
+
+	requestID := "local:" + uuid.NewString()
+	billingRequestID := "failover:" + uuid.NewString()
+	status := 524
+	attempt := &service.GatewayFailoverAttempt{
+		RequestID: requestID, RequestFingerprint: "payload", UserID: user.ID, APIKeyID: apiKey.ID,
+		AccountID: account.ID, AttemptNo: 1, FailureKind: "http_status", UpstreamStatusCode: &status,
+		State: "failed", BillingStatus: service.GatewayFailoverBillingReserved,
+	}
+	billing := &service.UsageBillingCommand{
+		RequestID: billingRequestID, RequestPayloadHash: "payload", APIKeyID: apiKey.ID,
+		UserID: user.ID, AccountID: account.ID, AccountType: service.AccountTypeAPIKey,
+		Model: "gpt-4o", InputTokens: 128, BalanceCost: 1.25, APIKeyQuotaCost: 1.25, APIKeyRateLimitCost: 1.25,
+	}
+
+	first, err := repo.SettleGatewayFailoverAttempt(ctx, attempt, billing)
+	require.NoError(t, err)
+	require.True(t, first.Applied)
+	second, err := repo.SettleGatewayFailoverAttempt(ctx, attempt, billing)
+	require.NoError(t, err)
+	require.False(t, second.Applied)
+
+	var balance, quotaUsed, usage5h, settledCost float64
+	var inputTokens, outputTokens, attemptCount, dedupCount int
+	var billingStatus string
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT balance FROM users WHERE id = $1", user.ID).Scan(&balance))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, "SELECT quota_used, usage_5h FROM api_keys WHERE id = $1", apiKey.ID).Scan(&quotaUsed, &usage5h))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `
+		SELECT COUNT(*), MAX(billing_status), MAX(input_tokens), MAX(output_tokens), MAX(settled_cost)
+		FROM gateway_failover_attempts WHERE request_id = $1 AND attempt_no = 1
+	`, requestID).Scan(&attemptCount, &billingStatus, &inputTokens, &outputTokens, &settledCost))
+	require.NoError(t, integrationDB.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM usage_billing_dedup WHERE request_id = $1 AND api_key_id = $2",
+		billingRequestID, apiKey.ID,
+	).Scan(&dedupCount))
+
+	require.InDelta(t, 98.75, balance, 0.000001)
+	require.InDelta(t, 1.25, quotaUsed, 0.000001)
+	require.InDelta(t, 1.25, usage5h, 0.000001)
+	require.Equal(t, 1, attemptCount)
+	require.Equal(t, service.GatewayFailoverBillingSettled, billingStatus)
+	require.Equal(t, 128, inputTokens)
+	require.Zero(t, outputTokens)
+	require.InDelta(t, 1.25, settledCost, 0.000001)
+	require.Equal(t, 1, dedupCount)
+
+	t.Run("rolls back attempt and dedup when billing cannot settle", func(t *testing.T) {
+		failedRequestID := "local:" + uuid.NewString()
+		failedBillingID := "failover:" + uuid.NewString()
+		failedAttempt := *attempt
+		failedAttempt.RequestID = failedRequestID
+		failedBilling := *billing
+		failedBilling.RequestID = failedBillingID
+		failedBilling.UserID = user.ID + 999999
+
+		_, settleErr := repo.SettleGatewayFailoverAttempt(ctx, &failedAttempt, &failedBilling)
+		require.Error(t, settleErr)
+
+		var failedAttemptCount, failedDedupCount int
+		require.NoError(t, integrationDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM gateway_failover_attempts WHERE request_id = $1", failedRequestID,
+		).Scan(&failedAttemptCount))
+		require.NoError(t, integrationDB.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM usage_billing_dedup WHERE request_id = $1 AND api_key_id = $2", failedBillingID, apiKey.ID,
+		).Scan(&failedDedupCount))
+		require.Zero(t, failedAttemptCount)
+		require.Zero(t, failedDedupCount)
+	})
+}
+
 func TestUsageBillingRepositoryApply_DeduplicatesSubscriptionBilling(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)

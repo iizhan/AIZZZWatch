@@ -117,9 +117,26 @@ func NewGatewayHandler(
 	}
 }
 
+func (h *GatewayHandler) newFailoverState(ctx context.Context, fallbackMax int, hasBoundSession bool) *FailoverState {
+	state := NewFailoverState(fallbackMax, hasBoundSession)
+	if h == nil || h.settingService == nil {
+		state.ApplyGatewayFailoverSettings(nil)
+		return state
+	}
+	settings, err := h.settingService.GetGatewayFailoverSettings(ctx)
+	if err != nil {
+		state.ApplyGatewayFailoverSettings(nil)
+		return state
+	}
+	state.ApplyGatewayFailoverSettings(settings)
+	return state
+}
+
 // Messages handles Claude API compatible messages endpoint
 // POST /v1/messages
 func (h *GatewayHandler) Messages(c *gin.Context) {
+	enableGatewayFailoverPolicy(c)
+
 	// 从context获取apiKey和user（ApiKeyAuth中间件已设置）
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -300,9 +317,11 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 	// 判断是否真的绑定了粘性会话：有 sessionKey 且已经绑定到某个账号
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
+	attemptMeta := newGatewayFailoverAttemptMeta(c, subject.UserID, apiKey.ID, apiKey.GroupID, service.HashUsageRequestPayload(body))
+	hasPendingReconciliation := false
 
 	if platform == service.PlatformGemini {
-		fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+		fs := h.newFailoverState(c.Request.Context(), h.maxAccountSwitchesGemini, hasBoundSession)
 
 		// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 		// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
@@ -435,6 +454,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
+			attemptNo := fs.BeginAttempt()
+			attemptStartedAt := beginGatewayFailoverAttempt(c, attemptNo, hasPendingReconciliation)
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity {
 				result, err = h.antigravityGatewayService.ForwardGemini(
@@ -457,8 +478,23 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 			if err != nil {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					responseStarted := c.Writer.Size() != writerSizeBeforeForward
+					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+						apiKey, account, subscription, service.GatewayFailoverEndpointMessages,
+						body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),
+						attemptNo, attemptStartedAt, failoverErr, responseStarted,
+					)
+					if settled {
+						hasPendingReconciliation = true
+					}
+					if billingErr != nil {
+						reqLog.Error("gateway.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptNo), zap.Error(billingErr))
+						h.handleFailoverExhausted(c, failoverErr, service.PlatformGemini, streamStarted)
+						return
+					}
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
-					if c.Writer.Size() != writerSizeBeforeForward {
+					if responseStarted {
 						h.handleFailoverExhausted(c, failoverErr, service.PlatformGemini, true)
 						return
 					}
@@ -499,6 +535,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
+			}
+			if attemptNo > 1 || hasPendingReconciliation {
+				recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptNo, attemptStartedAt, nil, false)
 			}
 
 			// RPM 计数递增（Forward 成功后）
@@ -584,7 +623,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 	}
 
 	for {
-		fs := NewFailoverState(h.maxAccountSwitches, hasBoundSession)
+		fs := h.newFailoverState(c.Request.Context(), h.maxAccountSwitches, hasBoundSession)
 		retryWithFallback := false
 
 		for {
@@ -810,6 +849,8 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				requestCtx = service.WithForceCacheBilling(requestCtx)
 			}
 			// 记录 Forward 前已写入字节数，Forward 后若增加则说明 SSE 内容已发，禁止 failover
+			attemptNo := fs.BeginAttempt()
+			attemptStartedAt := beginGatewayFailoverAttempt(c, attemptNo, hasPendingReconciliation)
 			writerSizeBeforeForward := c.Writer.Size()
 			if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 				result, err = h.antigravityGatewayService.Forward(requestCtx, c, account, attemptBody, hasBoundSession)
@@ -884,8 +925,23 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					responseStarted := c.Writer.Size() != writerSizeBeforeForward
+					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+						currentAPIKey, account, currentSubscription, service.GatewayFailoverEndpointMessages,
+						body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), currentAPIKey),
+						attemptNo, attemptStartedAt, failoverErr, responseStarted,
+					)
+					if settled {
+						hasPendingReconciliation = true
+					}
+					if billingErr != nil {
+						reqLog.Error("gateway.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptNo), zap.Error(billingErr))
+						h.handleFailoverExhausted(c, failoverErr, account.Platform, streamStarted)
+						return
+					}
 					// 流式内容已写入客户端，无法撤销，禁止 failover 以防止流拼接腐化
-					if c.Writer.Size() != writerSizeBeforeForward {
+					if responseStarted {
 						h.handleFailoverExhausted(c, failoverErr, account.Platform, true)
 						return
 					}
@@ -926,6 +982,9 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				}
 				reqLog.Error("gateway.forward_failed", forwardFailedFields...)
 				return
+			}
+			if attemptNo > 1 || hasPendingReconciliation {
+				recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptNo, attemptStartedAt, nil, false)
 			}
 
 			// RPM 计数递增（Forward 成功后）

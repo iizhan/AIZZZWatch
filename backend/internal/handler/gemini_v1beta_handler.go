@@ -175,6 +175,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		googleError(c, http.StatusNotFound, err.Error())
 		return
 	}
+	if action == "generateContent" || action == "streamGenerateContent" {
+		enableGatewayFailoverPolicy(c)
+	}
 	// URL 里的模型名最终会被拼进上游 /v1beta/models/{model}:{action}，
 	// 先在入口校验片段合规性，见 service/upstream_path_guard.go。
 	if !service.IsSafeGeminiModelPathSegment(modelName) {
@@ -355,7 +358,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 	hasBoundSession := sessionKey != "" && sessionBoundAccountID > 0
 	cleanedForUnknownBinding := false
 
-	fs := NewFailoverState(h.maxAccountSwitchesGemini, hasBoundSession)
+	fs := h.newFailoverState(c.Request.Context(), h.maxAccountSwitchesGemini, hasBoundSession)
+	attemptMeta := newGatewayFailoverAttemptMeta(c, authSubject.UserID, apiKey.ID, apiKey.GroupID, service.HashUsageRequestPayload(body))
+	hasSettledFailoverCharge := false
 
 	// 单账号分组提前设置 SingleAccountRetry 标记，让 Service 层首次 503 就不设模型限流标记。
 	// 避免单账号分组收到 503 (MODEL_CAPACITY_EXHAUSTED) 时设 29s 限流，导致后续请求连续快速失败。
@@ -479,6 +484,8 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if fs.SwitchCount > 0 {
 			requestCtx = service.WithAccountSwitchCount(requestCtx, fs.SwitchCount, h.metadataBridgeEnabled())
 		}
+		attemptNo := fs.BeginAttempt()
+		attemptStartedAt := beginGatewayFailoverAttempt(c, attemptNo, hasSettledFailoverCharge)
 		sessionGroupID := derefGroupID(apiKey.GroupID)
 		if account.Platform == service.PlatformAntigravity && account.Type != service.AccountTypeAPIKey {
 			result, err = h.antigravityGatewayService.ForwardGemini(
@@ -501,6 +508,25 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 		if err != nil {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
+				responseStarted := c.Writer.Written()
+				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+					apiKey, account, subscription, service.GatewayFailoverEndpointGemini,
+					body, reqModel, modelName, "", service.QuotaPlatform(c.Request.Context(), apiKey),
+					attemptNo, attemptStartedAt, failoverErr, responseStarted,
+				)
+				if settled {
+					hasSettledFailoverCharge = true
+				}
+				if billingErr != nil {
+					reqLog.Error("gemini.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptNo), zap.Error(billingErr))
+					h.handleGeminiFailoverExhausted(c, failoverErr)
+					return
+				}
+				if responseStarted {
+					h.handleGeminiFailoverExhausted(c, failoverErr)
+					return
+				}
 				failoverAction := fs.HandleFailoverError(c.Request.Context(), h.gatewayService, account.ID, account.Platform, account.GetPoolModeRetryCount(), failoverErr)
 				switch failoverAction {
 				case FailoverContinue:
@@ -516,6 +542,9 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			// ForwardNative already wrote the response
 			reqLog.Error("gemini.forward_failed", zap.Int64("account_id", account.ID), zap.Error(err))
 			return
+		}
+		if attemptNo > 1 || hasSettledFailoverCharge {
+			recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptNo, attemptStartedAt, nil, false)
 		}
 
 		// 捕获请求信息（用于异步记录，避免在 goroutine 中访问 gin.Context）

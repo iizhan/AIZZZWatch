@@ -21,6 +21,8 @@ import (
 // ChatCompletions handles OpenAI Chat Completions API requests.
 // POST /v1/chat/completions
 func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
+	enableGatewayFailoverPolicy(c)
+
 	streamStarted := false
 	defer h.recoverResponsesPanic(c, &streamStarted)
 
@@ -142,12 +144,16 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
 	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
 
-	maxAccountSwitches := h.maxAccountSwitches
+	maxAccountSwitches := h.effectiveMaxAccountSwitches(c.Request.Context())
 	switchCount := 0
 	failedAccountIDs := make(map[int64]struct{})
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	var oauth429FailoverState service.OpenAIOAuth429FailoverState
+	requestPayloadHash := service.HashUsageRequestPayload(body)
+	attemptMeta := newGatewayFailoverAttemptMeta(c, subject.UserID, apiKey.ID, apiKey.GroupID, requestPayloadHash)
+	attemptCount := 0
+	hasSettledFailoverCharge := false
 
 	for {
 		if failoverClientGone(c) {
@@ -219,6 +225,8 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		if channelMapping.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMapping.MappedModel)
 		}
+		attemptCount++
+		attemptStartedAt := beginGatewayFailoverAttempt(c, attemptCount, hasSettledFailoverCharge)
 		writerSizeBeforeForward := c.Writer.Size()
 		result, err := func() (*service.OpenAIForwardResult, error) {
 			defer func() {
@@ -254,6 +262,21 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			} else {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
+					responseStarted := c.Writer.Size() != writerSizeBeforeForward
+					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
+						apiKey, account, subscription, service.GatewayFailoverEndpointChatCompletions,
+						body, reqModel, reqModel, gjson.GetBytes(body, "service_tier").String(), service.QuotaPlatform(c.Request.Context(), apiKey),
+						attemptCount, attemptStartedAt, failoverErr, responseStarted,
+					)
+					if settled {
+						hasSettledFailoverCharge = true
+					}
+					if billingErr != nil {
+						reqLog.Error("openai_chat_completions.failover_estimated_billing_failed", zap.Int64("account_id", account.ID), zap.Int("attempt_no", attemptCount), zap.Error(billingErr))
+						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						return
+					}
 					if failoverClientGone(c) {
 						reqLog.Info("openai_chat_completions.failover_aborted_client_disconnected",
 							zap.Int64("account_id", account.ID),
@@ -261,7 +284,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 						)
 						return
 					}
-					if c.Writer.Size() != writerSizeBeforeForward {
+					if responseStarted {
 						h.handleFailoverExhausted(c, failoverErr, true)
 						return
 					}
@@ -333,6 +356,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), true, result.FirstTokenMs)
 		} else {
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, account.GetMappedModel(reqModel), true, nil)
+		}
+		if attemptCount > 1 || hasSettledFailoverCharge {
+			recordGatewayFailoverAttempt(h.gatewayService, c.Request.Context(), attemptMeta, account.ID, attemptCount, attemptStartedAt, nil, false)
 		}
 
 		userAgent := c.GetHeader("User-Agent")

@@ -52,6 +52,20 @@ func (s *GatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	}
 }
 
+func (s *GatewayService) shouldFailoverUpstreamErrorWithContext(ctx context.Context, statusCode int) bool {
+	if s == nil {
+		return false
+	}
+	if !gatewayFailoverPolicyEnabledFromContext(ctx) {
+		return s.shouldFailoverUpstreamError(statusCode)
+	}
+	if s.settingService == nil {
+		return false
+	}
+	settings, err := s.settingService.GetGatewayFailoverSettings(ctx)
+	return err == nil && settings.AllowsStatus(statusCode)
+}
+
 func retryBackoffDelay(attempt int) time.Duration {
 	// attempt 从 1 开始，表示第 attempt 次请求刚失败，需要等待后进行第 attempt+1 次请求。
 	if attempt <= 0 {
@@ -667,7 +681,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 
 	// 处理重试耗尽的情况
 	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
+		if s.shouldFailoverUpstreamErrorWithContext(ctx, resp.StatusCode) {
 			respBody, _ := s.readUpstreamErrorBody(resp)
 			_ = resp.Body.Close()
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
@@ -702,7 +716,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	// 处理可切换账号的错误
-	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
+	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamErrorWithContext(ctx, resp.StatusCode) {
 		respBody, _ := s.readUpstreamErrorBody(resp)
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))

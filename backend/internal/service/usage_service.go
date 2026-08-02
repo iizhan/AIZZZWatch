@@ -157,6 +157,14 @@ func (s *UsageService) GetByID(ctx context.Context, id int64) (*UsageLog, error)
 	return log, nil
 }
 
+func (s *UsageService) ListGatewayFailoverAttemptsByRequests(ctx context.Context, userID int64, requestIDs []string) ([]GatewayFailoverRequestSummary, error) {
+	repo, ok := s.usageRepo.(GatewayFailoverAttemptQueryRepository)
+	if !ok {
+		return []GatewayFailoverRequestSummary{}, nil
+	}
+	return repo.ListGatewayFailoverAttemptsByRequests(ctx, userID, requestIDs)
+}
+
 // ListByUser 获取用户的使用日志列表
 func (s *UsageService) ListByUser(ctx context.Context, userID int64, params pagination.PaginationParams) ([]UsageLog, *pagination.PaginationResult, error) {
 	logs, pagination, err := s.usageRepo.ListByUser(ctx, userID, params)

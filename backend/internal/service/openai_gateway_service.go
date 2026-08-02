@@ -519,6 +519,15 @@ func NewOpenAIGatewayService(
 	return svc
 }
 
+// GetGatewayFailoverSettings exposes the shared runtime policy to the HTTP
+// handler without exposing the underlying settings repository.
+func (s *OpenAIGatewayService) GetGatewayFailoverSettings(ctx context.Context) (*GatewayFailoverSettings, error) {
+	if s == nil || s.settingService == nil {
+		return nil, ErrSettingNotFound
+	}
+	return s.settingService.GetGatewayFailoverSettings(ctx)
+}
+
 // ResolveChannelMapping 解析渠道级模型映射（代理到 ChannelService）
 func (s *OpenAIGatewayService) ResolveChannelMapping(ctx context.Context, groupID int64, model string) ChannelMappingResult {
 	if s.channelService == nil {

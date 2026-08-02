@@ -222,7 +222,7 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		// 透传模式默认保持原样代理；容量错误以及 API-key 上游的瞬时
 		// 5xx 应先触发多账号 failover，且此时尚未写入下游响应。
 		// probeBody 已在上方任务探测时读取过一次，直接复用避免重复读取。
-		if shouldFailoverOpenAIPassthroughResponse(account, resp.StatusCode, probeBody) {
+		if s.shouldFailoverOpenAIPassthroughResponse(ctx, account, resp.StatusCode, probeBody) {
 			return nil, s.handleFailoverErrorResponsePassthrough(ctx, resp, c, account, body, probeBody)
 		}
 		return nil, s.handleErrorResponsePassthrough(ctx, resp, c, account, body, probeBody)
@@ -457,30 +457,36 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	return req, nil
 }
 
-func shouldFailoverOpenAIPassthroughResponse(account *Account, statusCode int, responseBody []byte) bool {
+func (s *OpenAIGatewayService) shouldFailoverOpenAIPassthroughResponse(ctx context.Context, account *Account, statusCode int, responseBody []byte) bool {
 	if isOpenAIContextWindowError("", responseBody) {
 		return false
 	}
 	if isOpenAIRequestBodyTooLargeError(statusCode, "", responseBody) {
 		return true
 	}
-	switch statusCode {
-	case http.StatusTooManyRequests, 529:
-		return true
-	}
-	if account == nil || account.Type != AccountTypeAPIKey {
+	if account == nil {
 		return false
 	}
-	switch statusCode {
-	case http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout,
-		520, 521, 522, 523, 524:
-		return true
-	default:
-		return false
+	if s == nil || s.settingService == nil {
+		switch statusCode {
+		case http.StatusTooManyRequests, 529:
+			return true
+		}
+		if account.Type != AccountTypeAPIKey {
+			return false
+		}
+		switch statusCode {
+		case http.StatusInternalServerError,
+			http.StatusBadGateway,
+			http.StatusServiceUnavailable,
+			http.StatusGatewayTimeout,
+			520, 521, 522, 523, 524:
+			return true
+		default:
+			return false
+		}
 	}
+	return s.shouldFailoverOpenAIUpstreamResponseWithContext(ctx, statusCode, "", responseBody)
 }
 
 func writeOpenAIPassthroughErrorHeaders(dst, src http.Header) {

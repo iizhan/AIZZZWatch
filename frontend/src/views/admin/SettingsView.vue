@@ -411,6 +411,84 @@
             </div>
           </div>
 
+          <!-- Gateway Account Failover Settings -->
+          <div class="card">
+            <div class="border-b border-gray-100 px-6 py-4 dark:border-dark-700">
+              <h2 class="text-lg font-semibold text-gray-900 dark:text-white">
+                {{ t("admin.settings.gatewayFailover.title") }}
+              </h2>
+              <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {{ t("admin.settings.gatewayFailover.description") }}
+              </p>
+            </div>
+            <div class="space-y-5 p-6">
+              <div v-if="gatewayFailoverLoading" class="flex items-center gap-2 text-gray-500">
+                <div class="h-4 w-4 animate-spin rounded-full border-b-2 border-primary-600"></div>
+                {{ t("common.loading") }}
+              </div>
+              <template v-else>
+                <div class="flex items-center justify-between gap-4">
+                  <div>
+                    <label class="font-medium text-gray-900 dark:text-white">
+                      {{ t("admin.settings.gatewayFailover.enabled") }}
+                    </label>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayFailover.enabledHint") }}
+                    </p>
+                  </div>
+                  <Toggle v-model="gatewayFailoverForm.enabled" />
+                </div>
+                <div
+                  v-if="gatewayFailoverForm.enabled"
+                  class="grid gap-4 border-t border-gray-100 pt-4 dark:border-dark-700 md:grid-cols-2"
+                >
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayFailover.statusCodes") }}
+                    </label>
+                    <input
+                      v-model.trim="gatewayFailoverForm.status_codes"
+                      type="text"
+                      class="input h-10 w-full"
+                      placeholder="502,524,500-599"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayFailover.statusCodesHint") }}
+                    </p>
+                  </div>
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {{ t("admin.settings.gatewayFailover.maxSwitches") }}
+                    </label>
+                    <input
+                      v-model.number="gatewayFailoverForm.max_account_switches"
+                      type="number"
+                      min="0"
+                      max="10"
+                      class="input h-10 w-full"
+                    />
+                    <p class="mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.settings.gatewayFailover.maxSwitchesHint") }}
+                    </p>
+                  </div>
+                </div>
+                <div class="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                  {{ t("admin.settings.gatewayFailover.billingHint") }}
+                </div>
+                <div class="flex justify-end border-t border-gray-100 pt-4 dark:border-dark-700">
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm"
+                    :disabled="gatewayFailoverSaving"
+                    @click="saveGatewayFailoverSettings"
+                  >
+                    {{ gatewayFailoverSaving ? t("common.saving") : t("common.save") }}
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+
           <!-- Stream Timeout Settings -->
           <div class="card">
             <div
@@ -8273,6 +8351,14 @@ const rateLimit429CooldownForm = reactive({
   cooldown_seconds: 5,
 });
 
+const gatewayFailoverLoading = ref(true);
+const gatewayFailoverSaving = ref(false);
+const gatewayFailoverForm = reactive({
+  enabled: false,
+  status_codes: "502,524,500-599",
+  max_account_switches: 2,
+});
+
 // Panel API Rate Limit 状态
 const panelRateLimitLoading = ref(true);
 const panelRateLimitSaving = ref(false);
@@ -11033,6 +11119,61 @@ async function saveRateLimit429CooldownSettings() {
   }
 }
 
+async function loadGatewayFailoverSettings() {
+  gatewayFailoverLoading.value = true;
+  try {
+    Object.assign(
+      gatewayFailoverForm,
+      await adminAPI.settings.getGatewayFailoverSettings(),
+    );
+  } catch (_error: unknown) {
+    // Keep backward-compatible defaults when the optional setting cannot be loaded.
+  } finally {
+    gatewayFailoverLoading.value = false;
+  }
+}
+
+function isGatewayFailoverStatusCodesValid(raw: string): boolean {
+  const parts = raw.split(",").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) return false;
+  return parts.every((part) => {
+    const bounds = part.split("-").map((value) => value.trim());
+    if (bounds.length > 2 || bounds.some((value) => !/^\d{3}$/.test(value))) return false;
+    const start = Number(bounds[0]);
+    const end = bounds.length === 2 ? Number(bounds[1]) : start;
+    return start >= 100 && end <= 599 && start <= end;
+  });
+}
+
+async function saveGatewayFailoverSettings() {
+  if (!isGatewayFailoverStatusCodesValid(gatewayFailoverForm.status_codes)) {
+    appStore.showError(t("admin.settings.gatewayFailover.invalidStatusCodes"));
+    return;
+  }
+  if (
+    !Number.isInteger(gatewayFailoverForm.max_account_switches) ||
+    gatewayFailoverForm.max_account_switches < 0 ||
+    gatewayFailoverForm.max_account_switches > 10
+  ) {
+    appStore.showError(t("admin.settings.gatewayFailover.invalidMaxSwitches"));
+    return;
+  }
+  gatewayFailoverSaving.value = true;
+  try {
+    const updated = await adminAPI.settings.updateGatewayFailoverSettings({
+      ...gatewayFailoverForm,
+    });
+    Object.assign(gatewayFailoverForm, updated);
+    appStore.showSuccess(t("admin.settings.gatewayFailover.saved"));
+  } catch (error: unknown) {
+    appStore.showError(
+      extractApiErrorMessage(error, t("admin.settings.gatewayFailover.saveFailed")),
+    );
+  } finally {
+    gatewayFailoverSaving.value = false;
+  }
+}
+
 // Stream Timeout 方法
 async function loadStreamTimeoutSettings() {
   streamTimeoutLoading.value = true;
@@ -11665,6 +11806,7 @@ onMounted(() => {
   loadOllamaCloudUsageSettings();
   loadOverloadCooldownSettings();
   loadRateLimit429CooldownSettings();
+  loadGatewayFailoverSettings();
   loadPanelRateLimitSettings();
   loadStreamTimeoutSettings();
   loadRectifierSettings();

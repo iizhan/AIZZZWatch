@@ -173,6 +173,7 @@
       <template v-if="activeTab === 'usage'">
         <UsageTable
           :data="usageLogs"
+          :failover-summaries="failoverSummaries"
           :loading="loading"
           :columns="visibleColumns"
           :server-side-sort="true"
@@ -245,6 +246,7 @@ import type {
   UsageStatsResponse,
   UserErrorRequest,
 } from '@/types'
+import type { GatewayFailoverRequestSummary } from '@/api/usage'
 import type { Column } from '@/components/common/types'
 import { COMMON_ERROR_STATUS_CODES } from '@/utils/errorBadges'
 
@@ -256,6 +258,7 @@ type EndpointSource = 'inbound' | 'upstream' | 'path'
 
 const usageStats = ref<UsageStatsResponse | null>(null)
 const usageLogs = ref<UsageLog[]>([])
+const failoverSummaries = ref<Record<string, GatewayFailoverRequestSummary>>({})
 const trendData = ref<TrendDataPoint[]>([])
 const requestedModelStats = ref<ModelStat[]>([])
 const groupStats = ref<GroupStat[]>([])
@@ -441,6 +444,17 @@ const loadLogs = async () => {
     if (!controller.signal.aborted) {
       usageLogs.value = res.items
       pagination.total = res.total
+      const requestIds = Array.from(new Set(res.items.map((item) => item.request_id?.trim()).filter(Boolean))) as string[]
+      try {
+        const summaries = await usageAPI.getFailoverAttempts(requestIds, { signal: controller.signal })
+        if (!controller.signal.aborted) {
+          failoverSummaries.value = Object.fromEntries(summaries.map((item) => [item.request_id, item]))
+        }
+      } catch (attemptError: any) {
+        if (attemptError?.name !== 'AbortError' && attemptError?.code !== 'ERR_CANCELED') {
+          failoverSummaries.value = {}
+        }
+      }
     }
   } catch (error: any) {
     if (error?.name !== 'AbortError' && error?.code !== 'ERR_CANCELED') {

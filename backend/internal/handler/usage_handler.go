@@ -333,6 +333,47 @@ func (h *UsageHandler) ListErrors(c *gin.Context) {
 	response.Paginated(c, result.Items, int64(result.Total), result.Page, result.PageSize)
 }
 
+// ListFailoverAttempts returns redacted per-attempt billing state for usage rows.
+// GET /api/v1/usage/failover-attempts?request_ids=id1,id2
+func (h *UsageHandler) ListFailoverAttempts(c *gin.Context) {
+	subject, ok := middleware2.GetAuthSubjectFromContext(c)
+	if !ok {
+		response.Unauthorized(c, "User not authenticated")
+		return
+	}
+	rawIDs := strings.Split(c.Query("request_ids"), ",")
+	requestIDs := make([]string, 0, len(rawIDs))
+	seen := make(map[string]struct{}, len(rawIDs))
+	for _, rawID := range rawIDs {
+		requestID := strings.TrimSpace(rawID)
+		if requestID == "" {
+			continue
+		}
+		if len(requestID) > 128 {
+			response.BadRequest(c, "Invalid request_id")
+			return
+		}
+		if _, exists := seen[requestID]; exists {
+			continue
+		}
+		seen[requestID] = struct{}{}
+		requestIDs = append(requestIDs, requestID)
+		if len(requestIDs) == 100 {
+			break
+		}
+	}
+	if len(requestIDs) == 0 {
+		response.Success(c, []service.GatewayFailoverRequestSummary{})
+		return
+	}
+	items, err := h.usageService.ListGatewayFailoverAttemptsByRequests(c.Request.Context(), subject.UserID, requestIDs)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, items)
+}
+
 // GetErrorDetail handles fetching one of the current user's failed-request details (redacted).
 // GET /api/v1/usage/errors/:id
 func (h *UsageHandler) GetErrorDetail(c *gin.Context) {

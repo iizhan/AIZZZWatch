@@ -1005,6 +1005,21 @@ export default {
         saved: '429 default cooldown settings saved',
         saveFailed: 'Failed to save 429 default cooldown settings'
       },
+      gatewayFailover: {
+        title: 'Account Failover',
+        description: 'Retry the original request on another schedulable account in the same group for configured upstream errors',
+        enabled: 'Enable account failover',
+        enabledHint: 'Only applies before a response is sent; streaming requests cannot switch after first output',
+        statusCodes: 'Trigger status codes',
+        statusCodesHint: 'Comma-separated status codes and inclusive ranges, for example 502,524,500-599',
+        maxSwitches: 'Maximum account switches',
+        maxSwitchesHint: '0 disables switching; 2 allows at most 3 total account attempts',
+        billingHint: 'Every upstream attempt is audited. Failed attempts with 502, 524, or configured 5xx responses are settled immediately from locally estimated input tokens; authentication, rate-limit, and request errors such as 401, 403, 429, and 413 are not charged again.',
+        invalidStatusCodes: 'Invalid status code format. Use a value such as 502,524,500-599',
+        invalidMaxSwitches: 'Maximum account switches must be an integer from 0 to 10',
+        saved: 'Account failover settings saved',
+        saveFailed: 'Failed to save account failover settings'
+      },
       streamTimeout: {
         title: 'Stream Timeout Handling',
         description: 'Configure account handling strategy when upstream response times out',

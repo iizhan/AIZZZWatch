@@ -13,6 +13,8 @@ const {
   getOverloadCooldownSettings,
   getRateLimit429CooldownSettings,
   updateRateLimit429CooldownSettings,
+  getGatewayFailoverSettings,
+  updateGatewayFailoverSettings,
   getPanelRateLimitSettings,
   updatePanelRateLimitSettings,
   getStreamTimeoutSettings,
@@ -41,6 +43,8 @@ const {
   getOverloadCooldownSettings: vi.fn(),
   getRateLimit429CooldownSettings: vi.fn(),
   updateRateLimit429CooldownSettings: vi.fn(),
+  getGatewayFailoverSettings: vi.fn(),
+  updateGatewayFailoverSettings: vi.fn(),
   getPanelRateLimitSettings: vi.fn().mockResolvedValue({
     enabled: true,
     user_rpm: 240,
@@ -88,6 +92,8 @@ vi.mock("@/api", () => ({
       getOverloadCooldownSettings,
       getRateLimit429CooldownSettings,
       updateRateLimit429CooldownSettings,
+      getGatewayFailoverSettings,
+      updateGatewayFailoverSettings,
       getPanelRateLimitSettings,
       updatePanelRateLimitSettings,
       getStreamTimeoutSettings,
@@ -1664,5 +1670,40 @@ describe("admin SettingsView platform quota matrix", () => {
     const quotas = payload["default_platform_quotas"] as Record<string, Record<string, unknown>>;
     // 不管输入是什么，提交值应为 null（而非 "" 或 NaN）
     expect(quotas["anthropic"]?.["daily"]).toBe(null);
+  });
+});
+
+describe("admin SettingsView gateway failover defaults", () => {
+  beforeEach(() => {
+    getSettings.mockResolvedValue({ ...baseSettingsResponse });
+    getWebSearchEmulationConfig.mockResolvedValue({ enabled: false, providers: [] });
+    getAdminApiKey.mockResolvedValue({ exists: false, masked_key: "" });
+    getOverloadCooldownSettings.mockResolvedValue({});
+    getRateLimit429CooldownSettings.mockResolvedValue({});
+    getGatewayFailoverSettings.mockRejectedValue(new Error("offline"));
+    getPanelRateLimitSettings.mockResolvedValue({});
+    getStreamTimeoutSettings.mockResolvedValue({});
+    getRectifierSettings.mockResolvedValue({});
+    getBetaPolicySettings.mockResolvedValue({});
+    getUpstreamBillingProbeSettings.mockResolvedValue({});
+    getOllamaCloudUsageSettings.mockResolvedValue({});
+    getGroups.mockResolvedValue([]);
+    listProxies.mockResolvedValue({ items: [] });
+    getProviders.mockResolvedValue({ data: [] });
+  });
+
+  it("fails closed when the runtime policy cannot be loaded", async () => {
+    const wrapper = mountView();
+    await flushPromises();
+    await openGatewayTab(wrapper);
+
+    const gatewayFailoverHeading = wrapper
+      .findAll("h2")
+      .find((node) => node.text().includes("admin.settings.gatewayFailover.title"));
+    expect(gatewayFailoverHeading).toBeDefined();
+    const card = gatewayFailoverHeading?.element.closest(".card");
+    expect(card).not.toBeNull();
+    expect((card?.querySelector("input.toggle-stub") as HTMLInputElement).checked).toBe(false);
+    expect(card?.querySelector('input[placeholder="502,524,500-599"]')).toBeNull();
   });
 });

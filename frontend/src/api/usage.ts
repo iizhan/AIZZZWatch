@@ -117,6 +117,33 @@ export interface UsageDashboardSnapshotV2Response {
   groups?: GroupStat[]
 }
 
+export type GatewayFailoverBillingStatus =
+  | 'not_billable'
+  | 'standard_usage'
+  | 'pending_reconciliation'
+  | 'reserved'
+  | 'settled'
+  | 'released'
+
+export interface GatewayFailoverAttempt {
+  attempt_no: number
+  state: 'started' | 'failed' | 'succeeded' | 'canceled'
+  billing_status: GatewayFailoverBillingStatus
+  upstream_status_code?: number
+  duration_ms?: number
+  input_tokens: number
+  output_tokens: number
+  reserved_cost: number
+  settled_cost: number
+}
+
+export interface GatewayFailoverRequestSummary {
+  request_id: string
+  attempt_count: number
+  billing_status: GatewayFailoverBillingStatus
+  attempts: GatewayFailoverAttempt[]
+}
+
 /**
  * List usage logs with optional filters
  * @param page - Page number (default: 1)
@@ -250,6 +277,21 @@ export async function getById(id: number): Promise<UsageLog> {
   return data
 }
 
+export async function getFailoverAttempts(
+  requestIds: string[],
+  options: { signal?: AbortSignal } = {}
+): Promise<GatewayFailoverRequestSummary[]> {
+  if (requestIds.length === 0) return []
+  const { data } = await apiClient.get<GatewayFailoverRequestSummary[]>(
+    '/usage/failover-attempts',
+    {
+      signal: options.signal,
+      params: { request_ids: requestIds.slice(0, 100).join(',') },
+    }
+  )
+  return data
+}
+
 // ==================== Dashboard API ====================
 
 /**
@@ -375,6 +417,7 @@ export const usageAPI = {
   getStatsByDateRange,
   getByDateRange,
   getById,
+  getFailoverAttempts,
   // Dashboard
   getDashboardStats,
   getDashboardTrend,

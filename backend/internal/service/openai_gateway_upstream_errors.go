@@ -218,6 +218,20 @@ func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool 
 	}
 }
 
+func (s *OpenAIGatewayService) shouldFailoverUpstreamErrorWithContext(ctx context.Context, statusCode int) bool {
+	if s == nil {
+		return false
+	}
+	if !gatewayFailoverPolicyEnabledFromContext(ctx) {
+		return s.shouldFailoverUpstreamError(statusCode)
+	}
+	if s.settingService == nil {
+		return false
+	}
+	settings, err := s.settingService.GetGatewayFailoverSettings(ctx)
+	return err == nil && settings.AllowsStatus(statusCode)
+}
+
 func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode int, upstreamMsg string, upstreamBody []byte) bool {
 	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
 		return false
@@ -229,6 +243,19 @@ func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponse(statusCode i
 		return true
 	}
 	return isOpenAITransientProcessingError(statusCode, upstreamMsg, upstreamBody)
+}
+
+func (s *OpenAIGatewayService) shouldFailoverOpenAIUpstreamResponseWithContext(ctx context.Context, statusCode int, upstreamMsg string, upstreamBody []byte) bool {
+	if !gatewayFailoverPolicyEnabledFromContext(ctx) {
+		return s != nil && s.shouldFailoverOpenAIUpstreamResponse(statusCode, upstreamMsg, upstreamBody)
+	}
+	if isOpenAIContextWindowError(upstreamMsg, upstreamBody) {
+		return false
+	}
+	// The administrator-configured status list is the final allowlist. Semantic
+	// OpenAI classifiers may narrow behavior, but must never make an unlisted
+	// 400/413 replayable.
+	return s.shouldFailoverUpstreamErrorWithContext(ctx, statusCode)
 }
 
 // OpenAIRequestBodyTooLargeClientMessage is the fixed downstream message used

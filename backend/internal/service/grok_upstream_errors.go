@@ -198,6 +198,13 @@ func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamError(statusCode int, r
 	return s.shouldFailoverUpstreamError(statusCode)
 }
 
+func (s *OpenAIGatewayService) shouldFailoverGrokUpstreamErrorWithContext(ctx context.Context, statusCode int, responseBody []byte) bool {
+	if isGrokContentPolicyRejection(statusCode, responseBody) {
+		return false
+	}
+	return s.shouldFailoverUpstreamErrorWithContext(ctx, statusCode)
+}
+
 // applyGrokForbiddenPolicy applies an administrator's existing temporary
 // unschedulable rules to a non-content 403. It reports true only when a rule
 // matched; unmatched responses retain the legacy entitlement cooldown.

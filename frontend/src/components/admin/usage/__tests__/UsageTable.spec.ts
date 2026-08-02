@@ -51,6 +51,23 @@ const messages: Record<string, string> = {
   'admin.usage.billingModeToken': 'Token',
   'admin.usage.billingModePerRequest': 'Per request',
   'admin.usage.billingModeImage': 'Image',
+  'usage.failover.switched': 'Failed over',
+  'usage.failover.pending': 'Pending reconciliation',
+  'usage.failover.viewDetails': 'View failover details',
+  'usage.failover.detailTitle': 'Failover details',
+  'usage.failover.requestSummary': 'Request result',
+  'usage.failover.attempt': 'Attempt',
+  'usage.failover.state': 'Result',
+  'usage.failover.duration': 'Duration',
+  'usage.failover.estimatedInputTokens': 'Estimated input tokens',
+  'usage.failover.billingState': 'Billing status',
+  'usage.failover.estimatedCost': 'Estimated cost',
+  'usage.failover.usageHint': 'Final usage only',
+  'usage.failover.states.failed': 'Failed',
+  'usage.failover.states.succeeded': 'Succeeded',
+  'usage.failover.billing.pending_reconciliation': 'Pending reconciliation',
+  'usage.failover.billing.settled': 'Settled',
+  'usage.failover.billing.standard_usage': 'Standard usage',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -118,6 +135,42 @@ describe('admin UsageTable tooltip', () => {
       height: 20,
       toJSON: () => ({}),
     } as DOMRect)
+  })
+
+  it('shows a redacted failover billing badge and detail dialog', async () => {
+    const wrapper = mount(UsageTable, {
+      props: {
+        data: [{ ...baseImageRow, request_id: 'local:req-failover' }],
+        loading: false,
+        columns: [],
+        failoverSummaries: {
+          'local:req-failover': {
+            request_id: 'local:req-failover',
+            attempt_count: 2,
+            billing_status: 'settled',
+            attempts: [
+              { attempt_no: 1, state: 'failed', billing_status: 'settled', upstream_status_code: 524, duration_ms: 90, input_tokens: 128, output_tokens: 0, reserved_cost: 0.02, settled_cost: 0.02 },
+              { attempt_no: 2, state: 'succeeded', billing_status: 'standard_usage', duration_ms: 140, input_tokens: 0, output_tokens: 0, reserved_cost: 0, settled_cost: 0 },
+            ],
+          },
+        },
+      },
+      global: {
+        stubs: { DataTable: DataTableStub, EmptyState: true, Icon: true, Teleport: true },
+      },
+    })
+
+    const badge = wrapper.get('[data-testid="failover-billing-badge"]')
+    expect(badge.text()).toContain('Failed over')
+    await badge.trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('Failover details')
+    expect(wrapper.text()).toContain('524')
+    expect(wrapper.text()).toContain('128')
+    expect(wrapper.text()).toContain('Succeeded')
+    expect(wrapper.text()).not.toContain('$0.000000')
+    expect(wrapper.text()).toContain('$0.020000')
+    expect(wrapper.text()).not.toContain('account_id')
   })
 
   it('marks only usage rows that actually applied long-context billing', () => {

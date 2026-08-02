@@ -8,6 +8,7 @@ const {
   getStats,
   getDashboardModels,
   getDashboardSnapshotV2,
+  getFailoverAttempts,
   list,
   getAvailable,
   showError,
@@ -19,6 +20,7 @@ const {
   getStats: vi.fn(),
   getDashboardModels: vi.fn(),
   getDashboardSnapshotV2: vi.fn(),
+  getFailoverAttempts: vi.fn(),
   list: vi.fn(),
   getAvailable: vi.fn(),
   showError: vi.fn(),
@@ -70,6 +72,7 @@ vi.mock('@/api', () => ({
     getStats,
     getDashboardModels,
     getDashboardSnapshotV2,
+    getFailoverAttempts,
   },
   keysAPI: {
     list,
@@ -153,6 +156,7 @@ describe('user UsageView', () => {
     getStats.mockReset()
     getDashboardModels.mockReset()
     getDashboardSnapshotV2.mockReset()
+    getFailoverAttempts.mockReset()
     list.mockReset()
     getAvailable.mockReset()
     showError.mockReset()
@@ -161,6 +165,9 @@ describe('user UsageView', () => {
     showInfo.mockReset()
 
     query.mockResolvedValue({ items: [usageLog], total: 1, pages: 1 })
+    getFailoverAttempts.mockResolvedValue([{
+      request_id: 'req-user-export', attempt_count: 2, billing_status: 'pending_reconciliation', attempts: [],
+    }])
     getStats.mockResolvedValue({
       total_requests: 1,
       total_input_tokens: 10,
@@ -196,6 +203,7 @@ describe('user UsageView', () => {
     await flushPromises()
 
     expect(query).toHaveBeenCalled()
+    expect(getFailoverAttempts).toHaveBeenCalledWith(['req-user-export'], expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(getStats).toHaveBeenCalled()
     expect(getDashboardModels).toHaveBeenCalled()
     expect(getDashboardSnapshotV2).toHaveBeenCalledWith(expect.objectContaining({

@@ -190,6 +190,19 @@
                 </div>
               </div>
             </div>
+            <button
+              v-if="visibleFailoverSummary(row.request_id)"
+              type="button"
+              data-testid="failover-billing-badge"
+              class="mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset transition-colors"
+              :class="failoverBadgeClass(visibleFailoverSummary(row.request_id)!)"
+              :aria-label="failoverBadgeLabel(visibleFailoverSummary(row.request_id)!)"
+              :title="t('usage.failover.viewDetails')"
+              @click="selectedFailoverSummary = visibleFailoverSummary(row.request_id)"
+            >
+              <Icon :name="visibleFailoverSummary(row.request_id)!.billing_status === 'pending_reconciliation' ? 'clock' : 'refresh'" size="xs" />
+              {{ failoverBadgeLabel(visibleFailoverSummary(row.request_id)!) }}
+            </button>
             <div v-if="showAccountBilling && row.account_rate_multiplier != null" class="mt-0.5 text-[11px] text-orange-500 dark:text-orange-400">
               A ${{ accountBilled(row).toFixed(6) }}
             </div>
@@ -458,6 +471,58 @@
       </div>
     </div>
   </Teleport>
+
+  <BaseDialog
+    :show="selectedFailoverSummary != null"
+    :title="t('usage.failover.detailTitle')"
+    width="normal"
+    @close="selectedFailoverSummary = null"
+  >
+    <div v-if="selectedFailoverSummary" class="space-y-4">
+      <div class="rounded border border-gray-200 bg-gray-50 px-3 py-2 text-sm dark:border-dark-700 dark:bg-dark-800">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-gray-500 dark:text-gray-400">{{ t('usage.failover.requestSummary') }}</span>
+          <span class="font-medium text-gray-900 dark:text-white">
+            {{ failoverBadgeLabel(selectedFailoverSummary) }}
+          </span>
+        </div>
+        <div class="mt-1 break-all font-mono text-xs text-gray-500 dark:text-gray-400">
+          {{ selectedFailoverSummary.request_id }}
+        </div>
+      </div>
+      <div class="overflow-x-auto rounded border border-gray-200 dark:border-dark-700">
+        <table class="min-w-[720px] w-full text-left text-sm">
+          <thead class="bg-gray-50 text-xs text-gray-500 dark:bg-dark-800 dark:text-gray-400">
+            <tr>
+              <th class="px-3 py-2 font-medium">{{ t('usage.failover.attempt') }}</th>
+              <th class="px-3 py-2 font-medium">{{ t('usage.failover.state') }}</th>
+              <th class="px-3 py-2 font-medium">HTTP</th>
+              <th class="px-3 py-2 font-medium">{{ t('usage.failover.duration') }}</th>
+              <th class="px-3 py-2 text-right font-medium">{{ t('usage.failover.estimatedInputTokens') }}</th>
+              <th class="px-3 py-2 font-medium">{{ t('usage.failover.billingState') }}</th>
+              <th class="px-3 py-2 text-right font-medium">{{ t('usage.failover.estimatedCost') }}</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-gray-200 dark:divide-dark-700">
+            <tr v-for="attempt in selectedFailoverSummary.attempts" :key="attempt.attempt_no">
+              <td class="px-3 py-2 tabular-nums">#{{ attempt.attempt_no }}</td>
+              <td class="px-3 py-2">{{ failoverAttemptStateLabel(attempt.state) }}</td>
+              <td class="px-3 py-2 tabular-nums">{{ attempt.upstream_status_code ?? '-' }}</td>
+              <td class="px-3 py-2 tabular-nums">{{ attempt.duration_ms == null ? '-' : formatDuration(attempt.duration_ms) }}</td>
+              <td class="px-3 py-2 text-right tabular-nums">{{ attempt.input_tokens > 0 ? attempt.input_tokens.toLocaleString() : '-' }}</td>
+              <td class="px-3 py-2">{{ failoverBillingStatusLabel(attempt.billing_status) }}</td>
+              <td class="px-3 py-2 text-right font-mono">
+                {{ failoverSettledCost(attempt.billing_status, attempt.settled_cost) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="text-xs leading-5 text-gray-500 dark:text-gray-400">
+        {{ t('usage.failover.usageHint') }}
+      </p>
+    </div>
+  </BaseDialog>
 </template>
 
 <script setup lang="ts">
@@ -510,8 +575,10 @@ import DataTable from '@/components/common/DataTable.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import IpGeoCell from '@/components/common/IpGeoCell.vue'
 import Icon from '@/components/icons/Icon.vue'
+import BaseDialog from '@/components/common/BaseDialog.vue'
 import { fetchBatch, getEntry } from '@/utils/ipGeoLookup'
 import type { AdminUsageLog } from '@/types'
+import type { GatewayFailoverBillingStatus, GatewayFailoverRequestSummary } from '@/api/usage'
 import type { Column } from '@/components/common/types'
 
 interface Props {
@@ -525,6 +592,7 @@ interface Props {
   showUpstreamEndpoint?: boolean
   /** 嵌入统一卡片内使用：去掉自身卡片外观 */
   flat?: boolean
+  failoverSummaries?: Record<string, GatewayFailoverRequestSummary>
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -534,7 +602,8 @@ const props = withDefaults(defineProps<Props>(), {
   defaultSortOrder: 'asc',
   showAccountBilling: true,
   showUpstreamEndpoint: true,
-  flat: false
+  flat: false,
+  failoverSummaries: () => ({}),
 })
 const emit = defineEmits<{
   userClick: [userID: number, email?: string]
@@ -545,6 +614,33 @@ const { t } = useI18n()
 const showAccountBilling = props.showAccountBilling
 const showUpstreamEndpoint = props.showUpstreamEndpoint
 const ipGeoBatchLoading = ref(false)
+const selectedFailoverSummary = ref<GatewayFailoverRequestSummary | null>(null)
+
+const visibleFailoverSummary = (requestId: string | null | undefined): GatewayFailoverRequestSummary | null => {
+  if (!requestId) return null
+  const summary = props.failoverSummaries[requestId]
+  if (!summary || (summary.attempt_count <= 1 && summary.billing_status === 'standard_usage')) return null
+  return summary
+}
+
+const failoverBadgeLabel = (summary: GatewayFailoverRequestSummary): string => {
+  if (summary.billing_status === 'pending_reconciliation') return t('usage.failover.pending')
+  return t('usage.failover.switched', { count: Math.max(0, summary.attempt_count - 1) })
+}
+
+const failoverBadgeClass = (summary: GatewayFailoverRequestSummary): string =>
+  summary.billing_status === 'pending_reconciliation'
+    ? 'bg-amber-50 text-amber-700 ring-amber-200 hover:bg-amber-100 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/30'
+    : 'bg-sky-50 text-sky-700 ring-sky-200 hover:bg-sky-100 dark:bg-sky-500/10 dark:text-sky-300 dark:ring-sky-500/30'
+
+const failoverBillingStatusLabel = (status: GatewayFailoverBillingStatus): string =>
+  t(`usage.failover.billing.${status}`)
+
+const failoverSettledCost = (status: GatewayFailoverBillingStatus, settledCost: number): string =>
+  status === 'settled' || settledCost > 0 ? `$${settledCost.toFixed(6)}` : '-'
+
+const failoverAttemptStateLabel = (state: GatewayFailoverRequestSummary['attempts'][number]['state']): string =>
+  t(`usage.failover.states.${state}`)
 
 const showIpGeoToolbar = computed(() => props.columns.some((col) => col.key === 'ip_address'))
 

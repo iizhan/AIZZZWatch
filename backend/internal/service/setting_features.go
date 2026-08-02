@@ -11,6 +11,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // IsRegistrationEnabled 检查是否开放注册
@@ -670,6 +671,87 @@ func (s *SettingService) SetRateLimit429CooldownSettings(ctx context.Context, se
 	}
 
 	return s.settingRepo.Set(ctx, SettingKeyRateLimit429CooldownSettings, string(data))
+}
+
+// GetGatewayFailoverSettings returns the validated gateway account failover policy.
+func (s *SettingService) GetGatewayFailoverSettings(ctx context.Context) (*GatewayFailoverSettings, error) {
+	if s == nil || s.settingRepo == nil {
+		return DefaultGatewayFailoverSettings(), nil
+	}
+	if cached, _ := s.gatewayFailoverSettingsCache.Load().(*cachedGatewayFailoverSettings); cached != nil && time.Now().UnixNano() < cached.expiresAt {
+		settings := cached.settings
+		return &settings, nil
+	}
+	value, err, _ := s.gatewayFailoverSettingsSF.Do("gateway_failover_settings", func() (any, error) {
+		if cached, _ := s.gatewayFailoverSettingsCache.Load().(*cachedGatewayFailoverSettings); cached != nil && time.Now().UnixNano() < cached.expiresAt {
+			return cached.settings, nil
+		}
+		settings, loadErr := s.loadGatewayFailoverSettings(ctx)
+		if loadErr != nil {
+			return GatewayFailoverSettings{}, loadErr
+		}
+		s.gatewayFailoverSettingsCache.Store(&cachedGatewayFailoverSettings{
+			settings: *settings, expiresAt: time.Now().Add(gatewayFailoverSettingsCacheTTL).UnixNano(),
+		})
+		return *settings, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	settings := value.(GatewayFailoverSettings)
+	return &settings, nil
+}
+
+func (s *SettingService) loadGatewayFailoverSettings(ctx context.Context) (*GatewayFailoverSettings, error) {
+	value, err := s.settingRepo.GetValue(ctx, SettingKeyGatewayFailoverSettings)
+	if err != nil {
+		if errors.Is(err, ErrSettingNotFound) {
+			return DefaultGatewayFailoverSettings(), nil
+		}
+		return nil, fmt.Errorf("get gateway failover settings: %w", err)
+	}
+	if value == "" {
+		return DefaultGatewayFailoverSettings(), nil
+	}
+
+	settings := *DefaultGatewayFailoverSettings()
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return DefaultGatewayFailoverSettings(), nil
+	}
+	if _, err := ParseGatewayFailoverStatusCodes(settings.StatusCodes); err != nil {
+		return DefaultGatewayFailoverSettings(), nil
+	}
+	if settings.MaxAccountSwitches < 0 || settings.MaxAccountSwitches > 10 {
+		return DefaultGatewayFailoverSettings(), nil
+	}
+	return &settings, nil
+}
+
+// SetGatewayFailoverSettings validates and persists the gateway account failover policy.
+func (s *SettingService) SetGatewayFailoverSettings(ctx context.Context, settings *GatewayFailoverSettings) error {
+	if settings == nil {
+		return fmt.Errorf("settings cannot be nil")
+	}
+	if settings.MaxAccountSwitches < 0 || settings.MaxAccountSwitches > 10 {
+		return fmt.Errorf("max_account_switches must be between 0-10")
+	}
+	normalized, err := ParseGatewayFailoverStatusCodes(settings.StatusCodes)
+	if err != nil {
+		return err
+	}
+	settings.StatusCodes = normalized.String()
+	data, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("marshal gateway failover settings: %w", err)
+	}
+	if err := s.settingRepo.Set(ctx, SettingKeyGatewayFailoverSettings, string(data)); err != nil {
+		return err
+	}
+	s.gatewayFailoverSettingsSF.Forget("gateway_failover_settings")
+	s.gatewayFailoverSettingsCache.Store(&cachedGatewayFailoverSettings{
+		settings: *settings, expiresAt: time.Now().Add(gatewayFailoverSettingsCacheTTL).UnixNano(),
+	})
+	return nil
 }
 
 // GetStreamTimeoutSettings 获取流超时处理配置

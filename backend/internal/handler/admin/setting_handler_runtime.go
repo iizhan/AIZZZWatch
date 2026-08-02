@@ -154,6 +154,56 @@ func (h *SettingHandler) UpdateRateLimit429CooldownSettings(c *gin.Context) {
 	})
 }
 
+// GetGatewayFailoverSettings returns the account failover policy.
+// GET /api/v1/admin/settings/gateway-failover
+func (h *SettingHandler) GetGatewayFailoverSettings(c *gin.Context) {
+	settings, err := h.settingService.GetGatewayFailoverSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.GatewayFailoverSettings{
+		Enabled:            settings.Enabled,
+		StatusCodes:        settings.StatusCodes,
+		MaxAccountSwitches: settings.MaxAccountSwitches,
+	})
+}
+
+type UpdateGatewayFailoverSettingsRequest struct {
+	Enabled            bool   `json:"enabled"`
+	StatusCodes        string `json:"status_codes"`
+	MaxAccountSwitches int    `json:"max_account_switches"`
+}
+
+// UpdateGatewayFailoverSettings validates and persists the account failover policy.
+// PUT /api/v1/admin/settings/gateway-failover
+func (h *SettingHandler) UpdateGatewayFailoverSettings(c *gin.Context) {
+	var req UpdateGatewayFailoverSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "Invalid request: "+err.Error())
+		return
+	}
+	settings := &service.GatewayFailoverSettings{
+		Enabled:            req.Enabled,
+		StatusCodes:        strings.TrimSpace(req.StatusCodes),
+		MaxAccountSwitches: req.MaxAccountSwitches,
+	}
+	if err := h.settingService.SetGatewayFailoverSettings(c.Request.Context(), settings); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	updated, err := h.settingService.GetGatewayFailoverSettings(c.Request.Context())
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, dto.GatewayFailoverSettings{
+		Enabled:            updated.Enabled,
+		StatusCodes:        updated.StatusCodes,
+		MaxAccountSwitches: updated.MaxAccountSwitches,
+	})
+}
+
 // GetPanelRateLimitSettings 获取面板 API 限流配置
 // GET /api/v1/admin/settings/panel-rate-limit
 func (h *SettingHandler) GetPanelRateLimitSettings(c *gin.Context) {

@@ -407,6 +407,12 @@ type RateLimit429CooldownSettings struct {
 	CooldownSeconds int  `json:"cooldown_seconds"`
 }
 
+type GatewayFailoverSettings struct {
+	Enabled            bool   `json:"enabled"`
+	StatusCodes        string `json:"status_codes"`
+	MaxAccountSwitches int    `json:"max_account_switches"`
+}
+
 // PanelRateLimitSettings 面板 API 限流配置 DTO
 type PanelRateLimitSettings struct {
 	Enabled     bool `json:"enabled"`

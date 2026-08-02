@@ -217,6 +217,12 @@ func resolveUsageBillingRequestID(ctx context.Context, upstreamRequestID string)
 	return "generated:" + generateRequestID()
 }
 
+// ResolveGatewayFailoverRequestID returns the same stable identifier used by
+// usage logs and billing deduplication for the current inbound request.
+func ResolveGatewayFailoverRequestID(ctx context.Context) string {
+	return resolveUsageBillingRequestID(ctx, "")
+}
+
 func resolveUsageBillingPayloadFingerprint(ctx context.Context, requestPayloadHash string) string {
 	if payloadHash := strings.TrimSpace(requestPayloadHash); payloadHash != "" {
 		return payloadHash

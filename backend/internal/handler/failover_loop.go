@@ -51,6 +51,16 @@ type FailoverState struct {
 	LastFailoverErr       *service.UpstreamFailoverError
 	ForceCacheBilling     bool
 	hasBoundSession       bool
+	allowedStatusCodes    service.GatewayFailoverStatusCodes
+	AttemptCount          int
+}
+
+func (s *FailoverState) BeginAttempt() int {
+	if s == nil {
+		return 0
+	}
+	s.AttemptCount++
+	return s.AttemptCount
 }
 
 // NewFailoverState 创建 failover 状态
@@ -61,6 +71,27 @@ func NewFailoverState(maxSwitches int, hasBoundSession bool) *FailoverState {
 		SameAccountRetryCount: make(map[int64]int),
 		hasBoundSession:       hasBoundSession,
 	}
+}
+
+// ApplyGatewayFailoverSettings applies the runtime policy without changing
+// same-account retry behavior. An invalid or disabled policy fails closed.
+func (s *FailoverState) ApplyGatewayFailoverSettings(settings *service.GatewayFailoverSettings) {
+	if s == nil {
+		return
+	}
+	if settings == nil || !settings.Enabled {
+		s.MaxSwitches = 0
+		s.allowedStatusCodes = nil
+		return
+	}
+	codes, err := service.ParseGatewayFailoverStatusCodes(settings.StatusCodes)
+	if err != nil {
+		s.MaxSwitches = 0
+		s.allowedStatusCodes = nil
+		return
+	}
+	s.MaxSwitches = settings.MaxAccountSwitches
+	s.allowedStatusCodes = codes
 }
 
 // HandleFailoverError 处理 UpstreamFailoverError，返回下一步动作。
@@ -80,6 +111,9 @@ func (s *FailoverState) HandleFailoverError(
 	}
 	s.LastFailoverErr = failoverErr
 	if failoverErr == nil || !failoverErr.ShouldRetryNextAccount() {
+		return FailoverExhausted
+	}
+	if len(s.allowedStatusCodes) > 0 && !s.allowedStatusCodes.Contains(failoverErr.StatusCode) {
 		return FailoverExhausted
 	}
 

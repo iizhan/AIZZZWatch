@@ -769,6 +769,20 @@ func (s *AntigravityGatewayService) shouldFailoverUpstreamError(statusCode int) 
 	}
 }
 
+func (s *AntigravityGatewayService) shouldFailoverUpstreamErrorWithContext(ctx context.Context, statusCode int) bool {
+	if s == nil {
+		return false
+	}
+	if !gatewayFailoverPolicyEnabledFromContext(ctx) {
+		return s.shouldFailoverUpstreamError(statusCode)
+	}
+	if s.settingService == nil {
+		return false
+	}
+	settings, err := s.settingService.GetGatewayFailoverSettings(ctx)
+	return err == nil && settings.AllowsStatus(statusCode)
+}
+
 // isGoogleProjectConfigError 判断（已提取的小写）错误消息是否属于 Google 服务端配置类问题。
 // 只精确匹配已知的服务端侧错误，避免对客户端请求错误做无意义重试。
 // 适用于所有走 Google 后端的平台（Antigravity、Gemini）。
