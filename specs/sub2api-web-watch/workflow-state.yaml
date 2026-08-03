@@ -40,6 +40,19 @@ residual_risks:
   - "目标 Watch_Sub2Api 工作树包含 v2 未提交改动，实施必须增量叠加且不得重置。"
   - "跨站网页登录无法照搬 Electron BrowserWindow，M1 以 API token/API key/可验证会话凭据为服务端接入边界。"
 scenario_loop_runs:
+  - id: "loop-sub2api-upgrade-v0.1.170-001"
+    initiation_source: conversation
+    status: completed
+    iteration: 1
+    root_cause: "官方 v0.1.170 大范围修改网关、流式计费和调度链路，并与当前 Watch/故障转移二开重叠"
+    strategy: "先固定 v0.1.169 二开基线，再三方合并官方 tag，逐项保护失败尝试不扣费和 Watch 独立数据面"
+    quality:
+      score: 97
+      dimensions: {coverage: 96, correctness: 98, verification: 98, maintainability: 95}
+      required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
+    evidence: ["confirmed-upgrade-package-v1", "custom-baseline-bfbe86f57", "official-tag-c043c2477", "merge-8193d393a", "frontend-207-files-1430-tests", "backend-four-package-regression", "failover-nonbilling-tests", "docker-migrations-192-193-301-313", "embed-index-CqfKc7JX", "visible-ui-and-1024-layout", "runtime-version-v0.1.170"]
+    stop_reason: "官方升级、冲突兼容、全量自动化、本地迁移和可见 UI 验证完成，等待用户验收；生产发布保持独立授权"
+    residual_risk: "生产 canary、真实流量和蓝绿切流尚未执行；当前分支未推送或部署"
   - id: "loop-sub2api-web-watch-003"
     initiation_source: conversation
     status: in_progress

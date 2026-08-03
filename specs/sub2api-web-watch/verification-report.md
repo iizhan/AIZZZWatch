@@ -1,57 +1,73 @@
-# Sub2API Web Watch 验证报告 v3
+# Sub2API v0.1.170 升级验证报告 v4
 
-状态：verified_with_risk / awaiting_user_acceptance
+状态：verified / awaiting_user_acceptance
 
 ## 验证范围
 
-- 关联需求、设计、影响和任务版本：v2。
+- 已确认版本：升级包 v1。
 - 目标仓库：`/Users/bing/Myself/Code/MacTools/Watch_Sub2Api`。
-- 分支：`feature/watch-web-v0.1.165`。
-- 本轮仅调整智能运营前端信息架构、路由、页面布局、i18n 和测试。
-- 本地预览：隔离 Compose `watch-sub2api-preview`，端口 `127.0.0.1:8091`。
+- 分支：`feature/sub2api-operations-v0.1.170`。
+- 官方基线：`v0.1.170`，提交 `c043c2477` 已是当前 HEAD 的祖先。
+- 本轮不包含推送、生产部署、生产配置/数据库修改或退款。
 
 ## 事项与影响证据矩阵
 
 | 事项/影响 | 证据 | 结果 |
 | --- | --- | --- |
-| “智能运营”一级折叠菜单 | AppSidebar 差异审查；集成测试检查 `expandOnly` 和两个子菜单 | 通过 |
-| “运营概览”与“聚合排价”子路由 | 集成测试 4/4；最终构建包含两个独立页面 chunk | 通过 |
-| 官方 AppLayout 一致性 | 两个页面均导入并使用 `AppLayout`；静态集成测试 | 通过 |
-| 旧 `/admin/watch` 兼容 | 路由重定向测试 | 通过 |
-| 管理员权限和中英文对称 | 路由 meta 与 i18n 对称测试 | 通过 |
-| 类型与生产构建 | Docker `vue-tsc -b && vite build`，960 个模块转换 | 通过 |
-| 定向 lint | Docker 内 ESLint 检查全部本轮前端文件 | 通过 |
-| 本地运行镜像 | Go embed 构建完成；仅重建应用容器 | 通过 |
-| 容器和 HTTP | PostgreSQL、Redis、Sub2API 均 healthy；health 和两个页面路径返回 200 | 通过 |
-| 宽屏/窄屏可见点击 | 应用内浏览器三次创建标签页均无法附着 webview | 未覆盖 |
+| 合并官方 v0.1.170 | 合并提交 `8193d393a`；祖先检查通过 | 通过 |
+| 保留 Watch 定制能力 | 智能运营 8 个入口可见；6 个数据页逐页加载无 alert | 通过 |
+| 保留安全故障转移 | handler/service/repository 聚焦测试；失败 attempt 固定 `not_billable` | 通过 |
+| 官方利润控制兼容 | 分组创建弹窗可见“启用利润控制”；利润 veto 与 failover 合并测试通过 | 通过 |
+| 官方倍率探测/同步 | 账号列表可见探测状态与立即探测入口；编辑弹窗可见自动探测和同步开关 | 通过 |
+| migration 兼容 | 本地 PostgreSQL 已登记官方 `192/193` 与 Watch/故障转移 `301-313` | 通过 |
+| 前端兼容 | 全量 Vitest 207 文件 / 1430 项、vue-tsc、生产 build | 通过 |
+| 后端兼容 | service、repository、handler、handler/admin 回归及聚焦测试 | 通过 |
+| 运行版本 | 最新 embed `index-CqfKc7JX.js`；侧栏显示 `v0.1.170 · 已是最新版本` | 通过 |
+| 窄屏回归 | 1024x768 下 pricing/mappings/settings/groups/accounts 无整页横向溢出 | 通过 |
+| 安全边界 | 高置信敏感扫描无命中；未读取或输出凭据；无生产外部效果 | 通过 |
 
 ## 执行命令
 
+- `go test ./internal/service`
+- `go test ./internal/repository`
+- `go test ./internal/handler`
+- `go test ./internal/handler/admin`
+- failover 非计费、partial usage、OpenAI 429、refund、migration、profit veto 聚焦测试
+- `pnpm --dir frontend exec vitest run --sequence.concurrent=false`
+- `pnpm --dir frontend exec vue-tsc --noEmit`
+- `pnpm --dir frontend run build`
+- `docker exec sub2api-watch-local /usr/local/go/bin/go test ./cmd/server`
 - `git diff --check`
-- Docker 前端目标构建：`vue-tsc -b && vite build`
-- `vitest run src/views/admin/watch/__tests__/integrationSurface.spec.ts`
-- 定向 `eslint`
-- Docker Go embed 运行镜像构建
-- `docker compose ... up -d --no-deps --force-recreate sub2api`
-- `curl http://127.0.0.1:8091/health`
-- 两个智能运营页面 HTTP 200 检查
+- 本地 Docker health、迁移表、embed 哈希与可见浏览器验证
 
-## 代码审查与影响范围自查
+## 代码与安全审查
 
-- 未发现阻断级或高优先级代码问题。
-- 实际差异符合 v2：菜单、路由、页面、i18n、测试和任务交付工件。
-- 未新增或修改 Watch 后端 API、migration、价格规则、认证、数据库数据和生产部署。
-- PostgreSQL、Redis 及其数据卷未重建；仅替换本地预览应用容器。
-- 删除无路由引用的旧独立 `WatchView.vue`，避免双实现继续存在。
+- 未发现阻断级、高优先级或需要扩大范围的问题。
+- 合并冲突仅位于 `failover_loop.go`，保留动态状态码/次数配置，并合入官方利润 veto 上限与防空转逻辑。
+- 失败 attempt 的服务实现只能估算 Token 并写审计，没有余额结算入口；成功请求仍使用标准 usage 幂等计费。
+- refund ledger 仍只提供 dry-run/候选，不执行余额冲正。
+- 官方利润控制与上游倍率自动同步默认关闭，不会因升级静默改变现有调度或倍率。
+- 官方 tag 的 `VERSION` 文件误留 `0.1.169`；定制分支已用提交 `c1aa5ceb9` 修正为 `0.1.170`，避免构建后反复提示升级。
 
-## 未覆盖项与剩余风险
+## 可见界面验证
 
-- 应用内浏览器当前无法创建可附着的可见标签页，因此未取得宽屏/窄屏截图，也未自动点击菜单展开、子菜单切换、前进后退和侧边栏折叠。
-- 用户需在 `http://127.0.0.1:8091/admin/intelligent-ops/overview` 完成最终可见验收。
-- 自动调价、保活检测和调价记录仍为后续任务，本轮没有显示空菜单。
+- 智能运营：overview、sources、pricing、mappings、operations、auto-pricing、keepalive、integration 均可进入；数据页无可见 alert。
+- 上游站点：列表、诊断/保活状态和操作入口正常加载。
+- 系统设置：账号故障转移及上游倍率自动探测设置可见。
+- 分组管理：创建弹窗中的利润控制项可见，未提交表单。
+- 账号管理：上游声明倍率、立即探测、下次探测和同步配置可见，未触发探测或保存。
+- 页面控制台 error/warn 为 0；1024 宽度下无整页横向溢出。
+
+## 影响范围自查与剩余风险
+
+- 实际差异符合升级包 v1：官方升级、冲突兼容、测试 fixture 和发布版本标识；未扩大到生产发布或退款。
+- 本机 Docker Desktop 曾因编译负载失联，经用户明确授权后重启；随后仅恢复本地容器，未触碰服务器。
+- 官方 `v0.1.170` 网关、流式计费和调度变更多，自动化与本地 UI 已覆盖核心路径，但生产 canary、真实流量和蓝绿切流仍需独立发布授权。
+- 当前分支尚未推送，尚未创建 release 分支、tag 或部署生产。
 
 ## 用户选项
 
-- `确认验收 v3`：接受智能运营菜单重构和当前可见验证边界。
-- `继续修正`：反馈页面结构或菜单交互问题后进入下一轮。
-- `补充验证`：浏览器恢复后补宽屏/窄屏点击和截图证据。
+- `确认验收 v4`：接受本地 v0.1.170 升级结果。
+- `继续修正`：指出升级后的具体异常。
+- `补充验证`：指定需要追加的本地路径。
+- 生产蓝绿发布需另行明确授权。

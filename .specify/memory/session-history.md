@@ -1111,3 +1111,12 @@
 - 验证：Docker `vue-tsc + Vite` 构建通过；集成测试 4/4、定向 ESLint、`git diff --check` 通过；Go embed 镜像构建成功；本地三个容器 healthy，health 与两个页面路径均返回 200。
 - 不满意分类与证据：`ui_interaction`；用户指出原页面独立显示、缺少统一菜单目录，根因是 WatchView 遗漏 AppLayout 且信息架构只有单一顶级入口。
 - 剩余风险：应用内浏览器 webview 三次无法附着，未完成宽屏/窄屏菜单点击和截图；需用户在本地预览完成可见验收。
+
+# 2026-08-03 Sub2API v0.1.170 升级包 v1
+
+- 确认版本：用户确认“确认执行升级包 v1”；验收状态 `awaiting_user_acceptance`。
+- 完成：在 `feature/sub2api-operations-v0.1.170` 固定定制基线并合并官方 `v0.1.170`；手工解决 failover 与官方利润控制冲突；保留失败 attempt 永不扣费、最终成功 usage 单次计费和退款仅候选/dry-run 的安全边界；修正定制分支版本显示为 `0.1.170`。
+- 影响文件：目标仓库官方升级差异、`backend/internal/handler/failover_loop.go`、三份前端兼容测试、`backend/cmd/server/VERSION`；本仓库交付报告与 workflow state。
+- 验证：后端四组包级回归及计费/退款/利润控制/迁移聚焦测试通过；前端 207 文件 / 1430 项、vue-tsc、生产 build、`git diff --check` 通过；本地 Docker 最新 embed、migration、health 和可见 UI/1024 布局通过，控制台无 error/warn。
+- 不满意分类与证据：`verification_gap`；Docker Desktop 在重编译后失联，用户授权重启后恢复，并完成此前阻断的运行态与 UI 验证。
+- 剩余风险：当前分支未推送、未部署生产；生产 canary、蓝绿切流、生产配置/数据库和退款均需独立授权。
