@@ -40,6 +40,19 @@ residual_risks:
   - "目标 Watch_Sub2Api 工作树包含 v2 未提交改动，实施必须增量叠加且不得重置。"
   - "跨站网页登录无法照搬 Electron BrowserWindow，M1 以 API token/API key/可验证会话凭据为服务端接入边界。"
 scenario_loop_runs:
+  - id: "loop-sub2api-cutover-v0.1.170-watch.1-001"
+    initiation_source: conversation
+    status: completed
+    iteration: 1
+    root_cause: "绿色版本完成验收且发布身份一致，但生产代理仍指向旧蓝色版本"
+    strategy: "切流前重新检查蓝绿健康、备份、故障转移和计费安全线；单文件切换 Nginx upstream，配置测试通过后 reload，并保留蓝色回滚"
+    quality:
+      score: 98
+      dimensions: {coverage: 97, correctness: 99, verification: 98, maintainability: 98}
+      required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
+    evidence: ["confirmed-cutover", "preflight-blue-green-healthy", "backup-present", "failover-disabled", "nginx-test-passed", "nginx-target-8094", "public-health-200", "55-new-requests-all-200", "zero-new-5xx", "zero-green-errors", "98-new-usage", "zero-failover-attempts", "blue-retained-healthy"]
+    stop_reason: "生产代理已切换到绿色并通过首分钟健康、HTTP 状态、应用错误和计费安全观察；按授权边界保留蓝色"
+    residual_risk: "首分钟样本有限，需继续观察长连接、流式请求和高并发；停止蓝色、启用故障转移、退款和数据库恢复仍需独立授权"
   - id: "loop-sub2api-release-v0.1.170-watch.1-001"
     initiation_source: conversation
     status: completed
