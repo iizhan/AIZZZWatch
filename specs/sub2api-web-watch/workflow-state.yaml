@@ -40,6 +40,19 @@ residual_risks:
   - "目标 Watch_Sub2Api 工作树包含 v2 未提交改动，实施必须增量叠加且不得重置。"
   - "跨站网页登录无法照搬 Electron BrowserWindow，M1 以 API token/API key/可验证会话凭据为服务端接入边界。"
 scenario_loop_runs:
+  - id: "loop-sub2api-release-v0.1.170-watch.1-001"
+    initiation_source: conversation
+    status: awaiting_user_acceptance
+    iteration: 1
+    root_cause: "已验证的官方 v0.1.170 定制分支尚未形成可审计发布资产，也未完成生产蓝绿预检、备份和隔离绿色验证"
+    strategy: "以独立定制版本创建发布分支和不可变标签，先验证与备份，再启动不接流量的绿色容器；切流、停蓝、启用故障转移和退款保持独立授权"
+    quality:
+      score: 96
+      dimensions: {coverage: 94, correctness: 98, verification: 96, maintainability: 96}
+      required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
+    evidence: ["confirmed-release-preparation-package-v1", "release-branch-3d2571d7d", "frontend-207-files-1430-tests", "backend-four-package-regression", "linux-amd64-image-build", "production-backup-sha256-verified", "blue-8093-green-8094-healthy", "nginx-still-8093", "failover-disabled", "visible-admin-login-and-compliance-gate"]
+    stop_reason: "发布分支、备份、隔离绿色部署和登录验收入口完成；按确认包在切流前停止，等待用户亲自完成合规确认和绿色验收"
+    residual_risk: "远端 v0.1.170-watch.1 标签仍指向 lockfile 修复前提交，需独立授权纠正；绿色尚未接真实流量；严禁直接切流或停止蓝色容器"
   - id: "loop-sub2api-upgrade-v0.1.170-001"
     initiation_source: conversation
     status: completed
@@ -99,3 +112,8 @@ scenario_loop_runs:
       - "health-and-two-route-http-200"
     stop_reason: "实现、自动化和本地 Docker 运行验证完成；可见浏览器因 webview 附着超时转交用户验收"
     residual_risk: "需要用户实际点击智能运营、运营概览和聚合排价，并确认宽屏/窄屏布局"
+delivery_artifacts:
+  - "specs/sub2api-web-watch/delivery-summary.md"
+  - "specs/sub2api-web-watch/verification-report.md"
+reflection_artifacts:
+  - "specs/sub2api-web-watch/task-reflection.md"

@@ -1120,3 +1120,12 @@
 - 验证：后端四组包级回归及计费/退款/利润控制/迁移聚焦测试通过；前端 207 文件 / 1430 项、vue-tsc、生产 build、`git diff --check` 通过；本地 Docker 最新 embed、migration、health 和可见 UI/1024 布局通过，控制台无 error/warn。
 - 不满意分类与证据：`verification_gap`；Docker Desktop 在重编译后失联，用户授权重启后恢复，并完成此前阻断的运行态与 UI 验证。
 - 剩余风险：当前分支未推送、未部署生产；生产 canary、蓝绿切流、生产配置/数据库和退款均需独立授权。
+
+# 2026-08-03 Sub2API v0.1.170-watch.1 发布准备包 v1
+
+- 确认版本：用户确认“确认执行发布准备包 v1”；验收状态 `awaiting_user_acceptance`。
+- 完成：创建并推送 `release/0.1.170-watch.1`，构建 `linux/amd64` 不可变镜像，完成生产数据库/配置备份与校验，启动不接流量的绿色 `8094`；蓝色 `8093` 和 Nginx 流量保持不变。
+- 验证：后端四组回归、前端 207 文件/1430 项、vue-tsc、build、frozen install、镜像版本、蓝绿 health、迁移、备份 SHA256、临时管理员登录与合规入口均通过。
+- 安全边界：failover 保持关闭；回滚边界后没有新增正数失败-attempt 结算；未切流、未停蓝、未退款、未改余额、未恢复数据库，未读取现有管理员密码。
+- 不满意分类与证据：`release_hygiene`；发布标签在 pnpm lockfile 修复前创建，远端 tag 与最终 release HEAD 不一致。已明确报告并等待用户授权纠正，未擅自强推。
+- 剩余风险：用户尚未亲自完成合规承诺和绿色智能运营验收；绿色尚未接真实流量；URL allowlist 和数据库/Redis 公网监听是既有安全风险，不在本包授权范围。
