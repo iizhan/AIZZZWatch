@@ -880,6 +880,7 @@ export interface WatchAccountMappingFilters {
   platform?: string
   search?: string
   mapping_status?: 'mapped' | 'unmapped' | 'needs_confirmation'
+  mapping_method?: 'auto' | 'manual'
   source_id?: number
 }
 

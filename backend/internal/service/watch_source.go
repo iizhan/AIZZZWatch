@@ -307,6 +307,7 @@ type WatchAccountMappingListRequest struct {
 	Platform      string
 	Search        string
 	MappingStatus string
+	MappingMethod string
 	SourceID      int64
 	Page          int
 	PageSize      int

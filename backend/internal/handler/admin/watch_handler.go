@@ -516,7 +516,8 @@ func (h *WatchHandler) ListAccountMappings(c *gin.Context) {
 	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, pageSizeErr := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 	mappingStatus := strings.TrimSpace(c.Query("mapping_status"))
-	if pageErr != nil || pageSizeErr != nil || sourceIDErr != nil || sourceID < 0 || page < 1 || pageSize < 1 || pageSize > 100 || !validWatchAccountMappingStatus(mappingStatus) {
+	mappingMethod := strings.TrimSpace(c.Query("mapping_method"))
+	if pageErr != nil || pageSizeErr != nil || sourceIDErr != nil || sourceID < 0 || page < 1 || pageSize < 1 || pageSize > 100 || !validWatchAccountMappingStatus(mappingStatus) || !validWatchAccountMappingMethod(mappingMethod) {
 		response.BadRequest(c, "invalid watch account mapping pagination")
 		return
 	}
@@ -530,6 +531,7 @@ func (h *WatchHandler) ListAccountMappings(c *gin.Context) {
 		Platform:      c.Query("platform"),
 		Search:        search,
 		MappingStatus: mappingStatus,
+		MappingMethod: mappingMethod,
 		SourceID:      sourceID,
 		Page:          page,
 		PageSize:      pageSize,
@@ -574,8 +576,17 @@ func validWatchAccountMappingStatus(status string) bool {
 	}
 }
 
+func validWatchAccountMappingMethod(method string) bool {
+	switch method {
+	case "", "auto", "manual":
+		return true
+	default:
+		return false
+	}
+}
+
 func (h *WatchHandler) ConfirmAccountMappingBatch(c *gin.Context) {
-	if h.watchService == nil {
+	if h.watchService == nil || h.watchSourceService == nil {
 		response.Error(c, http.StatusServiceUnavailable, "Watch service not available")
 		return
 	}
@@ -589,7 +600,7 @@ func (h *WatchHandler) ConfirmAccountMappingBatch(c *gin.Context) {
 		response.Unauthorized(c, "administrator identity unavailable")
 		return
 	}
-	result, err := h.watchService.ConfirmAccountMappingBatch(c.Request.Context(), req, subject.UserID)
+	result, err := h.watchService.ConfirmAccountMappingBatch(c.Request.Context(), req, subject.UserID, h.watchSourceService.FetchMappingSnapshot)
 	if err != nil {
 		response.BadRequest(c, "invalid watch account mapping batch request")
 		return

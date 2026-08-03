@@ -427,7 +427,8 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, req WatchAccount
 	req.Platform = strings.TrimSpace(req.Platform)
 	req.Search = strings.TrimSpace(req.Search)
 	req.MappingStatus = strings.TrimSpace(req.MappingStatus)
-	advancedFilter := req.Search != "" || req.MappingStatus != "" || req.SourceID > 0
+	req.MappingMethod = strings.TrimSpace(req.MappingMethod)
+	advancedFilter := req.Search != "" || req.MappingStatus != "" || req.MappingMethod != "" || req.SourceID > 0
 	var (
 		accounts   []Account
 		pageResult *pagination.PaginationResult
@@ -484,7 +485,7 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, req WatchAccount
 		rows = append(rows, row)
 	}
 	if advancedFilter {
-		rows = filterWatchAccountMappingRows(rows, req.MappingStatus, req.SourceID)
+		rows = filterWatchAccountMappingRows(rows, req.MappingStatus, req.MappingMethod, req.SourceID)
 		pageResult = watchMappingPaginationResult(len(rows), req.Page, req.PageSize)
 		start := (pageResult.Page - 1) * pageResult.PageSize
 		end := start + pageResult.PageSize
@@ -508,13 +509,16 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, req WatchAccount
 	}, nil
 }
 
-func filterWatchAccountMappingRows(rows []WatchAccountMappingRow, mappingStatus string, sourceID int64) []WatchAccountMappingRow {
+func filterWatchAccountMappingRows(rows []WatchAccountMappingRow, mappingStatus, mappingMethod string, sourceID int64) []WatchAccountMappingRow {
 	filtered := make([]WatchAccountMappingRow, 0, len(rows))
 	for _, row := range rows {
 		if mappingStatus != "" && row.MappingStatus != mappingStatus {
 			continue
 		}
 		if sourceID > 0 && (row.Mapping == nil || row.Mapping.SourceID != sourceID) {
+			continue
+		}
+		if mappingMethod != "" && (row.Mapping == nil || row.Mapping.MappingMethod != mappingMethod) {
 			continue
 		}
 		filtered = append(filtered, row)
@@ -560,6 +564,16 @@ func (s *WatchService) SaveAccountMapping(ctx context.Context, input WatchAccoun
 		return nil, fmt.Errorf("load source snapshot for watch mapping: %w", err)
 	}
 	if snapshot == nil || snapshot.Source == nil {
+		return nil, fmt.Errorf("source snapshot is unavailable")
+	}
+	return s.saveAccountMappingWithSnapshot(ctx, input, actorUserID, account, snapshot)
+}
+
+func (s *WatchService) saveAccountMappingWithSnapshot(ctx context.Context, input WatchAccountMappingInput, actorUserID int64, account *Account, snapshot *WatchSourceSnapshot) (*WatchAccountUpstreamMapping, error) {
+	if account == nil {
+		return nil, fmt.Errorf("account is unavailable")
+	}
+	if snapshot == nil || snapshot.Source == nil || snapshot.Source.ID != input.SourceID {
 		return nil, fmt.Errorf("source snapshot is unavailable")
 	}
 	key := watchFindSourceKey(snapshot.SourceKeys, input.SourceKeyExternalID)
@@ -906,9 +920,12 @@ func watchCandidateGroupsForKey(snapshot *WatchSourceSnapshot, key WatchSourceKe
 	return out
 }
 
-func (s *WatchService) ConfirmAccountMappingBatch(ctx context.Context, req WatchAccountMappingBatchConfirmRequest, actorUserID int64) (*WatchAccountMappingBatchConfirmResult, error) {
+func (s *WatchService) ConfirmAccountMappingBatch(ctx context.Context, req WatchAccountMappingBatchConfirmRequest, actorUserID int64, loadLiveSnapshot func(context.Context, int64) (*WatchSourceSnapshot, error)) (*WatchAccountMappingBatchConfirmResult, error) {
 	if !req.Confirmed {
 		return nil, fmt.Errorf("explicit confirmation is required")
+	}
+	if s == nil || s.accounts == nil || s.sources == nil || loadLiveSnapshot == nil {
+		return nil, fmt.Errorf("watch account mapping confirmer is unavailable")
 	}
 	if len(req.Items) == 0 {
 		return &WatchAccountMappingBatchConfirmResult{Saved: []WatchAccountUpstreamMapping{}, Failed: []WatchAccountMappingBatchFailure{}, UpdatedAt: time.Now().UTC()}, nil
@@ -917,11 +934,20 @@ func (s *WatchService) ConfirmAccountMappingBatch(ctx context.Context, req Watch
 		return nil, fmt.Errorf("too many watch account mappings")
 	}
 	result := &WatchAccountMappingBatchConfirmResult{Saved: []WatchAccountUpstreamMapping{}, Failed: []WatchAccountMappingBatchFailure{}, UpdatedAt: time.Now().UTC()}
+	snapshotCache := make(map[int64]*WatchSourceSnapshot)
+	seenAccountIDs := make(map[int64]struct{}, len(req.Items))
 	for _, item := range req.Items {
-		if item.MappingMethod == "" {
-			item.MappingMethod = "auto"
+		if _, duplicate := seenAccountIDs[item.AccountID]; duplicate {
+			result.Failed = append(result.Failed, WatchAccountMappingBatchFailure{AccountID: item.AccountID, Reason: "duplicate account mapping item"})
+			continue
 		}
-		saved, err := s.SaveAccountMapping(ctx, item, actorUserID)
+		seenAccountIDs[item.AccountID] = struct{}{}
+		account, snapshot, normalized, err := s.revalidateAutomaticAccountMapping(ctx, item, snapshotCache, loadLiveSnapshot)
+		if err != nil {
+			result.Failed = append(result.Failed, WatchAccountMappingBatchFailure{AccountID: item.AccountID, Reason: err.Error()})
+			continue
+		}
+		saved, err := s.saveAccountMappingWithSnapshot(ctx, normalized, actorUserID, account, snapshot)
 		if err != nil {
 			result.Failed = append(result.Failed, WatchAccountMappingBatchFailure{AccountID: item.AccountID, Reason: err.Error()})
 			continue
@@ -929,6 +955,40 @@ func (s *WatchService) ConfirmAccountMappingBatch(ctx context.Context, req Watch
 		result.Saved = append(result.Saved, *saved)
 	}
 	return result, nil
+}
+
+func (s *WatchService) revalidateAutomaticAccountMapping(ctx context.Context, input WatchAccountMappingInput, snapshotCache map[int64]*WatchSourceSnapshot, loadLiveSnapshot func(context.Context, int64) (*WatchSourceSnapshot, error)) (*Account, *WatchSourceSnapshot, WatchAccountMappingInput, error) {
+	input.SourceKeyExternalID = strings.TrimSpace(input.SourceKeyExternalID)
+	input.SourceGroupExternalID = strings.TrimSpace(input.SourceGroupExternalID)
+	method := strings.TrimSpace(input.MappingMethod)
+	if input.AccountID <= 0 || input.SourceID <= 0 || input.SourceKeyExternalID == "" || (method != "" && method != "auto") {
+		return nil, nil, input, fmt.Errorf("invalid automatic account mapping")
+	}
+	account, err := s.accounts.GetByID(ctx, input.AccountID)
+	if err != nil || account == nil {
+		return nil, nil, input, fmt.Errorf("account is unavailable")
+	}
+	snapshot, ok := snapshotCache[input.SourceID]
+	if !ok {
+		snapshot, err = loadLiveSnapshot(ctx, input.SourceID)
+		if err != nil || snapshot == nil || snapshot.Source == nil || snapshot.Source.ID != input.SourceID {
+			return nil, nil, input, fmt.Errorf("source scan failed")
+		}
+		snapshotCache[input.SourceID] = snapshot
+	}
+	if !snapshot.Source.Enabled || !watchSourceMatchesAccountHosts(snapshot.Source, watchAccountSourceHostKeys([]Account{*account})) {
+		return nil, nil, input, fmt.Errorf("account upstream source no longer matches")
+	}
+	accountDigest := watchAccountCredentialDigest(account)
+	key := watchFindSourceKey(snapshot.SourceKeys, input.SourceKeyExternalID)
+	if accountDigest == "" || key == nil || key.KeyDigest == "" || !watchValuesEqualString(accountDigest, key.KeyDigest) {
+		return nil, nil, input, fmt.Errorf("account upstream key no longer matches")
+	}
+	if !WatchSourceKeyIsActive(key.Status) {
+		return nil, nil, input, fmt.Errorf("source key is not active")
+	}
+	input.MappingMethod = "auto"
+	return account, snapshot, input, nil
 }
 
 func (s *WatchService) listMappingAccounts(ctx context.Context, targetGroupID int64, platform, search string) ([]Account, error) {

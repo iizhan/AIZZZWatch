@@ -104,6 +104,7 @@ func TestListAccountMappingsRejectsInvalidAdvancedFilters(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, target := range []string{
 		"/api/v1/admin/watch/account-mappings?mapping_status=unknown",
+		"/api/v1/admin/watch/account-mappings?mapping_method=unknown",
 		"/api/v1/admin/watch/account-mappings?source_id=-1",
 		"/api/v1/admin/watch/account-mappings?search=" + strings.Repeat("x", 201),
 	} {

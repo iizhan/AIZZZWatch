@@ -8,13 +8,27 @@ const {
   listAccountMappingsMock,
   scanAccountMappingsMock,
   listSourcesMock,
+  getSourceMock,
   confirmAccountMappingBatchMock,
+  routerReplaceMock,
+  routeMock,
 } = vi.hoisted(() => ({
   getGroupsMock: vi.fn(),
   listAccountMappingsMock: vi.fn(),
   scanAccountMappingsMock: vi.fn(),
   listSourcesMock: vi.fn(),
+  getSourceMock: vi.fn(),
   confirmAccountMappingBatchMock: vi.fn(),
+  routerReplaceMock: vi.fn(),
+  routeMock: {
+    path: '/admin/intelligent-ops/mappings',
+    query: {} as Record<string, unknown>,
+  },
+}))
+
+vi.mock('vue-router', () => ({
+  useRoute: () => routeMock,
+  useRouter: () => ({ replace: routerReplaceMock }),
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => ({
@@ -37,7 +51,7 @@ vi.mock('@/stores/app', () => ({
 vi.mock('@/api/admin/watch', () => ({
   confirmAccountMappingBatch: confirmAccountMappingBatchMock,
   deleteAccountMapping: vi.fn(),
-  getSource: vi.fn(),
+  getSource: getSourceMock,
   listAccountMappings: listAccountMappingsMock,
   listSources: listSourcesMock,
   saveAccountMapping: vi.fn(),
@@ -90,6 +104,16 @@ function scanCandidate(id: number, platform = 'openai') {
   }
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve
+    reject = nextReject
+  })
+  return { promise, resolve, reject }
+}
+
 const rawSource = {
   id: 1,
   name: 'Upstream',
@@ -125,8 +149,11 @@ async function mountView() {
 
 describe('WatchMappingsView pagination and platform presentation', () => {
   beforeEach(() => {
+    routeMock.query = {}
+    routerReplaceMock.mockReset().mockResolvedValue(undefined)
     getGroupsMock.mockReset().mockResolvedValue([{ id: 7, name: 'Target' }])
     listSourcesMock.mockReset().mockResolvedValue([{ ...rawSource, diagnostic_state: 'waiting' }])
+    getSourceMock.mockReset().mockResolvedValue({ source: rawSource, source_keys: [], groups: [], prices: [] })
     listAccountMappingsMock.mockReset().mockImplementation(async (params: { page?: number; page_size?: number; platform?: string }) => {
       const page = params.page || 1
       const platform = params.platform || (page === 1 ? 'openai' : 'anthropic')
@@ -151,20 +178,25 @@ describe('WatchMappingsView pagination and platform presentation', () => {
     confirmAccountMappingBatchMock.mockReset().mockResolvedValue({ saved: [], failed: [], updated_at: '2026-08-01T00:00:00Z' })
   })
 
-  it('keeps both table headers sticky and presents platform as an explicit icon label', async () => {
+  it('renders one accessible tab panel at a time with sticky headers and platform labels', async () => {
     const wrapper = await mountView()
-    const headers = wrapper.findAll('thead')
-    const paginations = wrapper.findAllComponents(PaginationStub)
+    const tabs = wrapper.findAll('[role="tab"]')
 
-    expect(headers).toHaveLength(2)
-    expect(headers.every((header) => header.classes().includes('sticky'))).toBe(true)
-    expect(paginations).toHaveLength(2)
-    expect(paginations.every((pagination) => pagination.props('pageSizeOptions').join(',') === '20,50,100')).toBe(true)
+    expect(tabs).toHaveLength(2)
+    expect(tabs[0].attributes('aria-selected')).toBe('true')
+    expect(wrapper.findAll('thead')).toHaveLength(1)
+    expect(wrapper.find('thead').classes()).toContain('sticky')
+    expect(wrapper.findAllComponents(PaginationStub)).toHaveLength(1)
+    expect(wrapper.findComponent(PaginationStub).props('pageSizeOptions').join(',')).toBe('20,50,100')
     expect(wrapper.find('[data-platform="grok"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Grok')
+
+    await tabs[1].trigger('click')
+    expect(tabs[1].attributes('aria-selected')).toBe('true')
+    expect(wrapper.findAll('thead')).toHaveLength(1)
+    expect(wrapper.find('thead').classes()).toContain('sticky')
     expect(wrapper.find('[data-platform="openai"]').exists()).toBe(true)
-    const actionButtons = wrapper.findAll('section')[0].findAll('button')
-    expect(actionButtons.slice(-2).every((button) => button.classes().includes('h-10') && button.classes().includes('whitespace-nowrap'))).toBe(true)
+    expect(routerReplaceMock).toHaveBeenCalledWith({ query: { view: 'mappings' } })
 
     wrapper.unmount()
   })
@@ -172,7 +204,7 @@ describe('WatchMappingsView pagination and platform presentation', () => {
   it('paginates scan candidates locally without losing a selection from another page', async () => {
     const wrapper = await mountView()
     const paginations = wrapper.findAll('[data-testid="pagination"]')
-    expect(paginations).toHaveLength(2)
+    expect(paginations).toHaveLength(1)
 
     const firstCheckbox = wrapper.findAll<HTMLInputElement>('tbody input[type="checkbox"]')[0]
     expect(firstCheckbox.element.checked).toBe(true)
@@ -183,7 +215,7 @@ describe('WatchMappingsView pagination and platform presentation', () => {
     expect(scanRows).toHaveLength(5)
     expect(scanRows[0].text()).toContain('Candidate 21')
 
-    await wrapper.findAll('[data-testid="pagination"]')[0].find('[data-testid="previous-page"]').trigger('click')
+    await wrapper.find('[data-testid="pagination"]').find('[data-testid="previous-page"]').trigger('click')
     expect(wrapper.findAll<HTMLInputElement>('tbody input[type="checkbox"]')[0].element.checked).toBe(false)
 
     wrapper.unmount()
@@ -191,14 +223,15 @@ describe('WatchMappingsView pagination and platform presentation', () => {
 
   it('requests a new server page and resets to page one when page size changes', async () => {
     const wrapper = await mountView()
-    const mappingPagination = wrapper.findAll('[data-testid="pagination"]')[1]
+    await wrapper.find('#watch-mappings-tab-mappings').trigger('click')
+    const mappingPagination = wrapper.find('[data-testid="pagination"]')
 
     await mappingPagination.find('[data-testid="next-page"]').trigger('click')
     await flushPromises()
     expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 2, page_size: 20 }))
     expect(wrapper.text()).toContain('Anthropic')
 
-    await wrapper.findAll('[data-testid="pagination"]')[1].find('[data-testid="page-size-50"]').trigger('click')
+    await wrapper.find('[data-testid="pagination"]').find('[data-testid="page-size-50"]').trigger('click')
     await flushPromises()
     expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, page_size: 50 }))
 
@@ -252,33 +285,272 @@ describe('WatchMappingsView pagination and platform presentation', () => {
         mapping_method: 'auto',
       }],
     })
+    expect(wrapper.find('#watch-mappings-panel-mappings').exists()).toBe(true)
+    expect(wrapper.find('[data-account-id="1"]').classes()).toContain('ring-2')
     wrapper.unmount()
   })
 
-  it('sends account search, mapping status, and source filters to both views', async () => {
+  it('keeps candidate and mapping filters independent', async () => {
     const wrapper = await mountView()
-    await wrapper.find<HTMLInputElement>('input[type="search"]').setValue('Account 1')
-    const filterSelects = wrapper.findAll<HTMLSelectElement>('section').at(0)!.findAll('select')
-    await filterSelects[2].setValue('needs_confirmation')
-    await filterSelects[3].setValue('1')
+    const candidatePanel = wrapper.find('#watch-mappings-panel-candidates')
+    await candidatePanel.find<HTMLInputElement>('input[type="search"]').setValue('Candidate 1')
+    const candidateSelects = candidatePanel.findAll<HTMLSelectElement>('select')
+    await candidateSelects[0].setValue('grok')
+    await candidateSelects[2].setValue('1')
 
-    const applyButton = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.applyFilters'))
-    await applyButton!.trigger('click')
+    const candidateApply = candidatePanel.findAll('button').find((button) => button.text().includes('admin.watch.applyFilters'))
+    await candidateApply!.trigger('click')
+    await flushPromises()
+    expect(scanAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'Candidate 1', platform: 'grok', source_id: 1 }))
+
+    await wrapper.find('#watch-mappings-tab-mappings').trigger('click')
+    const mappingPanel = wrapper.find('#watch-mappings-panel-mappings')
+    await mappingPanel.find<HTMLInputElement>('input[type="search"]').setValue('Account 2')
+    const mappingSelects = mappingPanel.findAll<HTMLSelectElement>('select')
+    await mappingSelects[1].setValue('needs_confirmation')
+    await mappingSelects[2].setValue('1')
+    const mappingApply = mappingPanel.findAll('button').find((button) => button.text().includes('admin.watch.applyFilters'))
+    await mappingApply!.trigger('click')
     await flushPromises()
 
-    const expected = expect.objectContaining({ search: 'Account 1', mapping_status: 'needs_confirmation', source_id: 1 })
-    expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expected)
-    expect(scanAccountMappingsMock).toHaveBeenLastCalledWith(expected)
+    expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'Account 2', mapping_status: 'needs_confirmation', source_id: 1 }))
+    await wrapper.find('#watch-mappings-tab-candidates').trigger('click')
+    expect(wrapper.find<HTMLInputElement>('#watch-mappings-panel-candidates input[type="search"]').element.value).toBe('Candidate 1')
+    wrapper.unmount()
+  })
+
+  it('routes an unmatched candidate to a located manual mapping without making it confirmable', async () => {
+    scanAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      candidates: [{
+        ...scanCandidate(9),
+        source_id: undefined,
+        source_name: undefined,
+        source_key_external_id: undefined,
+        source_group_external_id: undefined,
+        status: 'unmatched',
+        reason: 'no source matches account base url',
+      }],
+      ready_count: 0,
+      ambiguous_count: 0,
+      mapped_count: 0,
+    })
+    listAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      accounts: [mappingRow(9)],
+      sources: [{ ...rawSource }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = await mountView()
+    expect(wrapper.find<HTMLInputElement>('tbody input[type="checkbox"]').element.disabled).toBe(true)
+    const manualButton = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.goToManualMapping'))
+    await manualButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('#watch-mappings-panel-mappings').exists()).toBe(true)
+    expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ search: '9', platform: 'openai' }))
+    expect(wrapper.find('[data-account-id="9"]').classes()).toContain('ring-2')
+    expect(confirmAccountMappingBatchMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('routes a multiple-match candidate to manual mapping instead of presenting an unsafe confirmation', async () => {
+    scanAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      candidates: [{
+        ...scanCandidate(10),
+        source_group_external_id: undefined,
+        source_group_name: undefined,
+        status: 'multiple_match',
+        reason: 'account upstream key matches multiple source key records',
+      }],
+      ready_count: 0,
+      ambiguous_count: 1,
+      mapped_count: 0,
+    })
+    listAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      accounts: [mappingRow(10)],
+      sources: [{ ...rawSource }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
+
+    const wrapper = await mountView()
+    expect(wrapper.find<HTMLInputElement>('tbody input[type="checkbox"]').element.disabled).toBe(true)
+    const manualButton = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.goToManualMapping'))
+    expect(manualButton).toBeTruthy()
+    await manualButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('#watch-mappings-panel-mappings').exists()).toBe(true)
+    expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ search: '10', platform: 'openai' }))
+    expect(wrapper.find('[data-account-id="10"]').classes()).toContain('ring-2')
+    expect(confirmAccountMappingBatchMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('clears hidden ready selections when the candidate status filter changes', async () => {
+    const wrapper = await mountView()
+    const candidatePanel = wrapper.find('#watch-mappings-panel-candidates')
+    expect(wrapper.findAll<HTMLInputElement>('tbody input[type="checkbox"]')[0].element.checked).toBe(true)
+
+    const statusSelect = candidatePanel.findAll<HTMLSelectElement>('select')[1]
+    await statusSelect.setValue('unmatched')
+
+    const confirmButton = candidatePanel.findAll('button').find((button) => button.text().includes('admin.watch.confirmSelectedMappings'))
+    expect(confirmButton?.attributes('disabled')).toBeDefined()
+    expect(confirmAccountMappingBatchMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('restores the selected tab from the view query', async () => {
+    routeMock.query = { view: 'mappings', source: 'kept' }
+    const wrapper = await mountView()
+
+    expect(wrapper.find('#watch-mappings-panel-mappings').exists()).toBe(true)
+    await wrapper.find('#watch-mappings-tab-candidates').trigger('click')
+    expect(routerReplaceMock).toHaveBeenCalledWith({ query: { view: 'candidates', source: 'kept' } })
+    wrapper.unmount()
+  })
+
+  it('delegates automatic and manual mapping filters to the paginated server API', async () => {
+    listAccountMappingsMock.mockImplementation(async (params: { page?: number; page_size?: number; mapping_status?: string }) => {
+      const page = params.page || 1
+      const rows = [{ ...mappingRow(2), mapping_status: 'mapped', mapping: { account_id: 2, source_id: 1, source_key_external_id: 'key-2', mapping_method: 'manual', group_binding_state: 'confirmed', created_at: '', updated_at: '' } }]
+      return {
+        generated_at: '2026-08-01T00:00:00Z',
+        accounts: rows,
+        sources: [{ ...rawSource }],
+        total: 1,
+        page,
+        page_size: params.page_size || 20,
+        pages: 1,
+      }
+    })
+
+    const wrapper = await mountView()
+    await wrapper.find('#watch-mappings-tab-mappings').trigger('click')
+    const mappingPanel = wrapper.find('#watch-mappings-panel-mappings')
+    await mappingPanel.findAll<HTMLSelectElement>('select')[1].setValue('manual')
+    const apply = mappingPanel.findAll('button').find((button) => button.text().includes('admin.watch.applyFilters'))
+    await apply!.trigger('click')
+    await flushPromises()
+
+    expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, page_size: 20, mapping_status: 'mapped', mapping_method: 'manual' }))
+    expect(wrapper.find('[data-account-id="2"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('selects a needs-group candidate after the operator chooses a concrete group', async () => {
+    scanAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      candidates: [{
+        ...scanCandidate(4),
+        status: 'needs_group',
+        source_group_external_id: undefined,
+        source_group_name: undefined,
+        groups: [
+          { external_id: 'group-b', name: 'Group B', final_cost: 0.2 },
+          { external_id: 'group-c', name: 'Group C', final_cost: 0.3 },
+        ],
+      }],
+      ready_count: 0,
+      ambiguous_count: 1,
+      mapped_count: 0,
+    })
+    const wrapper = await mountView()
+    const checkbox = wrapper.find<HTMLInputElement>('tbody input[type="checkbox"]')
+    expect(checkbox.element.disabled).toBe(true)
+
+    await wrapper.find<HTMLSelectElement>('tbody select').setValue('group-b')
+    expect(checkbox.element.disabled).toBe(false)
+    const selectReady = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.selectReadyMappings'))
+    await selectReady!.trigger('click')
+
+    expect(checkbox.element.checked).toBe(true)
+    expect(wrapper.findAll('button').find((button) => button.text().includes('admin.watch.confirmSelectedMappings'))?.attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('ignores an older target-group response that arrives after the latest selection', async () => {
+    const wrapper = await mountView()
+    const oldResponse = deferred<any>()
+    const latestResponse = deferred<any>()
+    listAccountMappingsMock.mockImplementation((params: { target_group_id?: number; page_size?: number }) => {
+      return params.target_group_id === 7 ? oldResponse.promise : latestResponse.promise
+    })
+    const targetGroup = wrapper.find<HTMLSelectElement>('select')
+
+    await targetGroup.setValue('7')
+    await targetGroup.setValue('0')
+    latestResponse.resolve({
+      generated_at: '2026-08-01T00:00:02Z', accounts: [mappingRow(22)], sources: [{ ...rawSource }], total: 1, page: 1, page_size: 20, pages: 1,
+    })
+    await flushPromises()
+    oldResponse.resolve({
+      generated_at: '2026-08-01T00:00:01Z', accounts: [mappingRow(11)], sources: [{ ...rawSource }], total: 1, page: 1, page_size: 20, pages: 1,
+    })
+    await flushPromises()
+
+    await wrapper.find('#watch-mappings-tab-mappings').trigger('click')
+    expect(wrapper.find('[data-account-id="22"]').exists()).toBe(true)
+    expect(wrapper.find('[data-account-id="11"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps a partial batch failure visible after refreshing both tabs', async () => {
+    confirmAccountMappingBatchMock.mockResolvedValue({
+      saved: [{ account_id: 1 }],
+      failed: [{ account_id: 2, reason: 'account upstream key no longer matches' }],
+      updated_at: '2026-08-01T00:00:00Z',
+    })
+    const wrapper = await mountView()
+    const confirmButton = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.confirmSelectedMappings'))
+    await confirmButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[role="alert"]').text()).toContain('admin.watch.mappingBatchPartialFailed')
+    wrapper.unmount()
+  })
+
+  it('does not show a candidate scan failure on the mapping-management tab', async () => {
+    routeMock.query = { view: 'mappings' }
+    scanAccountMappingsMock.mockRejectedValue(new Error('source scan failed'))
+    const wrapper = await mountView()
+
+    expect(wrapper.find('#watch-mappings-panel-mappings').exists()).toBe(true)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
   it('rescans once for a terminal diagnostic after ignoring its transient checking state', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-01T00:00:00Z'))
+    listAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      accounts: [{
+        ...mappingRow(1),
+        mapping_status: 'mapped',
+        mapping: { account_id: 1, source_id: 1, source_key_external_id: 'key-1', source_group_external_id: 'group-a', mapping_method: 'manual', group_binding_state: 'confirmed', created_at: '', updated_at: '' },
+      }],
+      sources: [{ ...rawSource }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+      pages: 1,
+    })
     const wrapper = await mountView()
     try {
       expect(listAccountMappingsMock).toHaveBeenCalledTimes(1)
       expect(scanAccountMappingsMock).toHaveBeenCalledTimes(1)
+      expect(getSourceMock).toHaveBeenCalledTimes(1)
 
       listSourcesMock.mockResolvedValue([{ ...rawSource, diagnostic_state: 'completed', last_check_status: 'healthy', last_check_at: '2026-08-01T00:00:00Z' }])
       await (wrapper.vm as unknown as { refreshMappingsAfterSourceDiagnostics: () => Promise<void> }).refreshMappingsAfterSourceDiagnostics()
@@ -297,6 +569,7 @@ describe('WatchMappingsView pagination and platform presentation', () => {
       await flushPromises()
       expect(listAccountMappingsMock).toHaveBeenCalledTimes(2)
       expect(scanAccountMappingsMock).toHaveBeenCalledTimes(2)
+      expect(getSourceMock).toHaveBeenCalledTimes(2)
 
       vi.setSystemTime(new Date('2026-08-01T00:00:20Z'))
       await (wrapper.vm as unknown as { refreshMappingsAfterSourceDiagnostics: () => Promise<void> }).refreshMappingsAfterSourceDiagnostics()

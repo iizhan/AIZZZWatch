@@ -6,71 +6,106 @@
           <h1 class="text-2xl font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.mappingsTitle') }}</h1>
           <p class="mt-1 text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.mappingsDescription') }}</p>
         </div>
-        <button class="btn btn-secondary" type="button" :disabled="loading" @click="loadAll">
-          <Icon name="refresh" size="sm" :class="{ 'animate-spin': loading }" />
+        <button class="btn btn-secondary" type="button" :disabled="isBusy" @click="loadAll">
+          <Icon name="refresh" size="sm" :class="{ 'animate-spin': refreshing }" />
           <span>{{ t('common.refresh') }}</span>
         </button>
       </div>
 
-      <div v-if="error" class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">
-        <span>{{ error }}</span>
-        <button class="font-medium underline" type="button" @click="loadAll">{{ t('admin.watch.retry') }}</button>
+      <div v-if="visibleError" class="flex flex-wrap items-center justify-between gap-3 rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200" role="alert">
+        <span>{{ visibleError }}</span>
+        <button class="font-medium underline" type="button" :disabled="isBusy" @click="retryVisibleError">{{ t('admin.watch.retry') }}</button>
       </div>
 
       <section class="rounded-lg border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
-        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
-          <label class="block text-sm text-gray-700 dark:text-gray-200">
+        <div class="flex flex-wrap items-end justify-between gap-4">
+          <label class="block w-full max-w-md text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.targetGroup') }}
-            <select v-model.number="filters.target_group_id" class="input mt-1 w-full">
+            <select v-model.number="targetGroupId" class="input mt-1 w-full" @change="handleTargetGroupChange">
               <option :value="0">{{ t('admin.watch.allActiveAccounts') }}</option>
               <option v-for="group in groups" :key="group.id" :value="group.id">{{ group.name }}</option>
             </select>
           </label>
+          <p class="max-w-3xl text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.watch.mappingsHint') }}</p>
+        </div>
+      </section>
+
+      <div class="border-b border-gray-200 dark:border-dark-700">
+        <div class="flex min-w-0 gap-1 overflow-x-auto" role="tablist" :aria-label="t('admin.watch.mappingViews')">
+          <button
+            v-for="tab in mappingTabs"
+            :id="`watch-mappings-tab-${tab.value}`"
+            :key="tab.value"
+            class="inline-flex h-11 shrink-0 items-center gap-2 border-b-2 px-4 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2"
+            :class="activeTab === tab.value ? 'border-primary-500 text-primary-600 dark:text-primary-300' : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200'"
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === tab.value"
+            :aria-controls="`watch-mappings-panel-${tab.value}`"
+            @click="setActiveTab(tab.value)"
+          >
+            <Icon :name="tab.icon" size="sm" />
+            <span>{{ t(tab.label) }}</span>
+            <span v-if="tab.value === 'candidates' && scanResult" class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-dark-700 dark:text-gray-300">{{ filteredScanCandidates.length }}</span>
+            <span v-if="tab.value === 'mappings' && view" class="rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-dark-700 dark:text-gray-300">{{ view.total }}</span>
+          </button>
+        </div>
+      </div>
+
+      <section
+        v-if="activeTab === 'candidates'"
+        id="watch-mappings-panel-candidates"
+        class="rounded-lg border border-blue-200 bg-blue-50/70 p-5 dark:border-blue-900/50 dark:bg-blue-900/10"
+        role="tabpanel"
+        aria-labelledby="watch-mappings-tab-candidates"
+      >
+        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <label class="block text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.platform') }}
-            <select v-model="filters.platform" class="input mt-1 w-full">
+            <select v-model="candidateFilters.platform" class="input mt-1 w-full">
               <option value="">{{ t('admin.watch.allPlatforms') }}</option>
               <option v-for="platform in platformOptions" :key="platform.value" :value="platform.value">{{ platform.label }}</option>
             </select>
           </label>
           <label class="block text-sm text-gray-700 dark:text-gray-200">
-            {{ t('admin.watch.mappingStatusFilter') }}
-            <select v-model="filters.mapping_status" class="input mt-1 w-full">
-              <option value="">{{ t('admin.watch.allMappingStatuses') }}</option>
-              <option value="mapped">{{ t('admin.watch.mappingStatus_mapped') }}</option>
-              <option value="needs_confirmation">{{ t('admin.watch.mappingStatus_pending') }}</option>
-              <option value="unmapped">{{ t('admin.watch.mappingStatus_unmapped') }}</option>
+            {{ t('admin.watch.candidateStatusFilter') }}
+            <select v-model="candidateFilters.status" class="input mt-1 w-full" @change="handleCandidateStatusChange">
+              <option value="">{{ t('admin.watch.allCandidateStatuses') }}</option>
+              <option value="confirmable">{{ t('admin.watch.candidateStatus_confirmable') }}</option>
+              <option value="needs_group">{{ t('admin.watch.candidateStatus_needs_group') }}</option>
+              <option value="multiple_match">{{ t('admin.watch.candidateStatus_multiple_match') }}</option>
+              <option value="unmatched">{{ t('admin.watch.candidateStatus_unmatched') }}</option>
+              <option value="mapped">{{ t('admin.watch.candidateStatus_mapped') }}</option>
             </select>
           </label>
           <label class="block text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.source') }}
-            <select v-model.number="filters.source_id" class="input mt-1 w-full">
+            <select v-model.number="candidateFilters.source_id" class="input mt-1 w-full">
               <option :value="0">{{ t('admin.watch.allSources') }}</option>
               <option v-for="source in view?.sources || []" :key="source.id" :value="source.id">{{ source.name }}</option>
             </select>
           </label>
-          <label class="block text-sm text-gray-700 dark:text-gray-200 sm:col-span-2 xl:col-span-1">
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.search') }}
-            <input v-model.trim="filters.search" class="input mt-1 w-full" type="search" :placeholder="t('admin.watch.mappingSearchPlaceholder')" @keyup.enter="applyFilters" />
+            <input v-model.trim="candidateFilters.search" class="input mt-1 w-full" type="search" :placeholder="t('admin.watch.mappingSearchPlaceholder')" @keyup.enter="applyCandidateFilters" />
           </label>
-          <div class="flex flex-wrap items-end gap-2 sm:col-span-2 xl:col-span-4 2xl:col-span-5">
-            <button class="btn btn-primary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading" @click="applyFilters">
+          <div class="flex flex-wrap items-end gap-2 sm:col-span-2 xl:col-span-4">
+            <button class="btn btn-primary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="applyCandidateFilters">
               <Icon name="filter" size="sm" />
-              <span>{{ loading ? t('common.loading') : t('admin.watch.applyFilters') }}</span>
+              <span>{{ scanLoading ? t('common.loading') : t('admin.watch.applyFilters') }}</span>
             </button>
-            <button class="btn btn-secondary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading || scanLoading" @click="resetFilters">
+            <button class="btn btn-secondary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="resetCandidateFilters">
               {{ t('admin.watch.resetFilters') }}
             </button>
-            <button class="btn btn-secondary h-10 min-w-[112px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="runScan">
+            <button class="btn btn-secondary h-10 min-w-[112px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="runScan()">
               <Icon name="search" size="sm" :class="{ 'animate-pulse': scanLoading }" />
               <span>{{ scanLoading ? t('common.loading') : t('admin.watch.scanMappings') }}</span>
             </button>
           </div>
         </div>
-        <p class="mt-3 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.watch.mappingsHint') }}</p>
-      </section>
 
-      <section v-if="scanResult" class="rounded-lg border border-blue-200 bg-blue-50/70 p-5 dark:border-blue-900/50 dark:bg-blue-900/10">
+        <div v-if="scanResult" class="mt-5 border-t border-blue-200 pt-5 dark:border-blue-900/50">
+
         <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.scanResultTitle') }}</h2>
@@ -86,7 +121,7 @@
           </div>
         </div>
 
-        <div v-if="scanResult.candidates.length === 0" class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.noScanCandidates') }}</div>
+        <div v-if="filteredScanCandidates.length === 0" class="py-8 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.noScanCandidatesForFilters') }}</div>
         <div v-else class="overflow-hidden rounded-lg border border-blue-100 bg-white dark:border-blue-900/40 dark:bg-dark-800">
           <div class="max-h-[560px] overflow-auto">
             <table class="w-full min-w-[1680px] table-fixed text-left text-sm">
@@ -147,30 +182,87 @@
                 <td class="break-words px-4 py-3 text-xs leading-5 text-gray-500 dark:text-gray-400">
                   <div>{{ watchReasonText(t, candidate.reason) }}</div>
                   <div v-if="candidate.target_group_id && !candidate.in_target_group" class="mt-1 text-amber-600 dark:text-amber-300">{{ t('admin.watch.targetGroupNonParticipant') }}</div>
+                  <button v-if="candidateRequiresManualMapping(candidate)" class="mt-2 inline-flex items-center gap-1 font-medium text-primary-600 hover:text-primary-700 dark:text-primary-300" type="button" @click="goToManualMapping(candidate)">
+                    <Icon name="arrowRight" size="xs" />
+                    <span>{{ t('admin.watch.goToManualMapping') }}</span>
+                  </button>
                 </td>
               </tr>
             </tbody>
             </table>
           </div>
           <Pagination
-            v-if="scanResult.candidates.length > 0"
+            v-if="filteredScanCandidates.length > 0"
             :page="scanPagination.page"
-            :total="scanResult.candidates.length"
+            :total="filteredScanCandidates.length"
             :page-size="scanPagination.page_size"
             :page-size-options="mappingPageSizeOptions"
             @update:page="handleScanPageChange"
             @update:pageSize="handleScanPageSizeChange"
           />
         </div>
+        </div>
+        <div v-else class="py-12 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('admin.watch.scanCandidatesPrompt') }}</div>
       </section>
 
-      <section class="rounded-lg border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
+      <section
+        v-if="activeTab === 'mappings'"
+        id="watch-mappings-panel-mappings"
+        class="rounded-lg border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800"
+        role="tabpanel"
+        aria-labelledby="watch-mappings-tab-mappings"
+      >
         <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 class="text-base font-semibold text-gray-900 dark:text-white">{{ t('admin.watch.accountMappings') }}</h2>
             <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('admin.watch.accountMappingsHint') }}</p>
           </div>
           <span v-if="view" class="text-xs text-gray-500 dark:text-gray-400">{{ t('admin.watch.observedAt') }}: {{ formatDate(view.generated_at) }}</span>
+        </div>
+
+        <div class="mb-5 grid gap-4 border-y border-gray-100 py-4 sm:grid-cols-2 xl:grid-cols-4 dark:border-dark-700">
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
+            {{ t('admin.watch.platform') }}
+            <select v-model="mappingFilters.platform" class="input mt-1 w-full">
+              <option value="">{{ t('admin.watch.allPlatforms') }}</option>
+              <option v-for="platform in platformOptions" :key="platform.value" :value="platform.value">{{ platform.label }}</option>
+            </select>
+          </label>
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
+            {{ t('admin.watch.mappingStatusFilter') }}
+            <select v-model="mappingFilters.status" class="input mt-1 w-full">
+              <option value="">{{ t('admin.watch.allMappingStatuses') }}</option>
+              <option value="auto">{{ t('admin.watch.mappingFilterStatus_auto') }}</option>
+              <option value="manual">{{ t('admin.watch.mappingFilterStatus_manual') }}</option>
+              <option value="needs_confirmation">{{ t('admin.watch.mappingStatus_pending') }}</option>
+              <option value="unmapped">{{ t('admin.watch.mappingStatus_unmapped') }}</option>
+            </select>
+          </label>
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
+            {{ t('admin.watch.source') }}
+            <select v-model.number="mappingFilters.source_id" class="input mt-1 w-full">
+              <option :value="0">{{ t('admin.watch.allSources') }}</option>
+              <option v-for="source in view?.sources || []" :key="source.id" :value="source.id">{{ source.name }}</option>
+            </select>
+          </label>
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
+            {{ t('admin.watch.search') }}
+            <input v-model.trim="mappingFilters.search" class="input mt-1 w-full" type="search" :placeholder="t('admin.watch.mappingSearchPlaceholder')" @keyup.enter="applyMappingFilters" />
+          </label>
+          <div class="flex flex-wrap items-end gap-2 sm:col-span-2 xl:col-span-4">
+            <button class="btn btn-primary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading" @click="applyMappingFilters">
+              <Icon name="filter" size="sm" />
+              <span>{{ loading ? t('common.loading') : t('admin.watch.applyFilters') }}</span>
+            </button>
+            <button class="btn btn-secondary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading" @click="resetMappingFilters">
+              {{ t('admin.watch.resetFilters') }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="highlightedMappingAccountId" class="mb-4 flex items-center justify-between gap-3 rounded-md border border-primary-200 bg-primary-50 px-4 py-3 text-sm text-primary-700 dark:border-primary-900/50 dark:bg-primary-900/20 dark:text-primary-200" role="status">
+          <span>{{ t('admin.watch.mappingAccountLocated', { id: highlightedMappingAccountId }) }}</span>
+          <button class="font-medium underline" type="button" @click="clearMappingHighlight">{{ t('common.close') }}</button>
         </div>
 
         <div v-if="loading && !view" class="py-16 text-center text-sm text-gray-500 dark:text-gray-400">{{ t('common.loading') }}</div>
@@ -192,7 +284,13 @@
               </tr>
             </thead>
             <tbody class="divide-y divide-gray-100 dark:divide-dark-700">
-              <tr v-for="row in view.accounts" :key="row.account_id" class="bg-white align-top dark:bg-dark-800">
+              <tr
+                v-for="row in view.accounts"
+                :key="row.account_id"
+                :data-account-id="row.account_id"
+                class="bg-white align-top transition-colors dark:bg-dark-800"
+                :class="row.account_id === highlightedMappingAccountId ? 'bg-primary-50 ring-2 ring-inset ring-primary-400 dark:bg-primary-900/20' : ''"
+              >
                 <td class="px-4 py-3">
                   <div class="truncate font-medium text-gray-900 dark:text-white" :title="row.account_name">{{ row.account_name }}</div>
                   <div class="mt-1 text-xs text-gray-500 dark:text-gray-400">#{{ row.account_id }}</div>
@@ -262,8 +360,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/layout/AppLayout.vue'
 import Icon from '@/components/icons/Icon.vue'
 import Pagination from '@/components/common/Pagination.vue'
@@ -292,9 +391,23 @@ import {
 import { watchReasonText } from './watchText'
 
 const { t, locale } = useI18n()
+const route = useRoute()
+const router = useRouter()
 const appStore = useAppStore()
+type MappingTab = 'candidates' | 'mappings'
+type CandidateStatusFilter = '' | 'confirmable' | 'needs_group' | 'multiple_match' | 'unmatched' | 'mapped'
+type MappingStatusFilter = '' | 'auto' | 'manual' | 'needs_confirmation' | 'unmapped'
+
+function normalizeMappingTab(value: unknown): MappingTab {
+  return value === 'mappings' ? 'mappings' : 'candidates'
+}
+
 const loading = ref(false)
-const error = ref('')
+const refreshing = ref(false)
+const pageError = ref('')
+const candidateError = ref('')
+const mappingError = ref('')
+const operationError = ref('')
 const groups = ref<Array<{ id: number; name: string }>>([])
 const view = ref<WatchAccountMappingsView | null>(null)
 const sourceSnapshots = ref<Record<number, WatchSourceSnapshot>>({})
@@ -303,14 +416,22 @@ const savingAccountId = ref<number | null>(null)
 const scanLoading = ref(false)
 const confirmingScan = ref(false)
 const scanResult = ref<WatchAccountMappingScanResult | null>(null)
+const activeTab = ref<MappingTab>(normalizeMappingTab(route.query.view))
+const targetGroupId = ref(0)
+const highlightedMappingAccountId = ref<number | null>(null)
 const drafts = reactive<Record<number, { source_id: number; source_key_external_id: string; source_group_external_id: string }>>({})
 const scanSelections = reactive<Record<number, boolean>>({})
 const scanGroupDrafts = reactive<Record<number, string>>({})
-const filters = reactive<{ target_group_id: number; platform: string; search: string; mapping_status: '' | NonNullable<WatchAccountMappingFilters['mapping_status']>; source_id: number }>({
-  target_group_id: 0,
+const candidateFilters = reactive<{ platform: string; search: string; status: CandidateStatusFilter; source_id: number }>({
   platform: '',
   search: '',
-  mapping_status: '',
+  status: '',
+  source_id: 0,
+})
+const mappingFilters = reactive<{ platform: string; search: string; status: MappingStatusFilter; source_id: number }>({
+  platform: '',
+  search: '',
+  status: '',
   source_id: 0,
 })
 const mappingPagination = reactive({ page: 1, page_size: 20 })
@@ -323,6 +444,12 @@ let pendingTerminalSourceRefresh = false
 let lastMappingRefreshAt = Date.now()
 const lastTerminalSourceMarkers = new Map<number, string>()
 const sourceRefreshCoalesceMs = 10_000
+const pendingSourceSnapshotRefreshIds = new Set<number>()
+const sourceSnapshotVersions = new Map<number, number>()
+const sourceSnapshotLoadCounts = new Map<number, number>()
+let mappingRequestVersion = 0
+let scanRequestVersion = 0
+let targetGroupChangeVersion = 0
 
 const platformNames: Record<GroupPlatform, string> = {
   anthropic: 'Anthropic',
@@ -333,19 +460,42 @@ const platformNames: Record<GroupPlatform, string> = {
   composite: 'Composite',
 }
 const platformOptions = GROUP_PLATFORMS.map((value) => ({ value, label: platformNames[value] }))
-const visibleScanCandidates = computed(() => {
+const mappingTabs: ReadonlyArray<{ value: MappingTab; label: string; icon: 'search' | 'link' }> = [
+  { value: 'candidates', label: 'admin.watch.mappingTabCandidates', icon: 'search' },
+  { value: 'mappings', label: 'admin.watch.mappingTabManagement', icon: 'link' },
+]
+const isBusy = computed(() => refreshing.value || loading.value || scanLoading.value || confirmingScan.value)
+const visibleError = computed(() => operationError.value || pageError.value || (activeTab.value === 'candidates' ? candidateError.value : mappingError.value))
+const filteredScanCandidates = computed(() => {
   const candidates = scanResult.value?.candidates || []
+  if (!candidateFilters.status) return candidates
+  return candidates.filter((candidate) => candidateMatchesStatus(candidate, candidateFilters.status))
+})
+const visibleScanCandidates = computed(() => {
   const start = (scanPagination.page - 1) * scanPagination.page_size
-  return candidates.slice(start, start + scanPagination.page_size)
+  return filteredScanCandidates.value.slice(start, start + scanPagination.page_size)
 })
 
 function activeMappingFilters(): WatchAccountMappingFilters {
+  const serverStatus = mappingFilters.status === 'auto' || mappingFilters.status === 'manual'
+    ? 'mapped'
+    : mappingFilters.status || undefined
   return {
-    target_group_id: filters.target_group_id || undefined,
-    platform: filters.platform || undefined,
-    search: filters.search || undefined,
-    mapping_status: filters.mapping_status || undefined,
-    source_id: filters.source_id || undefined,
+    target_group_id: targetGroupId.value || undefined,
+    platform: mappingFilters.platform || undefined,
+    search: mappingFilters.search || undefined,
+    mapping_status: serverStatus,
+    mapping_method: mappingFilters.status === 'auto' || mappingFilters.status === 'manual' ? mappingFilters.status : undefined,
+    source_id: mappingFilters.source_id || undefined,
+  }
+}
+
+function activeCandidateFilters(): WatchAccountMappingFilters {
+  return {
+    target_group_id: targetGroupId.value || undefined,
+    platform: candidateFilters.platform || undefined,
+    search: candidateFilters.search || undefined,
+    source_id: candidateFilters.source_id || undefined,
   }
 }
 
@@ -392,29 +542,32 @@ function hydrateDrafts() {
 }
 
 async function loadAll() {
-  loading.value = true
-  error.value = ''
+  if (refreshing.value) return
+  refreshing.value = true
+  pageError.value = ''
+  operationError.value = ''
   try {
-    const [nextGroups] = await Promise.all([groupsAPI.getAll()])
+    const nextGroups = await groupsAPI.getAll()
     groups.value = nextGroups.map((group) => ({ id: group.id, name: group.name }))
-    await loadMappings({ refreshScan: true })
+    await Promise.all([loadMappings(), runScan({ activateTab: false })])
   } catch (err) {
-    error.value = errorMessage(err, t('admin.watch.mappingsLoadFailed'))
+    pageError.value = errorMessage(err, t('admin.watch.mappingsLoadFailed'))
   } finally {
-    loading.value = false
+    refreshing.value = false
   }
 }
 
-async function loadMappings(options: { refreshScan?: boolean } = {}) {
+async function loadMappings(): Promise<boolean> {
+  const requestVersion = ++mappingRequestVersion
   loading.value = true
-  error.value = ''
-  let shouldRefreshScan = false
+  mappingError.value = ''
   try {
     let nextView = await listAccountMappings({
       ...activeMappingFilters(),
       page: mappingPagination.page,
       page_size: mappingPagination.page_size,
     })
+    if (requestVersion !== mappingRequestVersion) return false
     if (nextView.accounts.length === 0 && nextView.total > 0 && mappingPagination.page > 1) {
       mappingPagination.page = Math.max(nextView.pages, 1)
       nextView = await listAccountMappings({
@@ -422,32 +575,55 @@ async function loadMappings(options: { refreshScan?: boolean } = {}) {
         page: mappingPagination.page,
         page_size: mappingPagination.page_size,
       })
+      if (requestVersion !== mappingRequestVersion) return false
     }
     view.value = nextView
     mappingPagination.page = view.value.page
     mappingPagination.page_size = view.value.page_size
     hydrateDrafts()
     await preloadMappedSources()
-    shouldRefreshScan = Boolean(options.refreshScan)
+    return true
   } catch (err) {
-    error.value = errorMessage(err, t('admin.watch.mappingsLoadFailed'))
+    if (requestVersion === mappingRequestVersion) {
+      mappingError.value = errorMessage(err, t('admin.watch.mappingsLoadFailed'))
+    }
+    return false
   } finally {
-    loading.value = false
-  }
-  if (shouldRefreshScan) {
-    await runScan()
+    if (requestVersion === mappingRequestVersion) {
+      loading.value = false
+    }
   }
 }
 
-async function applyFilters() {
+async function applyMappingFilters() {
+  mappingPagination.page = 1
+  highlightedMappingAccountId.value = null
+  await loadMappings()
+}
+
+async function resetMappingFilters() {
+  Object.assign(mappingFilters, { platform: '', search: '', status: '', source_id: 0 })
+  await applyMappingFilters()
+}
+
+async function applyCandidateFilters() {
+  scanPagination.page = 1
+  await runScan()
+}
+
+async function resetCandidateFilters() {
+  Object.assign(candidateFilters, { platform: '', search: '', status: '', source_id: 0 })
+  await applyCandidateFilters()
+}
+
+async function handleTargetGroupChange() {
+  const changeVersion = ++targetGroupChangeVersion
   mappingPagination.page = 1
   scanPagination.page = 1
-  await loadMappings({ refreshScan: true })
-}
-
-async function resetFilters() {
-  Object.assign(filters, { target_group_id: 0, platform: '', search: '', mapping_status: '', source_id: 0 })
-  await applyFilters()
+  highlightedMappingAccountId.value = null
+  await loadMappings()
+  if (changeVersion !== targetGroupChangeVersion) return
+  await runScan({ activateTab: false })
 }
 
 async function handleMappingPageChange(page: number) {
@@ -470,6 +646,15 @@ function handleScanPageSizeChange(pageSize: number) {
   scanPagination.page = 1
 }
 
+function resetScanPagination() {
+  scanPagination.page = 1
+}
+
+function handleCandidateStatusChange() {
+  resetScanPagination()
+  selectReadyCandidates()
+}
+
 async function preloadMappedSources() {
   if (!view.value) return
   const sourceIds = [...new Set(view.value.accounts.map((row) => draftFor(row).source_id).filter((id) => id > 0))]
@@ -478,14 +663,34 @@ async function preloadMappedSources() {
 
 async function ensureSnapshot(sourceId: number) {
   if (!sourceId || sourceSnapshots.value[sourceId]) return
+  const snapshotVersion = sourceSnapshotVersions.get(sourceId) || 0
+  sourceSnapshotLoadCounts.set(sourceId, (sourceSnapshotLoadCounts.get(sourceId) || 0) + 1)
   loadingSnapshotIds.value = new Set([...loadingSnapshotIds.value, sourceId])
   try {
-    sourceSnapshots.value = { ...sourceSnapshots.value, [sourceId]: await getSource(sourceId) }
+    const snapshot = await getSource(sourceId)
+    if ((sourceSnapshotVersions.get(sourceId) || 0) === snapshotVersion) {
+      sourceSnapshots.value = { ...sourceSnapshots.value, [sourceId]: snapshot }
+    }
   } finally {
-    const next = new Set(loadingSnapshotIds.value)
-    next.delete(sourceId)
-    loadingSnapshotIds.value = next
+    const remaining = Math.max((sourceSnapshotLoadCounts.get(sourceId) || 1) - 1, 0)
+    if (remaining > 0) {
+      sourceSnapshotLoadCounts.set(sourceId, remaining)
+    } else {
+      sourceSnapshotLoadCounts.delete(sourceId)
+      const next = new Set(loadingSnapshotIds.value)
+      next.delete(sourceId)
+      loadingSnapshotIds.value = next
+    }
   }
+}
+
+function invalidateSourceSnapshots(sourceIds: Iterable<number>) {
+  const nextSnapshots = { ...sourceSnapshots.value }
+  for (const sourceId of sourceIds) {
+    delete nextSnapshots[sourceId]
+    sourceSnapshotVersions.set(sourceId, (sourceSnapshotVersions.get(sourceId) || 0) + 1)
+  }
+  sourceSnapshots.value = nextSnapshots
 }
 
 async function onSourceChange(row: WatchAccountMappingRow) {
@@ -546,21 +751,31 @@ function canSave(row: WatchAccountMappingRow) {
   return Boolean(draft.source_id && draft.source_key_external_id && !mappingSaveBlockReason(row))
 }
 
-async function runScan() {
+async function runScan(options: { activateTab?: boolean } = {}) {
+  const requestVersion = ++scanRequestVersion
   scanLoading.value = true
-  error.value = ''
+  candidateError.value = ''
   try {
-    scanResult.value = await scanAccountMappings(activeMappingFilters())
+    const nextResult = await scanAccountMappings(activeCandidateFilters())
+    if (requestVersion !== scanRequestVersion) return
+    scanResult.value = nextResult
     scanPagination.page = 1
     for (const candidate of scanResult.value.candidates) {
       scanSelections[candidate.account_id] = false
       scanGroupDrafts[candidate.account_id] = candidate.source_group_external_id || ''
     }
     selectReadyCandidates()
+    if (options.activateTab !== false) {
+      await setActiveTab('candidates')
+    }
   } catch (err) {
-    error.value = errorMessage(err, t('admin.watch.mappingScanFailed'))
+    if (requestVersion === scanRequestVersion) {
+      candidateError.value = errorMessage(err, t('admin.watch.mappingScanFailed'))
+    }
   } finally {
-    scanLoading.value = false
+    if (requestVersion === scanRequestVersion) {
+      scanLoading.value = false
+    }
   }
 }
 
@@ -577,28 +792,53 @@ function candidateNeedsGroupSelection(candidate: WatchAccountMappingCandidate) {
   return (candidate.groups?.length || 0) > 1 || (!candidate.source_group_external_id && (candidate.groups?.length || 0) > 0)
 }
 
+function candidateRequiresManualMapping(candidate: WatchAccountMappingCandidate) {
+  return candidate.status === 'unmatched' || candidate.status === 'multiple_match'
+}
+
+function candidateMatchesStatus(candidate: WatchAccountMappingCandidate, status: CandidateStatusFilter) {
+  if (!status) return true
+  if (status === 'confirmable') return canSelectCandidate(candidate)
+  if (status === 'needs_group') return candidate.status === 'needs_group' || candidate.status === 'needs_confirmation'
+  return candidate.status === status
+}
+
 function selectReadyCandidates() {
-  if (!scanResult.value) return
-  for (const candidate of scanResult.value.candidates) {
-    scanSelections[candidate.account_id] = (candidate.status === 'ready' || candidate.status === 'needs_confirmation') && canSelectCandidate(candidate)
+  for (const candidate of scanResult.value?.candidates || []) {
+    scanSelections[candidate.account_id] = false
+  }
+  for (const candidate of filteredScanCandidates.value) {
+    scanSelections[candidate.account_id] = (candidate.status === 'ready' || candidate.status === 'needs_group' || candidate.status === 'needs_confirmation') && canSelectCandidate(candidate)
   }
 }
 
 async function confirmSelectedMappings() {
   if (selectedConfirmItems.value.length === 0) return
   confirmingScan.value = true
-  error.value = ''
+  operationError.value = ''
   try {
     const result = await confirmAccountMappingBatch({ confirmed: true, items: selectedConfirmItems.value })
-    if (result.failed.length > 0) {
-      error.value = t('admin.watch.mappingBatchPartialFailed', { failed: result.failed.length, saved: result.saved.length })
-    } else {
+    const partialFailureMessage = result.failed.length > 0
+      ? t('admin.watch.mappingBatchPartialFailed', { failed: result.failed.length, saved: result.saved.length })
+      : ''
+    if (!partialFailureMessage) {
       appStore.showSuccess(t('admin.watch.mappingBatchSaved', { count: result.saved.length }))
     }
+    const firstSavedAccountId = result.saved[0]?.account_id
+    if (firstSavedAccountId) {
+      highlightedMappingAccountId.value = firstSavedAccountId
+      Object.assign(mappingFilters, { platform: '', search: String(firstSavedAccountId), status: '', source_id: 0 })
+      mappingPagination.page = 1
+    }
     await loadMappings()
-    await runScan()
+    await runScan({ activateTab: false })
+    operationError.value = partialFailureMessage
+    if (firstSavedAccountId) {
+      await setActiveTab('mappings')
+      await scrollToHighlightedMapping()
+    }
   } catch (err) {
-    error.value = errorMessage(err, t('admin.watch.mappingBatchSaveFailed'))
+    operationError.value = errorMessage(err, t('admin.watch.mappingBatchSaveFailed'))
   } finally {
     confirmingScan.value = false
   }
@@ -613,36 +853,39 @@ function terminalSourceMarker(source: WatchSource) {
 }
 
 function observeTerminalSourceChanges(sources: WatchSource[]) {
-  let changed = false
+  const changedSourceIds: number[] = []
   for (const source of sources) {
     const marker = terminalSourceMarker(source)
     if (!marker) continue
     if (terminalSourceBaselineReady && lastTerminalSourceMarkers.get(source.id) !== marker) {
-      changed = true
+      changedSourceIds.push(source.id)
     }
     lastTerminalSourceMarkers.set(source.id, marker)
   }
   terminalSourceBaselineReady = true
-  return changed
+  return changedSourceIds
 }
 
 async function refreshMappingsAfterSourceDiagnostics() {
-  if (sourceRefreshInFlight || loading.value || scanLoading.value) return
+  if (sourceRefreshInFlight || isBusy.value) return
   if (!view.value?.sources.length) return
   sourceRefreshInFlight = true
   try {
     const nextSources = await listSources()
-    if (observeTerminalSourceChanges(nextSources)) {
+    for (const sourceId of observeTerminalSourceChanges(nextSources)) {
+      pendingSourceSnapshotRefreshIds.add(sourceId)
       pendingTerminalSourceRefresh = true
     }
     const refreshDue = pendingTerminalSourceRefresh && Date.now() - lastMappingRefreshAt >= sourceRefreshCoalesceMs
     if (refreshDue) {
+      invalidateSourceSnapshots(pendingSourceSnapshotRefreshIds)
       await loadMappings()
       if (view.value) {
         view.value = { ...view.value, sources: nextSources }
       }
-      await runScan()
+      await runScan({ activateTab: false })
       pendingTerminalSourceRefresh = false
+      pendingSourceSnapshotRefreshIds.clear()
       lastMappingRefreshAt = Date.now()
     } else if (view.value) {
       view.value = { ...view.value, sources: nextSources }
@@ -654,11 +897,49 @@ async function refreshMappingsAfterSourceDiagnostics() {
   }
 }
 
+async function setActiveTab(tab: MappingTab) {
+  activeTab.value = tab
+  if (String(route.query.view || '') !== tab) {
+    await router.replace({ query: { ...route.query, view: tab } })
+  }
+}
+
+async function goToManualMapping(candidate: WatchAccountMappingCandidate) {
+  highlightedMappingAccountId.value = null
+  operationError.value = ''
+  Object.assign(mappingFilters, {
+    platform: candidate.platform || '',
+    search: String(candidate.account_id),
+    status: '',
+    source_id: 0,
+  })
+  mappingPagination.page = 1
+  await setActiveTab('mappings')
+  const loaded = await loadMappings()
+  if (loaded && view.value?.accounts.some((row) => row.account_id === candidate.account_id)) {
+    highlightedMappingAccountId.value = candidate.account_id
+    await scrollToHighlightedMapping()
+  } else {
+    operationError.value = t('admin.watch.mappingAccountNotFound', { id: candidate.account_id })
+  }
+}
+
+async function scrollToHighlightedMapping() {
+  await nextTick()
+  if (!highlightedMappingAccountId.value) return
+  const element = document.querySelector<HTMLElement>(`[data-account-id="${highlightedMappingAccountId.value}"]`)
+  element?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+}
+
+function clearMappingHighlight() {
+  highlightedMappingAccountId.value = null
+}
+
 async function saveRow(row: WatchAccountMappingRow) {
   if (!canSave(row)) return
   const draft = draftFor(row)
   savingAccountId.value = row.account_id
-  error.value = ''
+  operationError.value = ''
   try {
     await saveAccountMapping(row.account_id, {
       source_id: draft.source_id,
@@ -669,7 +950,7 @@ async function saveRow(row: WatchAccountMappingRow) {
     appStore.showSuccess(t('admin.watch.mappingSaved'))
     await loadMappings()
   } catch (err) {
-    error.value = errorMessage(err, t('admin.watch.mappingSaveFailed'))
+    operationError.value = errorMessage(err, t('admin.watch.mappingSaveFailed'))
   } finally {
     savingAccountId.value = null
   }
@@ -677,16 +958,31 @@ async function saveRow(row: WatchAccountMappingRow) {
 
 async function clearRow(row: WatchAccountMappingRow) {
   savingAccountId.value = row.account_id
-  error.value = ''
+  operationError.value = ''
   try {
     await deleteAccountMapping(row.account_id)
     appStore.showSuccess(t('admin.watch.mappingDeleted'))
     await loadMappings()
   } catch (err) {
-    error.value = errorMessage(err, t('admin.watch.mappingDeleteFailed'))
+    operationError.value = errorMessage(err, t('admin.watch.mappingDeleteFailed'))
   } finally {
     savingAccountId.value = null
   }
+}
+
+async function retryVisibleError() {
+  const retryPage = Boolean(pageError.value)
+  operationError.value = ''
+  pageError.value = ''
+  if (retryPage) {
+    await loadAll()
+    return
+  }
+  if (activeTab.value === 'candidates') {
+    await runScan({ activateTab: false })
+    return
+  }
+  await loadMappings()
 }
 
 function mappingStatusText(row: WatchAccountMappingRow) {
@@ -736,6 +1032,10 @@ function formatDate(value?: string) {
 function formatNumber(value?: number) {
   return value == null ? '-' : new Intl.NumberFormat(locale.value, { maximumFractionDigits: 8 }).format(value)
 }
+
+watch(() => route.query.view, (value) => {
+  activeTab.value = normalizeMappingTab(value)
+})
 
 onMounted(() => {
   loadAll()
