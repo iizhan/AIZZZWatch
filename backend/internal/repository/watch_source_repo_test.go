@@ -29,9 +29,9 @@ func TestSaveSourceObservationPersistsFreshDataWhenBalanceIsLow(t *testing.T) {
 	rechargeRatio := 1.0
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT name,recharge_ratio FROM watch_sources WHERE id=$1")).
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT name,recharge_ratio,auto_follow_key_group FROM watch_sources WHERE id=$1")).
 		WithArgs(int64(7)).
-		WillReturnRows(sqlmock.NewRows([]string{"name", "recharge_ratio"}).AddRow(sourceName, rechargeRatio))
+		WillReturnRows(sqlmock.NewRows([]string{"name", "recharge_ratio", "auto_follow_key_group"}).AddRow(sourceName, rechargeRatio, true))
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE watch_sources SET last_check_status=$2::VARCHAR(32), last_check_at=$3,")).
 		WithArgs(int64(7), "degraded", now, "low_balance", &latency, &balance).
 		WillReturnResult(sqlmock.NewResult(0, 1))

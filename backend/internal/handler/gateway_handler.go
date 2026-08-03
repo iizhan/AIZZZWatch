@@ -479,7 +479,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					responseStarted := c.Writer.Size() != writerSizeBeforeForward
-					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 						apiKey, account, subscription, service.GatewayFailoverEndpointMessages,
 						body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),
@@ -926,7 +926,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					responseStarted := c.Writer.Size() != writerSizeBeforeForward
-					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 						currentAPIKey, account, currentSubscription, service.GatewayFailoverEndpointMessages,
 						body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), currentAPIKey),

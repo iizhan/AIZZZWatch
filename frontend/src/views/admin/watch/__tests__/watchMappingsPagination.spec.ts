@@ -8,11 +8,13 @@ const {
   listAccountMappingsMock,
   scanAccountMappingsMock,
   listSourcesMock,
+  confirmAccountMappingBatchMock,
 } = vi.hoisted(() => ({
   getGroupsMock: vi.fn(),
   listAccountMappingsMock: vi.fn(),
   scanAccountMappingsMock: vi.fn(),
   listSourcesMock: vi.fn(),
+  confirmAccountMappingBatchMock: vi.fn(),
 }))
 
 vi.mock('vue-i18n', async (importOriginal) => ({
@@ -33,7 +35,7 @@ vi.mock('@/stores/app', () => ({
 }))
 
 vi.mock('@/api/admin/watch', () => ({
-  confirmAccountMappingBatch: vi.fn(),
+  confirmAccountMappingBatch: confirmAccountMappingBatchMock,
   deleteAccountMapping: vi.fn(),
   getSource: vi.fn(),
   listAccountMappings: listAccountMappingsMock,
@@ -146,6 +148,7 @@ describe('WatchMappingsView pagination and platform presentation', () => {
       ambiguous_count: 0,
       mapped_count: 0,
     })
+    confirmAccountMappingBatchMock.mockReset().mockResolvedValue({ saved: [], failed: [], updated_at: '2026-08-01T00:00:00Z' })
   })
 
   it('keeps both table headers sticky and presents platform as an explicit icon label', async () => {
@@ -199,6 +202,73 @@ describe('WatchMappingsView pagination and platform presentation', () => {
     await flushPromises()
     expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expect.objectContaining({ page: 1, page_size: 50 }))
 
+    wrapper.unmount()
+  })
+
+  it('allows a pending group-change candidate after the operator selects its current group', async () => {
+    scanAccountMappingsMock.mockResolvedValue({
+      generated_at: '2026-08-01T00:00:00Z',
+      candidates: [{
+        ...scanCandidate(1),
+        status: 'needs_confirmation',
+        source_group_external_id: undefined,
+        source_group_name: undefined,
+        groups: [
+          { external_id: 'group-b', name: 'Group B', final_cost: 0.2 },
+          { external_id: 'group-c', name: 'Group C', final_cost: 0.3 },
+        ],
+      }],
+      ready_count: 0,
+      ambiguous_count: 1,
+      mapped_count: 0,
+    })
+    confirmAccountMappingBatchMock.mockResolvedValue({
+      saved: [{ account_id: 1 }],
+      failed: [],
+      updated_at: '2026-08-01T00:00:00Z',
+    })
+
+    const wrapper = await mountView()
+    const checkbox = wrapper.find<HTMLInputElement>('tbody input[type="checkbox"]')
+    expect(checkbox.element.disabled).toBe(true)
+
+    const groupSelect = wrapper.find<HTMLSelectElement>('tbody select')
+    await groupSelect.setValue('group-b')
+    expect(checkbox.element.disabled).toBe(false)
+    await checkbox.setValue(true)
+
+    const confirmButton = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.confirmSelectedMappings'))
+    expect(confirmButton).toBeTruthy()
+    await confirmButton!.trigger('click')
+    await flushPromises()
+
+    expect(confirmAccountMappingBatchMock).toHaveBeenCalledWith({
+      confirmed: true,
+      items: [{
+        account_id: 1,
+        source_id: 1,
+        source_key_external_id: 'key-1',
+        source_group_external_id: 'group-b',
+        mapping_method: 'auto',
+      }],
+    })
+    wrapper.unmount()
+  })
+
+  it('sends account search, mapping status, and source filters to both views', async () => {
+    const wrapper = await mountView()
+    await wrapper.find<HTMLInputElement>('input[type="search"]').setValue('Account 1')
+    const filterSelects = wrapper.findAll<HTMLSelectElement>('section').at(0)!.findAll('select')
+    await filterSelects[2].setValue('needs_confirmation')
+    await filterSelects[3].setValue('1')
+
+    const applyButton = wrapper.findAll('button').find((button) => button.text().includes('admin.watch.applyFilters'))
+    await applyButton!.trigger('click')
+    await flushPromises()
+
+    const expected = expect.objectContaining({ search: 'Account 1', mapping_status: 'needs_confirmation', source_id: 1 })
+    expect(listAccountMappingsMock).toHaveBeenLastCalledWith(expected)
+    expect(scanAccountMappingsMock).toHaveBeenLastCalledWith(expected)
     wrapper.unmount()
   })
 

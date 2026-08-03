@@ -57,6 +57,85 @@ type CreateUsageCleanupTaskRequest struct {
 	Timezone    string  `json:"timezone"`
 }
 
+type stageGatewayFailoverRefundCandidatesRequest struct {
+	StartAt string `json:"start_at"`
+	EndAt   string `json:"end_at"`
+	UserID  int64  `json:"user_id"`
+	Confirm bool   `json:"confirm"`
+}
+
+func parseGatewayFailoverRefundFilter(startAtRaw, endAtRaw string, userID int64) (service.GatewayFailoverRefundFilter, error) {
+	startAt, err := time.Parse(time.RFC3339, strings.TrimSpace(startAtRaw))
+	if err != nil {
+		return service.GatewayFailoverRefundFilter{}, err
+	}
+	endAt, err := time.Parse(time.RFC3339, strings.TrimSpace(endAtRaw))
+	if err != nil {
+		return service.GatewayFailoverRefundFilter{}, err
+	}
+	filter := service.GatewayFailoverRefundFilter{StartAt: startAt, EndAt: endAt, UserID: userID}
+	if err := filter.Validate(); err != nil {
+		return service.GatewayFailoverRefundFilter{}, err
+	}
+	return filter, nil
+}
+
+// DryRunGatewayFailoverRefunds reports historical failover charges without
+// staging candidates or changing balances and quotas.
+// GET /api/v1/admin/usage/failover-refunds/dry-run
+func (h *UsageHandler) DryRunGatewayFailoverRefunds(c *gin.Context) {
+	if h.usageService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Usage service unavailable")
+		return
+	}
+	var userID int64
+	if raw := strings.TrimSpace(c.Query("user_id")); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			response.BadRequest(c, "Invalid user_id")
+			return
+		}
+		userID = parsed
+	}
+	filter, err := parseGatewayFailoverRefundFilter(c.Query("start_at"), c.Query("end_at"), userID)
+	if err != nil {
+		response.BadRequest(c, "Invalid failover refund range")
+		return
+	}
+	report, err := h.usageService.DryRunGatewayFailoverRefunds(c.Request.Context(), filter)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, report)
+}
+
+// StageGatewayFailoverRefundCandidates snapshots reviewed historical charges as
+// idempotent candidates. It deliberately does not change balances or quotas.
+// POST /api/v1/admin/usage/failover-refunds/candidates
+func (h *UsageHandler) StageGatewayFailoverRefundCandidates(c *gin.Context) {
+	if h.usageService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Usage service unavailable")
+		return
+	}
+	var req stageGatewayFailoverRefundCandidatesRequest
+	if err := c.ShouldBindJSON(&req); err != nil || !req.Confirm {
+		response.BadRequest(c, "Explicit candidate staging confirmation is required")
+		return
+	}
+	filter, err := parseGatewayFailoverRefundFilter(req.StartAt, req.EndAt, req.UserID)
+	if err != nil {
+		response.BadRequest(c, "Invalid failover refund range")
+		return
+	}
+	result, err := h.usageService.StageGatewayFailoverRefundCandidates(c.Request.Context(), filter)
+	if err != nil {
+		response.ErrorFrom(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
 // List handles listing all usage records with filters
 // GET /api/v1/admin/usage
 func (h *UsageHandler) List(c *gin.Context) {

@@ -1014,7 +1014,7 @@ export default {
         statusCodesHint: 'Comma-separated status codes and inclusive ranges, for example 502,524,500-599',
         maxSwitches: 'Maximum account switches',
         maxSwitchesHint: '0 disables switching; 2 allows at most 3 total account attempts',
-        billingHint: 'Every upstream attempt is audited. Failed attempts with 502, 524, or configured 5xx responses are settled immediately from locally estimated input tokens; authentication, rate-limit, and request errors such as 401, 403, 429, and 413 are not charged again.',
+        billingHint: 'Every upstream attempt is audited, but failed attempts never deduct balance, subscription usage, API key quota, or account quota. Only the final successful request is billed from actual usage; failed-attempt tokens are observational estimates only.',
         invalidStatusCodes: 'Invalid status code format. Use a value such as 502,524,500-599',
         invalidMaxSwitches: 'Maximum account switches must be an integer from 0 to 10',
         saved: 'Account failover settings saved',

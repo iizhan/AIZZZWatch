@@ -101,6 +101,7 @@ type watchSourceRequest struct {
 	RequestTimeoutSeconds    int                             `json:"request_timeout_seconds"`
 	KeepaliveEnabled         *bool                           `json:"keepalive_enabled"`
 	KeepaliveIntervalSeconds int                             `json:"keepalive_interval_seconds"`
+	AutoFollowKeyGroup       *bool                           `json:"auto_follow_key_group"`
 	ProfilePath              string                          `json:"profile_path" binding:"omitempty,max=1000"`
 	GroupsPath               string                          `json:"groups_path" binding:"omitempty,max=1000"`
 	RatesPath                string                          `json:"rates_path" binding:"omitempty,max=1000"`
@@ -172,7 +173,8 @@ func (r watchSourceRequest) serviceInput() service.WatchSourceInput {
 		RechargeRatio: r.RechargeRatio, LowBalanceThreshold: r.LowBalanceThreshold,
 		PollingIntervalSeconds: r.PollingIntervalSeconds, RequestTimeoutSeconds: r.RequestTimeoutSeconds,
 		KeepaliveEnabled: r.KeepaliveEnabled, KeepaliveIntervalSeconds: r.KeepaliveIntervalSeconds,
-		ProfilePath: r.ProfilePath, GroupsPath: r.GroupsPath, RatesPath: r.RatesPath,
+		AutoFollowKeyGroup: r.AutoFollowKeyGroup,
+		ProfilePath:        r.ProfilePath, GroupsPath: r.GroupsPath, RatesPath: r.RatesPath,
 		PricingPath: r.PricingPath, KeysPath: r.KeysPath, LoginPath: r.LoginPath,
 		HeartbeatPath: r.HeartbeatPath, ReadMapping: r.ReadMapping,
 		Enabled: enabled, AuthMode: r.AuthMode, LoginUsername: r.LoginUsername,
@@ -510,13 +512,28 @@ func (h *WatchHandler) ListAccountMappings(c *gin.Context) {
 		return
 	}
 	targetGroupID, _ := strconv.ParseInt(c.DefaultQuery("target_group_id", "0"), 10, 64)
+	sourceID, sourceIDErr := strconv.ParseInt(c.DefaultQuery("source_id", "0"), 10, 64)
 	page, pageErr := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, pageSizeErr := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-	if pageErr != nil || pageSizeErr != nil || page < 1 || pageSize < 1 || pageSize > 100 {
+	mappingStatus := strings.TrimSpace(c.Query("mapping_status"))
+	if pageErr != nil || pageSizeErr != nil || sourceIDErr != nil || sourceID < 0 || page < 1 || pageSize < 1 || pageSize > 100 || !validWatchAccountMappingStatus(mappingStatus) {
 		response.BadRequest(c, "invalid watch account mapping pagination")
 		return
 	}
-	view, err := h.watchService.ListAccountMappings(c.Request.Context(), targetGroupID, c.Query("platform"), page, pageSize)
+	search := strings.TrimSpace(c.Query("search"))
+	if len(search) > 200 {
+		response.BadRequest(c, "invalid watch account mapping search")
+		return
+	}
+	view, err := h.watchService.ListAccountMappings(c.Request.Context(), service.WatchAccountMappingListRequest{
+		TargetGroupID: targetGroupID,
+		Platform:      c.Query("platform"),
+		Search:        search,
+		MappingStatus: mappingStatus,
+		SourceID:      sourceID,
+		Page:          page,
+		PageSize:      pageSize,
+	})
 	if err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "Watch account mappings unavailable")
 		return
@@ -534,12 +551,27 @@ func (h *WatchHandler) ScanAccountMappings(c *gin.Context) {
 		response.BadRequest(c, "invalid watch account mapping scan request")
 		return
 	}
+	req.Search = strings.TrimSpace(req.Search)
+	req.MappingStatus = strings.TrimSpace(req.MappingStatus)
+	if req.SourceID < 0 || len(req.Search) > 200 || !validWatchAccountMappingStatus(req.MappingStatus) {
+		response.BadRequest(c, "invalid watch account mapping scan filter")
+		return
+	}
 	result, err := h.watchService.ScanAccountMappings(c.Request.Context(), req, h.watchSourceService.FetchMappingSnapshot)
 	if err != nil {
 		response.Error(c, http.StatusServiceUnavailable, "Watch account mapping scan unavailable")
 		return
 	}
 	response.Success(c, result)
+}
+
+func validWatchAccountMappingStatus(status string) bool {
+	switch status {
+	case "", "mapped", "unmapped", "needs_confirmation":
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *WatchHandler) ConfirmAccountMappingBatch(c *gin.Context) {

@@ -236,6 +236,7 @@ export interface WatchSource {
   read_mapping?: WatchSourceReadMapping
   keepalive_enabled: boolean
   keepalive_interval_seconds: number
+  auto_follow_key_group: boolean
   enabled: boolean
   has_credential: boolean
   has_login_credential: boolean
@@ -287,6 +288,7 @@ export interface WatchSourceInput {
   request_timeout_seconds: number
   keepalive_enabled?: boolean
   keepalive_interval_seconds?: number
+  auto_follow_key_group?: boolean
   profile_path?: string
   groups_path?: string
   rates_path?: string
@@ -498,6 +500,7 @@ export interface WatchAccountUpstreamMapping {
   source_group_external_id?: string
   source_group_name?: string
   mapping_method: 'manual' | 'auto'
+  group_binding_state: 'confirmed' | 'needs_confirmation'
   updated_by?: number
   created_at: string
   updated_at: string
@@ -517,7 +520,7 @@ export interface WatchAccountMappingRow {
   schedulable: boolean
   account_base_url?: string
   mapping?: WatchAccountUpstreamMapping
-  mapping_status: 'mapped' | 'unmapped' | 'auto_match_available'
+  mapping_status: 'mapped' | 'unmapped' | 'auto_match_available' | 'needs_confirmation'
   reason?: string
   in_target_group: boolean
   target_group_id?: number
@@ -556,7 +559,7 @@ export interface WatchAccountMappingCandidate {
   source_group_external_id?: string
   source_group_name?: string
   groups?: WatchAccountMappingCandidateGroup[]
-  status: 'ready' | 'needs_group' | 'multiple_match' | 'unmatched' | 'mapped'
+  status: 'ready' | 'needs_group' | 'multiple_match' | 'unmatched' | 'mapped' | 'needs_confirmation'
   reason?: string
   in_target_group: boolean
   target_group_id?: number
@@ -872,12 +875,20 @@ export async function listPriceChanges(params: {
   return data
 }
 
-export async function listAccountMappings(params: { target_group_id?: number; platform?: string; page?: number; page_size?: number } = {}): Promise<WatchAccountMappingsView> {
+export interface WatchAccountMappingFilters {
+  target_group_id?: number
+  platform?: string
+  search?: string
+  mapping_status?: 'mapped' | 'unmapped' | 'needs_confirmation'
+  source_id?: number
+}
+
+export async function listAccountMappings(params: WatchAccountMappingFilters & { page?: number; page_size?: number } = {}): Promise<WatchAccountMappingsView> {
   const { data } = await apiClient.get<WatchAccountMappingsView>('/admin/watch/account-mappings', { params })
   return data
 }
 
-export async function scanAccountMappings(input: { target_group_id?: number; platform?: string }): Promise<WatchAccountMappingScanResult> {
+export async function scanAccountMappings(input: WatchAccountMappingFilters): Promise<WatchAccountMappingScanResult> {
   const { data } = await apiClient.post<WatchAccountMappingScanResult>('/admin/watch/account-mappings/scan', input)
   return data
 }

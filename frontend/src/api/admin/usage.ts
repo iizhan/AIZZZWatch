@@ -92,6 +92,42 @@ export interface AdminUsageQueryParams extends UsageQueryParams {
   status_code?: number | null
 }
 
+export interface GatewayFailoverRefundCandidate {
+  attempt_id: number
+  refund_key: string
+  user_id: number
+  request_id: string
+  attempt_no: number
+  upstream_status_code?: number
+  billing_status: string
+  candidate_status: 'untracked' | 'candidate' | 'refunded' | 'canceled'
+  original_settled_cost: number
+  refunded_cost: number
+  outstanding_cost: number
+  attempted_at: string
+  refunded_at?: string
+}
+
+export interface GatewayFailoverRefundDryRun {
+  generated_at: string
+  start_at: string
+  end_at: string
+  user_id?: number
+  user_count: number
+  request_count: number
+  attempt_count: number
+  candidate_cost: number
+  refunded_cost: number
+  outstanding_cost: number
+  candidates: GatewayFailoverRefundCandidate[]
+}
+
+export interface GatewayFailoverRefundFilter {
+  start_at: string
+  end_at: string
+  user_id?: number
+}
+
 // ==================== API Functions ====================
 
 /**
@@ -204,6 +240,19 @@ export async function cancelCleanupTask(taskId: number): Promise<{ id: number; s
   return data
 }
 
+export async function dryRunGatewayFailoverRefunds(filter: GatewayFailoverRefundFilter): Promise<GatewayFailoverRefundDryRun> {
+  const { data } = await apiClient.get<GatewayFailoverRefundDryRun>('/admin/usage/failover-refunds/dry-run', { params: filter })
+  return data
+}
+
+export async function stageGatewayFailoverRefundCandidates(filter: GatewayFailoverRefundFilter): Promise<{ staged_count: number; dry_run: GatewayFailoverRefundDryRun }> {
+  const { data } = await apiClient.post<{ staged_count: number; dry_run: GatewayFailoverRefundDryRun }>(
+    '/admin/usage/failover-refunds/candidates',
+    { ...filter, confirm: true },
+  )
+  return data
+}
+
 export const adminUsageAPI = {
   list,
   getStats,
@@ -211,7 +260,9 @@ export const adminUsageAPI = {
   searchApiKeys,
   listCleanupTasks,
   createCleanupTask,
-  cancelCleanupTask
+  cancelCleanupTask,
+  dryRunGatewayFailoverRefunds,
+  stageGatewayFailoverRefundCandidates
 }
 
 export default adminUsageAPI

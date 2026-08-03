@@ -260,7 +260,7 @@ func (h *GatewayHandler) Responses(c *gin.Context) {
 			if errors.As(err, &failoverErr) {
 				// Can't failover if streaming content already sent
 				responseStarted := c.Writer.Size() != writerSizeBeforeForward
-				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+				settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 					apiKey, account, subscription, service.GatewayFailoverEndpointResponses,
 					body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),

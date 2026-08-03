@@ -55,6 +55,7 @@ type watchPreviewSourceRepo struct {
 	finishedRule     *WatchPricingRule
 	reservedAudit    *WatchPriceAudit
 	completedAudit   *WatchPriceAudit
+	savedMapping     *WatchAccountUpstreamMapping
 	finishCalls      int
 }
 
@@ -84,6 +85,11 @@ func (r *watchPreviewSourceRepo) ListAccountUpstreamMappings(ctx context.Context
 		}
 	}
 	return out, nil
+}
+
+func (r *watchPreviewSourceRepo) SaveAccountUpstreamMapping(_ context.Context, mapping WatchAccountUpstreamMapping) (*WatchAccountUpstreamMapping, error) {
+	r.savedMapping = &mapping
+	return &mapping, nil
 }
 
 func (r *watchPreviewSourceRepo) ClaimPricingRuleRun(ctx context.Context, id int64, now time.Time) (*WatchPricingRule, error) {
@@ -135,6 +141,16 @@ type watchPreviewAccountRepo struct {
 	groupCalls    int
 	platformCalls int
 	pageParams    pagination.PaginationParams
+}
+
+func (r *watchPreviewAccountRepo) GetByID(_ context.Context, id int64) (*Account, error) {
+	for i := range r.accounts {
+		if r.accounts[i].ID == id {
+			account := r.accounts[i]
+			return &account, nil
+		}
+	}
+	return nil, ErrAccountNotFound
 }
 
 func (r *watchPreviewAccountRepo) ListSchedulableByGroupID(ctx context.Context, groupID int64) ([]Account, error) {
@@ -881,6 +897,39 @@ func TestScanAccountMappingsFindsUniqueDigestCandidateWithoutSaving(t *testing.T
 	}
 }
 
+func TestScanAccountMappingsSourceFilterNarrowsCandidatesBeforeMatching(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Minute)
+	sourceA := &WatchSource{ID: 1, Name: "Source A", BaseURL: "https://api.upstream.example", RechargeRatio: 1, Enabled: true}
+	sourceB := &WatchSource{ID: 2, Name: "Source B", BaseURL: "https://api.upstream.example", RechargeRatio: 1, Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{sourceA, sourceB},
+		snapshots: map[int64]*WatchSourceSnapshot{
+			1: watchTestSourceSnapshot(sourceA, now, future,
+				[]WatchSourceKeyObservation{{ExternalID: "key-a", Status: "active", GroupExternalIDs: []string{"g1"}, KeyDigest: watchTestDigest("sk-match")}},
+				[]WatchSourceGroupObservation{{ExternalID: "g1", Name: "Group A", ObservedAt: now}}, nil),
+			2: watchTestSourceSnapshot(sourceB, now, future,
+				[]WatchSourceKeyObservation{{ExternalID: "key-b", Status: "active", GroupExternalIDs: []string{"g2"}, KeyDigest: watchTestDigest("sk-match")}},
+				[]WatchSourceGroupObservation{{ExternalID: "g2", Name: "Group B", ObservedAt: now}}, nil),
+		},
+	}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{{
+		ID: 11, Name: "local", Platform: PlatformOpenAI, Status: StatusActive,
+		Credentials: map[string]any{"api_key": "sk-match", "base_url": "https://api.upstream.example/v1"},
+	}}}
+	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
+
+	result, err := svc.ScanAccountMappings(context.Background(), WatchAccountMappingScanRequest{SourceID: 2}, func(_ context.Context, sourceID int64) (*WatchSourceSnapshot, error) {
+		return sourceRepo.snapshots[sourceID], nil
+	})
+	if err != nil {
+		t.Fatalf("ScanAccountMappings() error = %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].Status != "ready" || result.Candidates[0].SourceID != 2 {
+		t.Fatalf("ScanAccountMappings() = %#v, want source-filtered ready candidate", result)
+	}
+}
+
 func TestScanAccountMappingsExplainsMissingComparableKeyDigest(t *testing.T) {
 	now := time.Now().UTC()
 	future := now.Add(time.Minute)
@@ -916,6 +965,68 @@ func TestScanAccountMappingsExplainsMissingComparableKeyDigest(t *testing.T) {
 	}
 }
 
+func TestScanAccountMappingsSurfacesPendingGroupConfirmation(t *testing.T) {
+	now := time.Now().UTC()
+	account := Account{ID: 11, Name: "account", Platform: PlatformOpenAI}
+	source := &WatchSource{ID: 1, Name: "source", RechargeRatio: 1, Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{source},
+		snapshots: map[int64]*WatchSourceSnapshot{
+			1: watchTestSourceSnapshot(source, now, now.Add(time.Minute),
+				[]WatchSourceKeyObservation{{ExternalID: "key-a", Label: "Key A", Status: "active", GroupExternalIDs: []string{"g2"}, ObservedAt: now}},
+				[]WatchSourceGroupObservation{{ExternalID: "g2", Name: "Group 2", RateMultiplier: 0.3, ObservedAt: now}}, nil),
+		},
+		mappings: []WatchAccountUpstreamMapping{{
+			AccountID: 11, SourceID: 1, SourceName: "source", SourceKeyExternalID: "key-a",
+			SourceGroupExternalID: "g1", GroupBindingState: "needs_confirmation",
+		}},
+	}
+	svc := NewWatchService(&watchPreviewAccountRepo{accounts: []Account{account}}, nil, nil, sourceRepo, nil, nil)
+
+	result, err := svc.ScanAccountMappings(context.Background(), WatchAccountMappingScanRequest{}, func(_ context.Context, sourceID int64) (*WatchSourceSnapshot, error) {
+		return sourceRepo.snapshots[sourceID], nil
+	})
+	if err != nil {
+		t.Fatalf("ScanAccountMappings() error = %v", err)
+	}
+	if len(result.Candidates) != 1 || result.Candidates[0].Status != "needs_confirmation" {
+		t.Fatalf("ScanAccountMappings() = %#v, want pending confirmation candidate", result)
+	}
+	if result.ReadyCount != 1 || result.AmbiguousCount != 0 || result.MappedCount != 0 {
+		t.Fatalf("ScanAccountMappings() counts = ready %d ambiguous %d mapped %d", result.ReadyCount, result.AmbiguousCount, result.MappedCount)
+	}
+	candidate := result.Candidates[0]
+	if candidate.SourceGroupExternalID != "g2" || candidate.SourceGroupName != "Group 2" || len(candidate.Groups) != 1 {
+		t.Fatalf("pending candidate = %#v, want latest single group ready for explicit confirmation", candidate)
+	}
+}
+
+func TestScanAccountMappingsPendingGroupConfirmationRequiresChoiceForMultipleGroups(t *testing.T) {
+	now := time.Now().UTC()
+	source := &WatchSource{ID: 1, Name: "source", RechargeRatio: 1, Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{source},
+		snapshots: map[int64]*WatchSourceSnapshot{
+			1: watchTestSourceSnapshot(source, now, now.Add(time.Minute),
+				[]WatchSourceKeyObservation{{ExternalID: "key-a", Status: "active", GroupExternalIDs: []string{"g2", "g3"}, ObservedAt: now}},
+				[]WatchSourceGroupObservation{{ExternalID: "g2", Name: "Group 2"}, {ExternalID: "g3", Name: "Group 3"}}, nil),
+		},
+		mappings: []WatchAccountUpstreamMapping{{AccountID: 11, SourceID: 1, SourceKeyExternalID: "key-a", SourceGroupExternalID: "g1", GroupBindingState: "needs_confirmation"}},
+	}
+	svc := NewWatchService(&watchPreviewAccountRepo{accounts: []Account{{ID: 11, Name: "account", Platform: PlatformOpenAI}}}, nil, nil, sourceRepo, nil, nil)
+
+	result, err := svc.ScanAccountMappings(context.Background(), WatchAccountMappingScanRequest{}, func(_ context.Context, sourceID int64) (*WatchSourceSnapshot, error) {
+		return sourceRepo.snapshots[sourceID], nil
+	})
+	if err != nil {
+		t.Fatalf("ScanAccountMappings() error = %v", err)
+	}
+	candidate := result.Candidates[0]
+	if candidate.Status != "needs_confirmation" || candidate.SourceGroupExternalID != "" || len(candidate.Groups) != 2 {
+		t.Fatalf("pending candidate = %#v, want explicit choice among current groups", candidate)
+	}
+}
+
 func TestListAccountMappingsMarksAccountsOutsideTargetGroup(t *testing.T) {
 	sourceRepo := &watchPreviewSourceRepo{sources: []*WatchSource{}}
 	accountRepo := &watchPreviewAccountRepo{accounts: []Account{
@@ -923,7 +1034,7 @@ func TestListAccountMappingsMarksAccountsOutsideTargetGroup(t *testing.T) {
 	}}
 	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
 
-	view, err := svc.ListAccountMappings(context.Background(), 7, PlatformOpenAI, 1, 20)
+	view, err := svc.ListAccountMappings(context.Background(), WatchAccountMappingListRequest{TargetGroupID: 7, Platform: PlatformOpenAI, Page: 1, PageSize: 20})
 
 	if err != nil {
 		t.Fatalf("ListAccountMappings() error = %v", err)
@@ -946,7 +1057,7 @@ func TestListAccountMappingsReturnsRequestedPageAndTotal(t *testing.T) {
 	}}
 	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
 
-	view, err := svc.ListAccountMappings(context.Background(), 0, PlatformOpenAI, 2, 1)
+	view, err := svc.ListAccountMappings(context.Background(), WatchAccountMappingListRequest{Platform: PlatformOpenAI, Page: 2, PageSize: 1})
 	if err != nil {
 		t.Fatalf("ListAccountMappings() error = %v", err)
 	}
@@ -958,6 +1069,35 @@ func TestListAccountMappingsReturnsRequestedPageAndTotal(t *testing.T) {
 	}
 	if accountRepo.pageParams.SortBy != "priority" || accountRepo.pageParams.SortOrder != pagination.SortOrderAsc {
 		t.Fatalf("page params = %#v, want stable priority ordering", accountRepo.pageParams)
+	}
+}
+
+func TestListAccountMappingsFiltersBySearchStatusAndSourceBeforePagination(t *testing.T) {
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{{ID: 1, Name: "Source A"}, {ID: 2, Name: "Source B"}},
+		mappings: []WatchAccountUpstreamMapping{
+			{AccountID: 11, SourceID: 1, GroupBindingState: "confirmed"},
+			{AccountID: 12, SourceID: 2, GroupBindingState: "needs_confirmation"},
+		},
+	}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{
+		{ID: 11, Name: "first", Platform: PlatformOpenAI, Status: StatusActive},
+		{ID: 12, Name: "second", Platform: PlatformOpenAI, Status: StatusActive, Credentials: map[string]any{"base_url": "https://second.example/v1"}},
+		{ID: 13, Name: "third", Platform: PlatformOpenAI, Status: StatusActive},
+	}}
+	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
+
+	view, err := svc.ListAccountMappings(context.Background(), WatchAccountMappingListRequest{
+		Platform: PlatformOpenAI, Search: "second.example", MappingStatus: "needs_confirmation", SourceID: 2, Page: 1, PageSize: 20,
+	})
+	if err != nil {
+		t.Fatalf("ListAccountMappings() error = %v", err)
+	}
+	if len(view.Accounts) != 1 || view.Accounts[0].AccountID != 12 {
+		t.Fatalf("Accounts = %#v, want matching pending mapping", view.Accounts)
+	}
+	if view.Total != 1 || view.Page != 1 || view.Pages != 1 {
+		t.Fatalf("pagination = total:%d page:%d pages:%d, want filtered total", view.Total, view.Page, view.Pages)
 	}
 }
 
@@ -976,5 +1116,53 @@ func TestWatchURLHostKeyNormalizesComparableHosts(t *testing.T) {
 		if got := watchURLHostKey(test.raw); got != test.want {
 			t.Fatalf("watchURLHostKey(%q) = %q, want %q", test.raw, got, test.want)
 		}
+	}
+}
+
+func TestSaveAccountMappingConfirmsCurrentSourceKeyGroupSet(t *testing.T) {
+	now := time.Now().UTC()
+	source := &WatchSource{ID: 1, Name: "source", Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{snapshots: map[int64]*WatchSourceSnapshot{
+		1: {
+			Source: source,
+			SourceKeys: []WatchSourceKeyObservation{{
+				ExternalID: "key-a", Label: "Key A", Status: "active",
+				GroupExternalIDs: []string{"g2", "g1", "g2"}, ObservedAt: now,
+			}},
+			Groups: []WatchSourceGroupObservation{
+				{ExternalID: "g1", Name: "Group 1"},
+				{ExternalID: "g2", Name: "Group 2"},
+			},
+		},
+	}}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{{ID: 11, Name: "account", Platform: PlatformOpenAI}}}
+	svc := NewWatchService(accountRepo, nil, nil, sourceRepo, nil, nil)
+
+	_, err := svc.SaveAccountMapping(context.Background(), WatchAccountMappingInput{
+		AccountID: 11, SourceID: 1, SourceKeyExternalID: "key-a", SourceGroupExternalID: "g1", MappingMethod: "manual",
+	}, 7)
+	if err != nil {
+		t.Fatalf("SaveAccountMapping() error = %v", err)
+	}
+	if sourceRepo.savedMapping == nil {
+		t.Fatal("SaveAccountMapping() did not persist mapping")
+	}
+	if sourceRepo.savedMapping.GroupBindingState != "confirmed" {
+		t.Fatalf("GroupBindingState = %q, want confirmed", sourceRepo.savedMapping.GroupBindingState)
+	}
+	if got := strings.Join(sourceRepo.savedMapping.ConfirmedGroupExternalIDs, ","); got != "g1,g2" {
+		t.Fatalf("ConfirmedGroupExternalIDs = %q, want g1,g2", got)
+	}
+	if sourceRepo.savedMapping.SourceKeyObservedAt == nil || !sourceRepo.savedMapping.SourceKeyObservedAt.Equal(now) {
+		t.Fatalf("SourceKeyObservedAt = %v, want %v", sourceRepo.savedMapping.SourceKeyObservedAt, now)
+	}
+}
+
+func TestWatchResolveMappedSourceGroupFreezesPendingConfirmation(t *testing.T) {
+	key, group, reason := watchResolveMappedSourceGroup(&WatchSourceSnapshot{}, WatchAccountUpstreamMapping{
+		SourceKeyExternalID: "key-a", SourceGroupExternalID: "g1", GroupBindingState: "needs_confirmation",
+	})
+	if key != nil || group != nil || reason != "source key group assignment changed; confirmation required" {
+		t.Fatalf("watchResolveMappedSourceGroup() = (%#v, %#v, %q)", key, group, reason)
 	}
 }

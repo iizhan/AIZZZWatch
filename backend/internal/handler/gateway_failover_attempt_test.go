@@ -16,20 +16,21 @@ import (
 
 type gatewayFailoverAttemptRecorderStub struct {
 	attempts []*service.GatewayFailoverAttempt
+	err      error
 }
 
 func (r *gatewayFailoverAttemptRecorderStub) RecordGatewayFailoverAttempt(_ context.Context, attempt *service.GatewayFailoverAttempt) error {
 	r.attempts = append(r.attempts, attempt)
-	return nil
+	return r.err
 }
 
-type gatewayFailoverAttemptChargerStub struct {
+type gatewayFailoverAttemptObserverStub struct {
 	inputs []*service.GatewayFailoverChargeInput
 	result *service.GatewayFailoverChargeResult
 	err    error
 }
 
-func (s *gatewayFailoverAttemptChargerStub) ChargeGatewayFailoverAttempt(_ context.Context, input *service.GatewayFailoverChargeInput) (*service.GatewayFailoverChargeResult, error) {
+func (s *gatewayFailoverAttemptObserverStub) ObserveGatewayFailoverAttempt(_ context.Context, input *service.GatewayFailoverChargeInput) (*service.GatewayFailoverChargeResult, error) {
 	s.inputs = append(s.inputs, input)
 	return s.result, s.err
 }
@@ -59,7 +60,7 @@ func TestGatewayFailoverStateFailsClosedWhenSettingsAreUnavailable(t *testing.T)
 	))
 }
 
-func TestGatewayFailoverAttemptHeadersReflectSettledCharge(t *testing.T) {
+func TestGatewayFailoverAttemptHeadersReflectNonBillableAudit(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -69,61 +70,71 @@ func TestGatewayFailoverAttemptHeadersReflectSettledCharge(t *testing.T) {
 	meta := newGatewayFailoverAttemptMeta(c, 11, 22, nil, "payload-hash")
 	require.Equal(t, "local:req-test-failover", meta.RequestID)
 	require.Equal(t, meta.RequestID, c.Writer.Header().Get(failoverRequestIDHeader))
-	startedAt := beginGatewayFailoverAttempt(c, 2, true)
+	startedAt := beginGatewayFailoverAttempt(c, 2, false)
 	require.Equal(t, "2", c.Writer.Header().Get(failoverAttemptsHeader))
-	require.Equal(t, service.GatewayFailoverBillingSettled, c.Writer.Header().Get(failoverBillingHeader))
+	require.Equal(t, service.GatewayFailoverBillingStandardUsage, c.Writer.Header().Get(failoverBillingHeader))
 
 	recordSink := &gatewayFailoverAttemptRecorderStub{}
 	pending := recordGatewayFailoverAttempt(recordSink, context.Background(), meta, 33, 2,
 		startedAt.Add(-time.Second), &service.UpstreamFailoverError{StatusCode: 524}, false)
-	require.True(t, pending)
+	require.False(t, pending)
 	require.Len(t, recordSink.attempts, 1)
 	require.Equal(t, "failed", recordSink.attempts[0].State)
-	require.Equal(t, service.GatewayFailoverBillingPendingReconciliation, recordSink.attempts[0].BillingStatus)
+	require.Equal(t, service.GatewayFailoverBillingNotBillable, recordSink.attempts[0].BillingStatus)
 	require.Equal(t, 524, *recordSink.attempts[0].UpstreamStatusCode)
 }
 
-func TestFailoverAttemptAfterStreamStartRequiresReconciliation(t *testing.T) {
-	require.True(t, failoverAttemptNeedsReconciliation(http.StatusForbidden, true))
-	require.False(t, failoverAttemptNeedsReconciliation(http.StatusTooManyRequests, false))
+func TestRecordGatewayFailoverAttemptWithoutAuditRepositoryNeverSignalsSettlement(t *testing.T) {
+	pending := recordGatewayFailoverAttempt(
+		nil,
+		context.Background(),
+		gatewayFailoverAttemptMeta{RequestID: "local:req-no-audit"},
+		33,
+		1,
+		time.Now(),
+		&service.UpstreamFailoverError{StatusCode: http.StatusBadGateway},
+		true,
+	)
+
+	require.False(t, pending)
 }
 
-func TestSettleGatewayFailoverAttemptCharges502BeforeReplay(t *testing.T) {
+func TestRecordGatewayFailoverAttemptObserves502WithoutCharging(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	meta := gatewayFailoverAttemptMeta{RequestID: "local:req-charge", RequestFingerprint: "hash", UserID: 11, APIKeyID: 22}
 	recorder := &gatewayFailoverAttemptRecorderStub{}
-	charger := &gatewayFailoverAttemptChargerStub{result: &service.GatewayFailoverChargeResult{
-		Applied: true, InputTokens: 42, EstimatedCost: 0.01, BillingStatus: service.GatewayFailoverBillingSettled,
+	observer := &gatewayFailoverAttemptObserverStub{result: &service.GatewayFailoverChargeResult{
+		Applied: false, InputTokens: 42, EstimatedCost: 0, BillingStatus: service.GatewayFailoverBillingNotBillable,
 	}}
 	statusErr := &service.UpstreamFailoverError{StatusCode: http.StatusBadGateway}
 	apiKey := &service.APIKey{ID: 22, User: &service.User{ID: 11}}
 	account := &service.Account{ID: 33}
 
-	settled, err := settleGatewayFailoverAttemptBeforeReplay(
-		c, recorder, charger, context.Background(), meta, apiKey, account, nil,
+	settled, err := recordGatewayFailoverAttemptBeforeReplay(
+		c, recorder, observer, context.Background(), meta, apiKey, account, nil,
 		service.GatewayFailoverEndpointResponses, []byte(`{"model":"gpt-4o","input":"hello"}`),
 		"gpt-4o", "gpt-4o", "", service.PlatformOpenAI, 1, time.Now(), statusErr, false,
 	)
 
 	require.NoError(t, err)
-	require.True(t, settled)
-	require.Len(t, charger.inputs, 1)
-	require.Equal(t, service.GatewayFailoverEndpointResponses, charger.inputs[0].Endpoint)
-	require.Equal(t, service.GatewayFailoverBillingSettled, c.Writer.Header().Get(failoverBillingHeader))
-	require.Empty(t, recorder.attempts, "atomic settlement owns the attempt row")
+	require.False(t, settled)
+	require.Len(t, observer.inputs, 1)
+	require.Equal(t, service.GatewayFailoverEndpointResponses, observer.inputs[0].Endpoint)
+	require.Equal(t, service.GatewayFailoverBillingNotBillable, c.Writer.Header().Get(failoverBillingHeader))
+	require.Empty(t, recorder.attempts, "observer owns the attempt row")
 }
 
-func TestSettleGatewayFailoverAttemptDoesNotChargeAuthenticationFailure(t *testing.T) {
+func TestRecordGatewayFailoverAttemptDoesNotEstimateAuthenticationFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	meta := gatewayFailoverAttemptMeta{RequestID: "local:req-auth", RequestFingerprint: "hash", UserID: 11, APIKeyID: 22}
 	recorder := &gatewayFailoverAttemptRecorderStub{}
-	charger := &gatewayFailoverAttemptChargerStub{}
+	observer := &gatewayFailoverAttemptObserverStub{}
 	statusErr := &service.UpstreamFailoverError{StatusCode: http.StatusUnauthorized}
 
-	settled, err := settleGatewayFailoverAttemptBeforeReplay(
-		c, recorder, charger, context.Background(), meta,
+	settled, err := recordGatewayFailoverAttemptBeforeReplay(
+		c, recorder, observer, context.Background(), meta,
 		&service.APIKey{ID: 22, User: &service.User{ID: 11}}, &service.Account{ID: 33}, nil,
 		service.GatewayFailoverEndpointMessages, []byte(`{"model":"claude-sonnet-4","messages":[]}`),
 		"claude-sonnet-4", "claude-sonnet-4", "", service.PlatformAnthropic, 1, time.Now(), statusErr, false,
@@ -131,29 +142,94 @@ func TestSettleGatewayFailoverAttemptDoesNotChargeAuthenticationFailure(t *testi
 
 	require.NoError(t, err)
 	require.False(t, settled)
-	require.Empty(t, charger.inputs)
+	require.Empty(t, observer.inputs)
 	require.Len(t, recorder.attempts, 1)
 	require.Equal(t, service.GatewayFailoverBillingNotBillable, recorder.attempts[0].BillingStatus)
 }
 
-func TestSettleGatewayFailoverAttemptStopsReplayWhenBillingFails(t *testing.T) {
+func TestRecordGatewayFailoverAttemptAuditFailureDoesNotStopAuthenticationReplay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	meta := gatewayFailoverAttemptMeta{RequestID: "local:req-auth-audit-error", RequestFingerprint: "hash", UserID: 11, APIKeyID: 22}
+	recorder := &gatewayFailoverAttemptRecorderStub{err: errors.New("audit unavailable")}
+
+	settled, err := recordGatewayFailoverAttemptBeforeReplay(
+		c, recorder, nil, context.Background(), meta,
+		&service.APIKey{ID: 22, User: &service.User{ID: 11}}, &service.Account{ID: 33}, nil,
+		service.GatewayFailoverEndpointMessages, []byte(`{"model":"claude-sonnet-4","messages":[]}`),
+		"claude-sonnet-4", "claude-sonnet-4", "", service.PlatformAnthropic, 1, time.Now(),
+		&service.UpstreamFailoverError{StatusCode: http.StatusUnauthorized}, false,
+	)
+
+	require.NoError(t, err)
+	require.False(t, settled)
+	require.Len(t, recorder.attempts, 1)
+	require.Equal(t, service.GatewayFailoverBillingNotBillable, c.Writer.Header().Get(failoverBillingHeader))
+}
+
+func TestRecordGatewayFailoverAttemptAuditFailureDoesNotStopReplay(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	meta := gatewayFailoverAttemptMeta{RequestID: "local:req-billing-error", RequestFingerprint: "hash", UserID: 11, APIKeyID: 22}
 	recorder := &gatewayFailoverAttemptRecorderStub{}
-	charger := &gatewayFailoverAttemptChargerStub{err: errors.New("transaction failed")}
+	observer := &gatewayFailoverAttemptObserverStub{err: errors.New("transaction failed")}
 
-	settled, err := settleGatewayFailoverAttemptBeforeReplay(
-		c, recorder, charger, context.Background(), meta,
+	settled, err := recordGatewayFailoverAttemptBeforeReplay(
+		c, recorder, observer, context.Background(), meta,
 		&service.APIKey{ID: 22, User: &service.User{ID: 11}}, &service.Account{ID: 33}, nil,
 		service.GatewayFailoverEndpointEmbeddings, []byte(`{"model":"text-embedding-3-small","input":"hello"}`),
 		"text-embedding-3-small", "text-embedding-3-small", "", service.PlatformOpenAI, 1, time.Now(),
 		&service.UpstreamFailoverError{StatusCode: 524}, false,
 	)
 
-	require.ErrorContains(t, err, "transaction failed")
+	require.NoError(t, err)
 	require.False(t, settled)
-	require.Len(t, recorder.attempts, 1)
-	require.Equal(t, service.GatewayFailoverBillingReleased, recorder.attempts[0].BillingStatus)
-	require.Equal(t, service.GatewayFailoverBillingReleased, c.Writer.Header().Get(failoverBillingHeader))
+	require.Empty(t, recorder.attempts)
+	require.Equal(t, service.GatewayFailoverBillingNotBillable, c.Writer.Header().Get(failoverBillingHeader))
+}
+
+func TestRecordGatewayFailoverAttemptStatusesAreAlwaysNonBillable(t *testing.T) {
+	tests := []struct {
+		status          int
+		expectsEstimate bool
+	}{
+		{status: http.StatusUnauthorized},
+		{status: http.StatusForbidden},
+		{status: http.StatusTooManyRequests},
+		{status: http.StatusBadGateway, expectsEstimate: true},
+		{status: http.StatusServiceUnavailable, expectsEstimate: true},
+		{status: 520, expectsEstimate: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(http.StatusText(tt.status), func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			recorder := &gatewayFailoverAttemptRecorderStub{}
+			observer := &gatewayFailoverAttemptObserverStub{result: &service.GatewayFailoverChargeResult{
+				BillingStatus: service.GatewayFailoverBillingNotBillable,
+			}}
+
+			settled, err := recordGatewayFailoverAttemptBeforeReplay(
+				c, recorder, observer, context.Background(),
+				gatewayFailoverAttemptMeta{RequestID: "local:req-status", RequestFingerprint: "hash", UserID: 11, APIKeyID: 22},
+				&service.APIKey{ID: 22, User: &service.User{ID: 11}}, &service.Account{ID: 33}, nil,
+				service.GatewayFailoverEndpointResponses, []byte(`{"model":"gpt-4o","input":"hello"}`),
+				"gpt-4o", "gpt-4o", "", service.PlatformOpenAI, 1, time.Now(),
+				&service.UpstreamFailoverError{StatusCode: tt.status}, false,
+			)
+
+			require.NoError(t, err)
+			require.False(t, settled)
+			require.Equal(t, service.GatewayFailoverBillingNotBillable, c.Writer.Header().Get(failoverBillingHeader))
+			if tt.expectsEstimate {
+				require.Len(t, observer.inputs, 1)
+				require.Empty(t, recorder.attempts)
+			} else {
+				require.Empty(t, observer.inputs)
+				require.Len(t, recorder.attempts, 1)
+				require.Equal(t, service.GatewayFailoverBillingNotBillable, recorder.attempts[0].BillingStatus)
+			}
+		})
+	}
 }

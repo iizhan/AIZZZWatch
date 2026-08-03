@@ -279,7 +279,7 @@ func (h *GatewayHandler) ChatCompletions(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				responseStarted := c.Writer.Size() != writerSizeBeforeForward
-				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+				settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 					apiKey, account, subscription, service.GatewayFailoverEndpointChatCompletions,
 					body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),

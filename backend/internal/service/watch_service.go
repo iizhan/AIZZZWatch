@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -419,11 +420,24 @@ type watchMappingAccountPager interface {
 	ListWatchMappingAccountPage(ctx context.Context, params pagination.PaginationParams, platform string) ([]Account, *pagination.PaginationResult, error)
 }
 
-func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID int64, platform string, page, pageSize int) (*WatchAccountMappingsView, error) {
+func (s *WatchService) ListAccountMappings(ctx context.Context, req WatchAccountMappingListRequest) (*WatchAccountMappingsView, error) {
 	if s == nil || s.accounts == nil || s.sources == nil {
 		return nil, fmt.Errorf("watch account mapping service is unavailable")
 	}
-	accounts, pageResult, err := s.listMappingAccountPage(ctx, targetGroupID, platform, page, pageSize)
+	req.Platform = strings.TrimSpace(req.Platform)
+	req.Search = strings.TrimSpace(req.Search)
+	req.MappingStatus = strings.TrimSpace(req.MappingStatus)
+	advancedFilter := req.Search != "" || req.MappingStatus != "" || req.SourceID > 0
+	var (
+		accounts   []Account
+		pageResult *pagination.PaginationResult
+		err        error
+	)
+	if advancedFilter {
+		accounts, err = s.listMappingAccounts(ctx, req.TargetGroupID, req.Platform, req.Search)
+	} else {
+		accounts, pageResult, err = s.listMappingAccountPage(ctx, req.TargetGroupID, req.Platform, req.Page, req.PageSize)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("list watch mapping accounts: %w", err)
 	}
@@ -450,10 +464,15 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID in
 			Schedulable: account.IsSchedulable(), AccountBaseURL: watchPrimaryAccountBaseURL(&account),
 			MappingStatus: "unmapped",
 		}
-		applyWatchAccountMappingParticipation(&row, account, targetGroupID)
+		applyWatchAccountMappingParticipation(&row, account, req.TargetGroupID)
 		if mapping, ok := mappingByAccount[account.ID]; ok {
 			row.Mapping = &mapping
-			row.MappingStatus = "mapped"
+			if mapping.GroupBindingState == "needs_confirmation" {
+				row.MappingStatus = "needs_confirmation"
+				row.Reason = "source key group assignment changed; confirmation required"
+			} else {
+				row.MappingStatus = "mapped"
+			}
 			rows = append(rows, row)
 			continue
 		}
@@ -464,8 +483,21 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID in
 		}
 		rows = append(rows, row)
 	}
+	if advancedFilter {
+		rows = filterWatchAccountMappingRows(rows, req.MappingStatus, req.SourceID)
+		pageResult = watchMappingPaginationResult(len(rows), req.Page, req.PageSize)
+		start := (pageResult.Page - 1) * pageResult.PageSize
+		end := start + pageResult.PageSize
+		if start > len(rows) {
+			start = len(rows)
+		}
+		if end > len(rows) {
+			end = len(rows)
+		}
+		rows = rows[start:end]
+	}
 	return &WatchAccountMappingsView{
-		TargetGroupID: targetGroupID,
+		TargetGroupID: req.TargetGroupID,
 		GeneratedAt:   time.Now().UTC(),
 		Accounts:      rows,
 		Sources:       sources,
@@ -474,6 +506,37 @@ func (s *WatchService) ListAccountMappings(ctx context.Context, targetGroupID in
 		PageSize:      pageResult.PageSize,
 		Pages:         pageResult.Pages,
 	}, nil
+}
+
+func filterWatchAccountMappingRows(rows []WatchAccountMappingRow, mappingStatus string, sourceID int64) []WatchAccountMappingRow {
+	filtered := make([]WatchAccountMappingRow, 0, len(rows))
+	for _, row := range rows {
+		if mappingStatus != "" && row.MappingStatus != mappingStatus {
+			continue
+		}
+		if sourceID > 0 && (row.Mapping == nil || row.Mapping.SourceID != sourceID) {
+			continue
+		}
+		filtered = append(filtered, row)
+	}
+	return filtered
+}
+
+func watchMappingPaginationResult(total, page, pageSize int) *pagination.PaginationResult {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	pages := 0
+	if total > 0 {
+		pages = (total + pageSize - 1) / pageSize
+		if page > pages {
+			page = pages
+		}
+	}
+	return &pagination.PaginationResult{Total: int64(total), Page: page, PageSize: pageSize, Pages: pages}
 }
 
 func (s *WatchService) SaveAccountMapping(ctx context.Context, input WatchAccountMappingInput, actorUserID int64) (*WatchAccountUpstreamMapping, error) {
@@ -535,7 +598,12 @@ func (s *WatchService) SaveAccountMapping(ctx context.Context, input WatchAccoun
 		AccountID: input.AccountID, AccountName: account.Name, Platform: account.Platform,
 		SourceID: input.SourceID, SourceName: snapshot.Source.Name,
 		SourceKeyExternalID: input.SourceKeyExternalID, SourceKeyLabel: key.Label,
-		SourceGroupExternalID: input.SourceGroupExternalID, MappingMethod: method, UpdatedBy: &actor,
+		SourceGroupExternalID: input.SourceGroupExternalID, MappingMethod: method,
+		GroupBindingState: "confirmed", ConfirmedGroupExternalIDs: normalizeWatchGroupExternalIDs(key.GroupExternalIDs),
+		SourceKeyObservedAt: &key.ObservedAt, UpdatedBy: &actor,
+	}
+	if len(mapping.ConfirmedGroupExternalIDs) == 0 {
+		mapping.ConfirmedGroupExternalIDs = []string{input.SourceGroupExternalID}
 	}
 	if input.SourceGroupExternalID != "" {
 		if group := watchFindSourceGroup(snapshot.Groups, input.SourceGroupExternalID); group != nil {
@@ -559,7 +627,7 @@ func (s *WatchService) ScanAccountMappings(ctx context.Context, req WatchAccount
 	if s == nil || s.accounts == nil || s.sources == nil || loadLiveSnapshot == nil {
 		return nil, fmt.Errorf("watch account mapping scanner is unavailable")
 	}
-	accounts, err := s.listMappingAccounts(ctx, req.TargetGroupID, req.Platform)
+	accounts, err := s.listMappingAccounts(ctx, req.TargetGroupID, req.Platform, req.Search)
 	if err != nil {
 		return nil, err
 	}
@@ -578,6 +646,15 @@ func (s *WatchService) ScanAccountMappings(ctx context.Context, req WatchAccount
 	sources, err := s.sources.ListSources(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list watch sources for mapping scan: %w", err)
+	}
+	if req.SourceID > 0 {
+		filteredSources := make([]*WatchSource, 0, 1)
+		for _, source := range sources {
+			if source != nil && source.ID == req.SourceID {
+				filteredSources = append(filteredSources, source)
+			}
+		}
+		sources = filteredSources
 	}
 	snapshotCache := map[int64]*WatchSourceSnapshot{}
 	loadSnapshot := func(sourceID int64) (*WatchSourceSnapshot, error) {
@@ -598,9 +675,18 @@ func (s *WatchService) ScanAccountMappings(ctx context.Context, req WatchAccount
 	}
 	for _, account := range accounts {
 		candidate := s.scanOneAccountMapping(ctx, account, mappingByAccount, sources, req.TargetGroupID, loadSnapshot)
+		if !watchAccountMappingCandidateMatchesFilter(candidate, req.MappingStatus, req.SourceID) {
+			continue
+		}
 		switch candidate.Status {
 		case "ready":
 			result.ReadyCount++
+		case "needs_confirmation":
+			if candidate.SourceGroupExternalID != "" {
+				result.ReadyCount++
+			} else {
+				result.AmbiguousCount++
+			}
 		case "needs_group", "multiple_match":
 			result.AmbiguousCount++
 		case "mapped":
@@ -619,14 +705,17 @@ func (s *WatchService) scanOneAccountMapping(ctx context.Context, account Accoun
 	}
 	applyWatchAccountMappingCandidateParticipation(&out, account, targetGroupID)
 	if mapping, ok := mappingByAccount[account.ID]; ok {
-		out.Status = "mapped"
-		out.SourceID = mapping.SourceID
-		out.SourceName = mapping.SourceName
-		out.SourceKeyExternalID = mapping.SourceKeyExternalID
-		out.SourceKeyLabel = mapping.SourceKeyLabel
-		out.SourceGroupExternalID = mapping.SourceGroupExternalID
-		out.SourceGroupName = mapping.SourceGroupName
-		return out
+		if mapping.GroupBindingState != "needs_confirmation" {
+			out.Status = "mapped"
+			out.SourceID = mapping.SourceID
+			out.SourceName = mapping.SourceName
+			out.SourceKeyExternalID = mapping.SourceKeyExternalID
+			out.SourceKeyLabel = mapping.SourceKeyLabel
+			out.SourceGroupExternalID = mapping.SourceGroupExternalID
+			out.SourceGroupName = mapping.SourceGroupName
+			return out
+		}
+		return watchNeedsConfirmationCandidate(out, mapping, loadSnapshot)
 	}
 	accountHosts := watchAccountSourceHostKeys([]Account{account})
 	if len(accountHosts) == 0 {
@@ -733,6 +822,59 @@ func (s *WatchService) scanOneAccountMapping(ctx context.Context, account Accoun
 	return out
 }
 
+func watchNeedsConfirmationCandidate(out WatchAccountMappingCandidate, mapping WatchAccountUpstreamMapping, loadSnapshot func(int64) (*WatchSourceSnapshot, error)) WatchAccountMappingCandidate {
+	out.Status = "needs_confirmation"
+	out.Reason = "source key group assignment changed; confirmation required"
+	out.SourceID = mapping.SourceID
+	out.SourceName = mapping.SourceName
+	out.SourceKeyExternalID = mapping.SourceKeyExternalID
+	out.SourceKeyLabel = mapping.SourceKeyLabel
+
+	snapshot, err := loadSnapshot(mapping.SourceID)
+	if err != nil || snapshot == nil {
+		out.Reason = "source scan failed"
+		return out
+	}
+	key := watchFindSourceKey(snapshot.SourceKeys, mapping.SourceKeyExternalID)
+	if key == nil {
+		out.Reason = "source key observation is unavailable"
+		return out
+	}
+	if !WatchSourceKeyIsActive(key.Status) {
+		out.Reason = "source key is not active"
+		return out
+	}
+	out.SourceKeyLabel = key.Label
+	out.Groups = watchCandidateGroupsForKey(snapshot, *key)
+	if len(out.Groups) == 0 {
+		out.Reason = "source key group observation is unavailable"
+		return out
+	}
+	if len(out.Groups) == 1 {
+		out.SourceGroupExternalID = out.Groups[0].ExternalID
+		out.SourceGroupName = out.Groups[0].Name
+	}
+	return out
+}
+
+func watchAccountMappingCandidateMatchesFilter(candidate WatchAccountMappingCandidate, mappingStatus string, sourceID int64) bool {
+	if sourceID > 0 && candidate.SourceID != sourceID {
+		return false
+	}
+	switch mappingStatus {
+	case "":
+		return true
+	case "mapped":
+		return candidate.Status == "mapped"
+	case "needs_confirmation":
+		return candidate.Status == "ready" || candidate.Status == "needs_group" || candidate.Status == "needs_confirmation" || candidate.Status == "multiple_match"
+	case "unmapped":
+		return candidate.Status == "unmatched"
+	default:
+		return false
+	}
+}
+
 func watchCandidateGroupsForKey(snapshot *WatchSourceSnapshot, key WatchSourceKeyObservation) []WatchAccountMappingCandidateGroup {
 	if snapshot == nil || snapshot.Source == nil {
 		return nil
@@ -789,20 +931,26 @@ func (s *WatchService) ConfirmAccountMappingBatch(ctx context.Context, req Watch
 	return result, nil
 }
 
-func (s *WatchService) listMappingAccounts(ctx context.Context, targetGroupID int64, platform string) ([]Account, error) {
+func (s *WatchService) listMappingAccounts(ctx context.Context, targetGroupID int64, platform, search string) ([]Account, error) {
 	platform = strings.TrimSpace(platform)
 	accounts, err := s.accounts.ListActive(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list watch mapping accounts: %w", err)
 	}
-	if platform == "" {
-		return accounts, nil
-	}
+	search = strings.ToLower(strings.TrimSpace(search))
 	filtered := make([]Account, 0, len(accounts))
 	for _, account := range accounts {
-		if strings.EqualFold(account.Platform, platform) {
-			filtered = append(filtered, account)
+		if platform != "" && !strings.EqualFold(account.Platform, platform) {
+			continue
 		}
+		if search != "" {
+			accountID := strconv.FormatInt(account.ID, 10)
+			baseURL := strings.ToLower(watchPrimaryAccountBaseURL(&account))
+			if !strings.Contains(strings.ToLower(account.Name), search) && !strings.Contains(accountID, search) && !strings.Contains(baseURL, search) {
+				continue
+			}
+		}
+		filtered = append(filtered, account)
 	}
 	return filtered, nil
 }
@@ -814,7 +962,7 @@ func (s *WatchService) listMappingAccountPage(ctx context.Context, targetGroupID
 		return pager.ListWatchMappingAccountPage(ctx, params, platform)
 	}
 
-	accounts, err := s.listMappingAccounts(ctx, targetGroupID, platform)
+	accounts, err := s.listMappingAccounts(ctx, targetGroupID, platform, "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1536,6 +1684,9 @@ func watchSourceSnapshotFreezeReason(snapshot *WatchSourceSnapshot, now time.Tim
 }
 
 func watchResolveMappedSourceGroup(snapshot *WatchSourceSnapshot, mapping WatchAccountUpstreamMapping) (*WatchSourceKeyObservation, *WatchSourceGroupObservation, string) {
+	if mapping.GroupBindingState == "needs_confirmation" {
+		return nil, nil, "source key group assignment changed; confirmation required"
+	}
 	key := watchFindSourceKey(snapshot.SourceKeys, mapping.SourceKeyExternalID)
 	if key == nil {
 		return nil, nil, "source key observation is unavailable"
@@ -1617,6 +1768,10 @@ func watchSourceKeyFreezeReason(status string) string {
 	}
 }
 
+func WatchSourceKeyIsActive(status string) bool {
+	return watchSourceKeyFreezeReason(status) == ""
+}
+
 func watchFindSourceKey(keys []WatchSourceKeyObservation, externalID string) *WatchSourceKeyObservation {
 	externalID = strings.TrimSpace(externalID)
 	for i := range keys {
@@ -1645,6 +1800,24 @@ func watchStringSliceContains(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func normalizeWatchGroupExternalIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func watchSourceMatchesAccountHosts(source *WatchSource, accountHosts map[string]struct{}) bool {

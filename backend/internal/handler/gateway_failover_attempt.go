@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,8 +30,8 @@ type gatewayFailoverAttemptRecorder interface {
 	RecordGatewayFailoverAttempt(context.Context, *service.GatewayFailoverAttempt) error
 }
 
-type gatewayFailoverAttemptCharger interface {
-	ChargeGatewayFailoverAttempt(context.Context, *service.GatewayFailoverChargeInput) (*service.GatewayFailoverChargeResult, error)
+type gatewayFailoverAttemptObserver interface {
+	ObserveGatewayFailoverAttempt(context.Context, *service.GatewayFailoverChargeInput) (*service.GatewayFailoverChargeResult, error)
 }
 
 type gatewayFailoverAttemptMeta struct {
@@ -69,10 +68,10 @@ func beginGatewayFailoverAttempt(c *gin.Context, attemptNo int, hasSettledFailov
 	return time.Now()
 }
 
-func settleGatewayFailoverAttemptBeforeReplay(
+func recordGatewayFailoverAttemptBeforeReplay(
 	c *gin.Context,
 	recorder gatewayFailoverAttemptRecorder,
-	charger gatewayFailoverAttemptCharger,
+	observer gatewayFailoverAttemptObserver,
 	ctx context.Context,
 	meta gatewayFailoverAttemptMeta,
 	apiKey *service.APIKey,
@@ -96,7 +95,12 @@ func settleGatewayFailoverAttemptBeforeReplay(
 	if !failoverAttemptNeedsEstimatedCharge(failoverErr) {
 		if recorder != nil {
 			if err := recorder.RecordGatewayFailoverAttempt(ctx, attempt); err != nil {
-				return false, err
+				logger.L().With(
+					zap.String("component", "handler.gateway_failover_attempt"),
+					zap.String("request_id", meta.RequestID),
+					zap.Int64("user_id", meta.UserID),
+					zap.Int("attempt_no", attemptNo),
+				).Error("gateway_failover_attempt.persist_failed", zap.Error(err))
 			}
 		}
 		if c != nil {
@@ -104,35 +108,43 @@ func settleGatewayFailoverAttemptBeforeReplay(
 		}
 		return false, nil
 	}
-	if charger == nil {
-		attempt.BillingStatus = service.GatewayFailoverBillingReleased
+	if observer == nil {
 		if recorder != nil {
-			_ = recorder.RecordGatewayFailoverAttempt(ctx, attempt)
+			if err := recorder.RecordGatewayFailoverAttempt(ctx, attempt); err != nil {
+				logger.L().With(
+					zap.String("component", "handler.gateway_failover_attempt"),
+					zap.String("request_id", meta.RequestID),
+					zap.Int64("user_id", meta.UserID),
+					zap.Int("attempt_no", attemptNo),
+				).Error("gateway_failover_attempt.persist_failed", zap.Error(err))
+			}
 		}
 		if c != nil {
-			c.Header(failoverBillingHeader, service.GatewayFailoverBillingReleased)
+			c.Header(failoverBillingHeader, service.GatewayFailoverBillingNotBillable)
 		}
-		return false, errors.New("gateway failover estimated billing is unavailable")
+		return false, nil
 	}
-	result, err := charger.ChargeGatewayFailoverAttempt(ctx, &service.GatewayFailoverChargeInput{
+	_, err := observer.ObserveGatewayFailoverAttempt(ctx, &service.GatewayFailoverChargeInput{
 		Attempt: attempt, Endpoint: endpoint, RequestBody: requestBody,
 		Model: model, BillingModel: billingModel, ServiceTier: serviceTier,
 		APIKey: apiKey, Account: account, Subscription: subscription, QuotaPlatform: quotaPlatform,
 	})
 	if err != nil {
-		attempt.BillingStatus = service.GatewayFailoverBillingReleased
-		if recorder != nil {
-			_ = recorder.RecordGatewayFailoverAttempt(ctx, attempt)
-		}
+		logger.L().With(
+			zap.String("component", "handler.gateway_failover_attempt"),
+			zap.String("request_id", meta.RequestID),
+			zap.Int64("user_id", meta.UserID),
+			zap.Int("attempt_no", attemptNo),
+		).Error("gateway_failover_attempt.observe_failed", zap.Error(err))
 		if c != nil {
-			c.Header(failoverBillingHeader, service.GatewayFailoverBillingReleased)
+			c.Header(failoverBillingHeader, service.GatewayFailoverBillingNotBillable)
 		}
-		return false, err
+		return false, nil
 	}
 	if c != nil {
-		c.Header(failoverBillingHeader, service.GatewayFailoverBillingSettled)
+		c.Header(failoverBillingHeader, service.GatewayFailoverBillingNotBillable)
 	}
-	return result != nil && result.BillingStatus == service.GatewayFailoverBillingSettled, nil
+	return false, nil
 }
 
 func buildGatewayFailoverAttempt(
@@ -158,9 +170,6 @@ func buildGatewayFailoverAttempt(
 	attempt.FailureKind = "http_status"
 	attempt.State = "failed"
 	attempt.BillingStatus = service.GatewayFailoverBillingNotBillable
-	if failoverAttemptNeedsEstimatedCharge(failoverErr) {
-		attempt.BillingStatus = service.GatewayFailoverBillingReserved
-	}
 	if failoverErr.ResponseHeaders != nil {
 		attempt.UpstreamRequestID = firstNonEmptyHeader(failoverErr.ResponseHeaders, "x-request-id", "request-id")
 	}
@@ -178,16 +187,9 @@ func recordGatewayFailoverAttempt(
 	responseStarted bool,
 ) bool {
 	if recorder == nil || meta.RequestID == "" || attemptNo <= 0 {
-		return failoverErr != nil && failoverAttemptNeedsReconciliation(failoverErr.StatusCode, responseStarted)
+		return false
 	}
 	attempt := buildGatewayFailoverAttempt(meta, accountID, attemptNo, startedAt, failoverErr, responseStarted)
-	pending := false
-	if failoverErr != nil {
-		pending = failoverAttemptNeedsReconciliation(failoverErr.StatusCode, responseStarted)
-		if pending {
-			attempt.BillingStatus = service.GatewayFailoverBillingPendingReconciliation
-		}
-	}
 	if err := recorder.RecordGatewayFailoverAttempt(ctx, attempt); err != nil {
 		logger.L().With(
 			zap.String("component", "handler.gateway_failover_attempt"),
@@ -196,7 +198,7 @@ func recordGatewayFailoverAttempt(
 			zap.Int("attempt_no", attemptNo),
 		).Error("gateway_failover_attempt.persist_failed", zap.Error(err))
 	}
-	return pending
+	return false
 }
 
 func failoverAttemptNeedsEstimatedCharge(failoverErr *service.UpstreamFailoverError) bool {
@@ -208,10 +210,6 @@ func failoverAttemptNeedsEstimatedCharge(failoverErr *service.UpstreamFailoverEr
 		return false
 	}
 	return statusCode == http.StatusBadGateway || statusCode == 524 || statusCode >= 500
-}
-
-func failoverAttemptNeedsReconciliation(statusCode int, responseStarted bool) bool {
-	return responseStarted || statusCode == 524 || statusCode == http.StatusBadGateway || statusCode >= 500
 }
 
 func firstNonEmptyHeader(header http.Header, names ...string) string {

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -36,6 +37,18 @@ func (r *watchSourceRepository) SaveAccountUpstreamMapping(ctx context.Context, 
 	if method == "" {
 		method = "manual"
 	}
+	bindingState := mapping.GroupBindingState
+	if bindingState == "" {
+		bindingState = "confirmed"
+	}
+	confirmedGroupIDs := mapping.ConfirmedGroupExternalIDs
+	if len(confirmedGroupIDs) == 0 && mapping.SourceGroupExternalID != "" {
+		confirmedGroupIDs = []string{mapping.SourceGroupExternalID}
+	}
+	confirmedGroupIDsJSON, err := json.Marshal(confirmedGroupIDs)
+	if err != nil {
+		return nil, fmt.Errorf("encode confirmed watch source key groups: %w", err)
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin save watch account upstream mapping: %w", err)
@@ -50,16 +63,21 @@ WHERE account_id=$1 AND valid_to IS NULL`, mapping.AccountID, now); err != nil {
 	}
 	_, err = tx.ExecContext(ctx, `
 INSERT INTO watch_account_upstream_mappings
-	(account_id,source_id,source_key_external_id,source_group_external_id,mapping_method,updated_by,updated_at)
-VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,NOW())
+	(account_id,source_id,source_key_external_id,source_group_external_id,mapping_method,
+	 group_binding_state,confirmed_group_external_ids,source_key_observed_at,updated_by,updated_at)
+VALUES ($1,$2,$3,NULLIF($4,''),$5,$6,$7::jsonb,$8,$9,NOW())
 ON CONFLICT (account_id) DO UPDATE SET
 	source_id=EXCLUDED.source_id,
 	source_key_external_id=EXCLUDED.source_key_external_id,
 	source_group_external_id=EXCLUDED.source_group_external_id,
 	mapping_method=EXCLUDED.mapping_method,
+	group_binding_state=EXCLUDED.group_binding_state,
+	confirmed_group_external_ids=EXCLUDED.confirmed_group_external_ids,
+	source_key_observed_at=EXCLUDED.source_key_observed_at,
 	updated_by=EXCLUDED.updated_by,
 	updated_at=NOW()`,
-		mapping.AccountID, mapping.SourceID, mapping.SourceKeyExternalID, mapping.SourceGroupExternalID, method, mapping.UpdatedBy)
+		mapping.AccountID, mapping.SourceID, mapping.SourceKeyExternalID, mapping.SourceGroupExternalID,
+		method, bindingState, string(confirmedGroupIDsJSON), mapping.SourceKeyObservedAt, mapping.UpdatedBy)
 	if err != nil {
 		return nil, fmt.Errorf("save watch account upstream mapping: %w", err)
 	}
@@ -119,6 +137,9 @@ SELECT
 	COALESCE(m.source_group_external_id,''),
 	COALESCE(g.name,''),
 	m.mapping_method,
+	COALESCE(m.group_binding_state,'confirmed'),
+	COALESCE(m.confirmed_group_external_ids::text,'[]'),
+	m.source_key_observed_at,
 	m.updated_by,
 	m.created_at,
 	m.updated_at
@@ -136,6 +157,7 @@ func scanWatchAccountMappings(rows interface {
 	out := make([]service.WatchAccountUpstreamMapping, 0)
 	for rows.Next() {
 		var item service.WatchAccountUpstreamMapping
+		var confirmedGroupIDsRaw string
 		if err := rows.Scan(
 			&item.AccountID,
 			&item.AccountName,
@@ -147,12 +169,16 @@ func scanWatchAccountMappings(rows interface {
 			&item.SourceGroupExternalID,
 			&item.SourceGroupName,
 			&item.MappingMethod,
+			&item.GroupBindingState,
+			&confirmedGroupIDsRaw,
+			&item.SourceKeyObservedAt,
 			&item.UpdatedBy,
 			&item.CreatedAt,
 			&item.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan watch account upstream mapping: %w", err)
 		}
+		item.ConfirmedGroupExternalIDs = decodeWatchStringJSONArray(confirmedGroupIDsRaw)
 		out = append(out, item)
 	}
 	return out, rows.Err()

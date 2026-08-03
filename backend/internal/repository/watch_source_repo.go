@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,13 +48,13 @@ INSERT INTO watch_sources
     (name, adapter_type, base_url, api_base_url, recharge_ratio, low_balance_threshold,
      polling_interval_seconds, request_timeout_seconds, auth_mode, profile_path, groups_path,
      rates_path, pricing_path, keys_path, login_path, login_username_hint, heartbeat_path, read_mapping, keepalive_enabled,
-     keepalive_interval_seconds, enabled, created_by, updated_by)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22,$22)
+     keepalive_interval_seconds, auto_follow_key_group, enabled, created_by, updated_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22,$23,$23)
 RETURNING id, created_at, updated_at`,
 		s.Name, s.AdapterType, s.BaseURL, s.APIBaseURL, s.RechargeRatio, s.LowBalanceThreshold,
 		s.PollingIntervalSeconds, s.RequestTimeoutSeconds, s.AuthMode, s.ProfilePath, s.GroupsPath,
 		s.RatesPath, s.PricingPath, s.KeysPath, s.LoginPath, s.LoginUsernameHint, s.HeartbeatPath, readMappingJSON, s.KeepaliveEnabled,
-		s.KeepaliveIntervalSeconds, s.Enabled, s.CreatedBy,
+		s.KeepaliveIntervalSeconds, s.AutoFollowKeyGroup, s.Enabled, s.CreatedBy,
 	).Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert watch source: %w", err)
@@ -92,11 +93,12 @@ UPDATE watch_sources SET
     low_balance_threshold=$7, polling_interval_seconds=$8, request_timeout_seconds=$9,
     auth_mode=$10, profile_path=$11, groups_path=$12, rates_path=$13, pricing_path=$14,
     keys_path=$15, login_path=$16, login_username_hint=$17, heartbeat_path=$18, read_mapping=$19::jsonb, keepalive_enabled=$20,
-    keepalive_interval_seconds=$21, enabled=$22, updated_by=$23, updated_at=NOW()
+    keepalive_interval_seconds=$21, auto_follow_key_group=$22, enabled=$23, updated_by=$24, updated_at=NOW()
 WHERE id=$1`, s.ID, s.Name, s.AdapterType, s.BaseURL, s.APIBaseURL, s.RechargeRatio,
 		s.LowBalanceThreshold, s.PollingIntervalSeconds, s.RequestTimeoutSeconds, s.AuthMode,
 		s.ProfilePath, s.GroupsPath, s.RatesPath, s.PricingPath, s.KeysPath, s.LoginPath,
-		s.LoginUsernameHint, s.HeartbeatPath, readMappingJSON, s.KeepaliveEnabled, s.KeepaliveIntervalSeconds, s.Enabled, s.UpdatedBy)
+		s.LoginUsernameHint, s.HeartbeatPath, readMappingJSON, s.KeepaliveEnabled, s.KeepaliveIntervalSeconds,
+		s.AutoFollowKeyGroup, s.Enabled, s.UpdatedBy)
 	if err != nil {
 		return nil, fmt.Errorf("update watch source: %w", err)
 	}
@@ -148,7 +150,7 @@ COALESCE(s.last_error_code, ''), s.last_latency_ms, s.last_balance,
 COALESCE(s.auth_mode, 'manual'), COALESCE(s.profile_path, ''), COALESCE(s.groups_path, ''),
 COALESCE(s.rates_path, ''), COALESCE(s.pricing_path, ''), COALESCE(s.keys_path, ''),
 COALESCE(s.login_path, ''), COALESCE(s.login_username_hint, ''), COALESCE(s.heartbeat_path, ''), COALESCE(s.read_mapping::text, '{}'), COALESCE(s.keepalive_enabled, TRUE),
-COALESCE(s.keepalive_interval_seconds, 300), COALESCE(s.last_keepalive_status, ''),
+COALESCE(s.keepalive_interval_seconds, 300), COALESCE(s.auto_follow_key_group, TRUE), COALESCE(s.last_keepalive_status, ''),
 s.last_keepalive_at, s.last_keepalive_success_at, COALESCE(s.last_keepalive_error_code, ''),
 s.last_keepalive_latency_ms, s.last_token_refreshed_at, s.created_by, s.updated_by, s.created_at, s.updated_at`
 
@@ -163,7 +165,7 @@ func scanWatchSource(row watchSourceRowScanner) (*service.WatchSource, error) {
 		&s.HasCredential, &s.HasLoginCredential, &s.CredentialType, &s.LastCheckStatus, &s.LastCheckAt, &s.LastSuccessAt,
 		&s.LastErrorCode, &s.LastLatencyMs, &s.LastBalance, &s.AuthMode, &s.ProfilePath, &s.GroupsPath,
 		&s.RatesPath, &s.PricingPath, &s.KeysPath, &s.LoginPath, &s.LoginUsernameHint, &s.HeartbeatPath, &readMappingRaw, &s.KeepaliveEnabled,
-		&s.KeepaliveIntervalSeconds, &s.LastKeepaliveStatus, &s.LastKeepaliveAt, &s.LastKeepaliveSuccessAt,
+		&s.KeepaliveIntervalSeconds, &s.AutoFollowKeyGroup, &s.LastKeepaliveStatus, &s.LastKeepaliveAt, &s.LastKeepaliveSuccessAt,
 		&s.LastKeepaliveErrorCode, &s.LastKeepaliveLatencyMs, &s.LastTokenRefreshedAt,
 		&s.CreatedBy, &s.UpdatedBy, &s.CreatedAt, &s.UpdatedAt,
 	); err != nil {
@@ -402,7 +404,8 @@ func (r *watchSourceRepository) SaveSourceObservation(ctx context.Context, sourc
 	defer func() { _ = tx.Rollback() }()
 	var sourceName string
 	var rechargeRatio float64
-	if err = tx.QueryRowContext(ctx, `SELECT name,recharge_ratio FROM watch_sources WHERE id=$1`, sourceID).Scan(&sourceName, &rechargeRatio); err != nil {
+	var autoFollowKeyGroup bool
+	if err = tx.QueryRowContext(ctx, `SELECT name,recharge_ratio,auto_follow_key_group FROM watch_sources WHERE id=$1`, sourceID).Scan(&sourceName, &rechargeRatio, &autoFollowKeyGroup); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return service.ErrWatchSourceNotFound
 		}
@@ -433,6 +436,11 @@ DELETE FROM watch_checks WHERE id IN (
 		return fmt.Errorf("trim watch source checks: %w", err)
 	}
 	if observation.Status == "healthy" || observation.Status == "degraded" {
+		// Resolve the observed Key assignment before price-change events are
+		// evaluated, so an ambiguous assignment cannot make a pricing rule due.
+		if err = reconcileWatchSourceKeyGroupMappings(ctx, tx, sourceID, sourceName, autoFollowKeyGroup, observation); err != nil {
+			return err
+		}
 		groupNameByExternalID := make(map[string]string, len(observation.Groups))
 		for _, group := range observation.Groups {
 			groupNameByExternalID[group.ExternalID] = group.Name
@@ -573,19 +581,342 @@ DELETE FROM watch_price_changes WHERE id IN (
 	return nil
 }
 
+type watchSourceMappingFollowRow struct {
+	accountID           int64
+	keyExternalID       string
+	groupExternalID     string
+	mappingMethod       string
+	bindingState        string
+	confirmedGroupIDs   []string
+	sourceKeyObservedAt *time.Time
+	updatedAt           time.Time
+}
+
+func reconcileWatchSourceKeyGroupMappings(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceID int64,
+	sourceName string,
+	autoFollow bool,
+	observation service.WatchSourceObservation,
+) error {
+	if !autoFollow || observation.SourceKeys == nil {
+		return nil
+	}
+	groupNames := make(map[string]string, len(observation.Groups))
+	for _, group := range observation.Groups {
+		groupID := strings.TrimSpace(group.ExternalID)
+		if groupID != "" {
+			groupNames[groupID] = group.Name
+		}
+	}
+	keys := make(map[string]service.WatchSourceKeyObservation, len(observation.SourceKeys))
+	for _, key := range observation.SourceKeys {
+		keyID := strings.TrimSpace(key.ExternalID)
+		if keyID != "" {
+			keys[keyID] = key
+		}
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT account_id,source_key_external_id,COALESCE(source_group_external_id,''),mapping_method,
+       COALESCE(group_binding_state,'confirmed'),COALESCE(confirmed_group_external_ids::text,'[]'),
+       source_key_observed_at,updated_at
+FROM watch_account_upstream_mappings
+WHERE source_id=$1
+ORDER BY account_id
+FOR UPDATE`, sourceID)
+	if err != nil {
+		return fmt.Errorf("lock watch account mappings for source key group follow: %w", err)
+	}
+	mappings := make([]watchSourceMappingFollowRow, 0)
+	for rows.Next() {
+		var item watchSourceMappingFollowRow
+		var confirmedGroupIDsRaw string
+		if err = rows.Scan(&item.accountID, &item.keyExternalID, &item.groupExternalID, &item.mappingMethod,
+			&item.bindingState, &confirmedGroupIDsRaw, &item.sourceKeyObservedAt, &item.updatedAt); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan watch account mapping for source key group follow: %w", err)
+		}
+		item.confirmedGroupIDs = normalizeWatchObservedGroupIDs(decodeWatchStringJSONArray(confirmedGroupIDsRaw))
+		mappings = append(mappings, item)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate watch account mappings for source key group follow: %w", err)
+	}
+	if err = rows.Close(); err != nil {
+		return fmt.Errorf("close watch account mappings for source key group follow: %w", err)
+	}
+
+	for _, mapping := range mappings {
+		if !observation.ObservedAt.After(mapping.updatedAt) {
+			continue
+		}
+		if mapping.sourceKeyObservedAt != nil && !observation.ObservedAt.After(*mapping.sourceKeyObservedAt) {
+			continue
+		}
+		key, keyFound := keys[mapping.keyExternalID]
+		if !keyFound || !service.WatchSourceKeyIsActive(key.Status) {
+			if err = markWatchMappingNeedsConfirmation(ctx, tx, sourceID, mapping, observation.ObservedAt); err != nil {
+				return err
+			}
+			continue
+		}
+		observedGroupIDs := normalizeWatchObservedGroupIDs(key.GroupExternalIDs)
+		if len(observedGroupIDs) != 1 {
+			if len(observedGroupIDs) > 1 && mapping.bindingState == "confirmed" &&
+				watchStringSlicesEqual(observedGroupIDs, mapping.confirmedGroupIDs) &&
+				watchStringSliceContains(observedGroupIDs, mapping.groupExternalID) {
+				if err = updateWatchMappingObservation(ctx, tx, sourceID, mapping, "confirmed", observedGroupIDs, observation.ObservedAt); err != nil {
+					return err
+				}
+				continue
+			}
+			if err = markWatchMappingNeedsConfirmation(ctx, tx, sourceID, mapping, observation.ObservedAt); err != nil {
+				return err
+			}
+			continue
+		}
+
+		targetGroupID := observedGroupIDs[0]
+		targetGroupName, groupFound := groupNames[targetGroupID]
+		if !groupFound {
+			if err = markWatchMappingNeedsConfirmation(ctx, tx, sourceID, mapping, observation.ObservedAt); err != nil {
+				return err
+			}
+			continue
+		}
+		if mapping.groupExternalID == targetGroupID {
+			stateChanged := mapping.bindingState != "confirmed"
+			if err = updateWatchMappingObservation(ctx, tx, sourceID, mapping, "confirmed", observedGroupIDs, observation.ObservedAt); err != nil {
+				return err
+			}
+			if stateChanged {
+				if err = insertWatchAccountMappingHistory(ctx, tx, sourceID, sourceName, mapping, key.Label,
+					targetGroupID, targetGroupName, observation.ObservedAt); err != nil {
+					return err
+				}
+				if err = bumpWatchPricingRulesForAccountMappingChange(ctx, tx, mapping.accountID, sourceID, mapping.keyExternalID, observation.ObservedAt); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		if err = rebindWatchAccountMapping(ctx, tx, sourceID, sourceName, mapping, key, targetGroupID, targetGroupName, observedGroupIDs, observation.ObservedAt); err != nil {
+			return err
+		}
+		if err = bumpWatchPricingRulesForAccountMappingChange(ctx, tx, mapping.accountID, sourceID, mapping.keyExternalID, observation.ObservedAt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func markWatchMappingNeedsConfirmation(ctx context.Context, tx *sql.Tx, sourceID int64, mapping watchSourceMappingFollowRow, observedAt time.Time) error {
+	stateChanged := mapping.bindingState != "needs_confirmation"
+	if err := updateWatchMappingObservation(ctx, tx, sourceID, mapping, "needs_confirmation", mapping.confirmedGroupIDs, observedAt); err != nil {
+		return err
+	}
+	if stateChanged {
+		if err := closeWatchAccountMappingHistory(ctx, tx, mapping.accountID, observedAt); err != nil {
+			return err
+		}
+		return bumpWatchPricingRulesForAccountMappingChange(ctx, tx, mapping.accountID, sourceID, mapping.keyExternalID, observedAt)
+	}
+	return nil
+}
+
+func updateWatchMappingObservation(ctx context.Context, tx *sql.Tx, sourceID int64, mapping watchSourceMappingFollowRow, state string, confirmedGroupIDs []string, observedAt time.Time) error {
+	payload, err := json.Marshal(confirmedGroupIDs)
+	if err != nil {
+		return fmt.Errorf("encode confirmed source key groups: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE watch_account_upstream_mappings
+SET group_binding_state=$4::VARCHAR(24),confirmed_group_external_ids=$5::jsonb,source_key_observed_at=$6,
+    updated_at=CASE
+        WHEN group_binding_state IS DISTINCT FROM $4::VARCHAR(24) OR confirmed_group_external_ids IS DISTINCT FROM $5::jsonb THEN NOW()
+        ELSE updated_at
+    END
+WHERE account_id=$1 AND source_id=$2 AND source_key_external_id=$3
+  AND (source_key_observed_at IS NULL OR source_key_observed_at < $6)`,
+		mapping.accountID, sourceID, mapping.keyExternalID, state, string(payload), observedAt)
+	if err != nil {
+		return fmt.Errorf("update watch source key group observation: %w", err)
+	}
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		return nil
+	}
+	return nil
+}
+
+func rebindWatchAccountMapping(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceID int64,
+	sourceName string,
+	mapping watchSourceMappingFollowRow,
+	key service.WatchSourceKeyObservation,
+	targetGroupID string,
+	targetGroupName string,
+	confirmedGroupIDs []string,
+	observedAt time.Time,
+) error {
+	payload, err := json.Marshal(confirmedGroupIDs)
+	if err != nil {
+		return fmt.Errorf("encode rebound source key groups: %w", err)
+	}
+	if err = closeWatchAccountMappingHistory(ctx, tx, mapping.accountID, observedAt); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE watch_account_upstream_mappings
+SET source_group_external_id=$4,mapping_method='auto',group_binding_state='confirmed',
+    confirmed_group_external_ids=$5::jsonb,source_key_observed_at=$6,updated_by=NULL,updated_at=NOW()
+WHERE account_id=$1 AND source_id=$2 AND source_key_external_id=$3
+  AND source_group_external_id IS DISTINCT FROM $4
+  AND (source_key_observed_at IS NULL OR source_key_observed_at < $6)`,
+		mapping.accountID, sourceID, mapping.keyExternalID, targetGroupID, string(payload), observedAt)
+	if err != nil {
+		return fmt.Errorf("rebind watch account mapping to source key group: %w", err)
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return nil
+	}
+	if _, err = tx.ExecContext(ctx, `
+INSERT INTO watch_account_upstream_mapping_history
+(account_id,source_id,source_name_snapshot,source_key_external_id,source_key_label_snapshot,
+ source_group_external_id,source_group_name_snapshot,mapping_method,valid_from,updated_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,'auto',$8,NULL)`,
+		mapping.accountID, sourceID, sourceName, mapping.keyExternalID, key.Label,
+		targetGroupID, targetGroupName, observedAt); err != nil {
+		return fmt.Errorf("insert rebound watch account mapping history: %w", err)
+	}
+	return nil
+}
+
+func closeWatchAccountMappingHistory(ctx context.Context, tx *sql.Tx, accountID int64, observedAt time.Time) error {
+	if _, err := tx.ExecContext(ctx, `
+UPDATE watch_account_upstream_mapping_history
+SET valid_to=$2
+WHERE account_id=$1 AND valid_to IS NULL AND valid_from < $2`, accountID, observedAt); err != nil {
+		return fmt.Errorf("close watch account mapping history for source key group follow: %w", err)
+	}
+	return nil
+}
+
+func insertWatchAccountMappingHistory(
+	ctx context.Context,
+	tx *sql.Tx,
+	sourceID int64,
+	sourceName string,
+	mapping watchSourceMappingFollowRow,
+	keyLabel string,
+	groupExternalID string,
+	groupName string,
+	observedAt time.Time,
+) error {
+	method := strings.TrimSpace(mapping.mappingMethod)
+	if method == "" {
+		method = "manual"
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO watch_account_upstream_mapping_history
+(account_id,source_id,source_name_snapshot,source_key_external_id,source_key_label_snapshot,
+ source_group_external_id,source_group_name_snapshot,mapping_method,valid_from,updated_by)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)`, mapping.accountID, sourceID, sourceName,
+		mapping.keyExternalID, keyLabel, groupExternalID, groupName, method, observedAt); err != nil {
+		return fmt.Errorf("restore watch account mapping history after source key group confirmation: %w", err)
+	}
+	return nil
+}
+
+func bumpWatchPricingRulesForAccountMappingChange(ctx context.Context, tx *sql.Tx, accountID, sourceID int64, keyExternalID string, observedAt time.Time) error {
+	_, err := tx.ExecContext(ctx, `
+UPDATE watch_pricing_rules r
+SET next_run_at=CASE WHEN r.next_run_at IS NULL OR r.next_run_at > $2 THEN $2 ELSE r.next_run_at END,
+    updated_at=NOW()
+WHERE r.enabled=TRUE
+  AND EXISTS (
+	SELECT 1
+	FROM account_groups ag
+	JOIN accounts a ON a.id=ag.account_id AND a.deleted_at IS NULL
+	JOIN watch_account_upstream_mappings m
+	  ON m.account_id=ag.account_id
+	 AND m.source_id=$3
+	 AND m.source_key_external_id=$4
+	 AND COALESCE(m.group_binding_state,'confirmed')='confirmed'
+	WHERE ag.account_id=$1
+	  AND ag.group_id=r.target_group_id
+	  AND a.status='active'
+	  AND a.schedulable=TRUE
+	  )`, accountID, observedAt, sourceID, keyExternalID)
+	if err != nil {
+		return fmt.Errorf("trigger watch pricing rules for source key group follow: %w", err)
+	}
+	return nil
+}
+
+func normalizeWatchObservedGroupIDs(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func watchStringSlicesEqual(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func watchStringSliceContains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func bumpWatchPricingRulesForGroupChange(ctx context.Context, tx *sql.Tx, sourceID int64, groupExternalID string, observedAt time.Time) error {
 	_, err := tx.ExecContext(ctx, `
 UPDATE watch_pricing_rules r
-SET next_run_at=$3, updated_at=NOW()
+SET next_run_at=CASE WHEN r.next_run_at IS NULL OR r.next_run_at > $3 THEN $3 ELSE r.next_run_at END, updated_at=NOW()
 WHERE r.enabled=TRUE
   AND r.mode='group_multiplier'
   AND EXISTS (
 	SELECT 1
 	FROM account_groups ag
+	JOIN accounts a
+	  ON a.id=ag.account_id
+	 AND a.deleted_at IS NULL
+	 AND a.status='active'
+	 AND a.schedulable=TRUE
 	JOIN watch_account_upstream_mappings m ON m.account_id=ag.account_id
 	WHERE ag.group_id=r.target_group_id
 	  AND m.source_id=$1
 	  AND m.source_group_external_id=$2
+	  AND COALESCE(m.group_binding_state,'confirmed')='confirmed'
   )`, sourceID, groupExternalID, observedAt)
 	if err != nil {
 		return fmt.Errorf("trigger watch pricing rules for group change: %w", err)
@@ -596,7 +927,7 @@ WHERE r.enabled=TRUE
 func bumpWatchPricingRulesForModelChange(ctx context.Context, tx *sql.Tx, sourceID int64, groupExternalID, platform, model, component string, observedAt time.Time) error {
 	_, err := tx.ExecContext(ctx, `
 UPDATE watch_pricing_rules r
-SET next_run_at=$6, updated_at=NOW()
+SET next_run_at=CASE WHEN r.next_run_at IS NULL OR r.next_run_at > $6 THEN $6 ELSE r.next_run_at END, updated_at=NOW()
 WHERE r.enabled=TRUE
   AND r.mode='model_price'
   AND LOWER(r.model)=LOWER($4)
@@ -605,10 +936,16 @@ WHERE r.enabled=TRUE
   AND EXISTS (
 	SELECT 1
 	FROM account_groups ag
+	JOIN accounts a
+	  ON a.id=ag.account_id
+	 AND a.deleted_at IS NULL
+	 AND a.status='active'
+	 AND a.schedulable=TRUE
 	JOIN watch_account_upstream_mappings m ON m.account_id=ag.account_id
 	WHERE ag.group_id=r.target_group_id
 	  AND m.source_id=$1
 	  AND m.source_group_external_id=$2
+	  AND COALESCE(m.group_binding_state,'confirmed')='confirmed'
   )`, sourceID, groupExternalID, platform, model, component, observedAt)
 	if err != nil {
 		return fmt.Errorf("trigger watch pricing rules for model change: %w", err)

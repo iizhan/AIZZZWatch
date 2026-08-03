@@ -146,6 +146,7 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "watch_sources", "adapter_type", "character varying", 32, false)
 	requireColumn(t, tx, "watch_sources", "last_balance", "numeric", 0, true)
 	requireColumn(t, tx, "watch_sources", "read_mapping", "jsonb", 0, false)
+	requireColumn(t, tx, "watch_sources", "auto_follow_key_group", "boolean", 0, false)
 	requireColumn(t, tx, "watch_source_credentials", "encrypted_value", "text", 0, false)
 	requireColumn(t, tx, "watch_source_groups", "rate_multiplier", "numeric", 0, false)
 	requireColumn(t, tx, "watch_source_prices", "value", "numeric", 0, false)
@@ -160,7 +161,12 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "watch_source_keys", "key_digest", "character varying", 64, true)
 	requireColumn(t, tx, "watch_account_upstream_mappings", "source_key_external_id", "character varying", 128, false)
 	requireColumn(t, tx, "watch_account_upstream_mappings", "mapping_method", "character varying", 16, false)
+	requireColumn(t, tx, "watch_account_upstream_mappings", "group_binding_state", "character varying", 24, false)
+	requireColumn(t, tx, "watch_account_upstream_mappings", "confirmed_group_external_ids", "jsonb", 0, false)
+	requireColumn(t, tx, "watch_account_upstream_mappings", "source_key_observed_at", "timestamp with time zone", 0, true)
 	requireIndex(t, tx, "watch_account_upstream_mappings", "idx_watch_account_upstream_mappings_source")
+	requireIndex(t, tx, "watch_account_upstream_mappings", "idx_watch_account_upstream_mappings_binding_state")
+	requireConstraintDefinitionContains(t, tx, "watch_account_upstream_mappings", "watch_account_upstream_mappings_group_binding_state_check", "group_binding_state", "needs_confirmation")
 	requireColumn(t, tx, "watch_source_group_history", "effective_rate_multiplier", "numeric", 0, false)
 	requireIndex(t, tx, "watch_source_group_history", "idx_watch_source_group_history_lookup")
 	requireColumn(t, tx, "watch_source_price_history", "effective_value", "numeric", 0, false)
@@ -168,7 +174,9 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireColumn(t, tx, "watch_account_upstream_mapping_history", "valid_from", "timestamp with time zone", 0, false)
 	requireIndex(t, tx, "watch_account_upstream_mapping_history", "idx_watch_mapping_history_account_time")
 	requireColumn(t, tx, "watch_pricing_rules", "adjustment_step", "numeric", 0, false)
-	requireConstraintDefinitionContains(t, tx, "watch_pricing_rules", "watch_pricing_rules_adjustment_step_positive", "adjustment_step", "> 0")
+	// PostgreSQL normalizes numeric literals differently across supported
+	// versions (for example, `> 0` may be rendered as `> (0)::numeric`).
+	requireConstraintDefinitionContains(t, tx, "watch_pricing_rules", "watch_pricing_rules_adjustment_step_positive", "adjustment_step", ">", "0")
 
 	// Gateway failover attempts keep a redacted, idempotent audit and reconciliation ledger.
 	requireColumn(t, tx, "gateway_failover_attempts", "request_id", "character varying", 128, false)
@@ -178,6 +186,14 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	requireIndex(t, tx, "gateway_failover_attempts", "idx_gateway_failover_attempts_user_created")
 	requireIndex(t, tx, "gateway_failover_attempts", "idx_gateway_failover_attempts_billing_status")
 	requireConstraintDefinitionContains(t, tx, "gateway_failover_attempts", "gateway_failover_attempts_request_id_attempt_no_key", "request_id", "attempt_no")
+	requireColumn(t, tx, "gateway_failover_refund_candidates", "attempt_id", "bigint", 0, false)
+	requireColumn(t, tx, "gateway_failover_refund_candidates", "candidate_cost", "numeric", 0, false)
+	requireColumn(t, tx, "gateway_failover_refund_candidates", "refunded_cost", "numeric", 0, false)
+	requireColumn(t, tx, "gateway_failover_refund_candidates", "refunded_at", "timestamp with time zone", 0, true)
+	requireColumn(t, tx, "gateway_failover_refund_candidates", "refunded_by_user_id", "bigint", 0, true)
+	requireColumn(t, tx, "gateway_failover_refund_candidates", "refund_reason", "character varying", 500, true)
+	requireIndex(t, tx, "gateway_failover_refund_candidates", "idx_gateway_failover_refund_candidates_status")
+	requireConstraintDefinitionContains(t, tx, "gateway_failover_refund_candidates", "gateway_failover_refund_candidates_attempt_id_key", "attempt_id")
 
 	// user_allowed_groups table should exist
 	var uagRegclass sql.NullString

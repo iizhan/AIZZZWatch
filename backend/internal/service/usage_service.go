@@ -165,6 +165,36 @@ func (s *UsageService) ListGatewayFailoverAttemptsByRequests(ctx context.Context
 	return repo.ListGatewayFailoverAttemptsByRequests(ctx, userID, requestIDs)
 }
 
+func (s *UsageService) DryRunGatewayFailoverRefunds(ctx context.Context, filter GatewayFailoverRefundFilter) (*GatewayFailoverRefundDryRun, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	repo, ok := s.usageRepo.(GatewayFailoverRefundRepository)
+	if !ok || repo == nil {
+		return nil, errors.New("gateway failover refund report repository is unavailable")
+	}
+	return repo.DryRunGatewayFailoverRefunds(ctx, filter)
+}
+
+func (s *UsageService) StageGatewayFailoverRefundCandidates(ctx context.Context, filter GatewayFailoverRefundFilter) (*GatewayFailoverRefundStageResult, error) {
+	if err := filter.Validate(); err != nil {
+		return nil, err
+	}
+	repo, ok := s.usageRepo.(GatewayFailoverRefundRepository)
+	if !ok || repo == nil {
+		return nil, errors.New("gateway failover refund report repository is unavailable")
+	}
+	staged, err := repo.StageGatewayFailoverRefundCandidates(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	dryRun, err := repo.DryRunGatewayFailoverRefunds(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	return &GatewayFailoverRefundStageResult{StagedCount: staged, DryRun: *dryRun}, nil
+}
+
 // ListByUser 获取用户的使用日志列表
 func (s *UsageService) ListByUser(ctx context.Context, userID int64, params pagination.PaginationParams) ([]UsageLog, *pagination.PaginationResult, error) {
 	logs, pagination, err := s.usageRepo.ListByUser(ctx, userID, params)

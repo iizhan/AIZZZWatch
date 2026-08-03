@@ -99,3 +99,23 @@ func TestListAccountMappingsRejectsInvalidPagination(t *testing.T) {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
+
+func TestListAccountMappingsRejectsInvalidAdvancedFilters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, target := range []string{
+		"/api/v1/admin/watch/account-mappings?mapping_status=unknown",
+		"/api/v1/admin/watch/account-mappings?source_id=-1",
+		"/api/v1/admin/watch/account-mappings?search=" + strings.Repeat("x", 201),
+	} {
+		recorder := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(recorder)
+		c.Request = httptest.NewRequest(http.MethodGet, target, nil)
+		h := &WatchHandler{watchService: &service.WatchService{}}
+
+		h.ListAccountMappings(c)
+
+		if recorder.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want %d", target, recorder.Code, http.StatusBadRequest)
+		}
+	}
+}

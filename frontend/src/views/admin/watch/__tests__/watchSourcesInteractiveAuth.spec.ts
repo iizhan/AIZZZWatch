@@ -48,6 +48,8 @@ vi.mock('vue-i18n', async (importOriginal) => ({
         'admin.watch.interactiveAuthExpiresAt': `会话有效期：${params?.time ?? ''}`,
         'admin.watch.sourcesTitle': '上游站点',
         'admin.watch.sourcesDescription': '管理上游站点',
+        'admin.watch.autoFollowKeyGroup': '自动跟随 Key 分组变更',
+        'admin.watch.autoFollowKeyGroupHint': '唯一分组自动跟随，多分组需要确认。',
         'admin.watch.source': '上游站点',
         'admin.watch.adapter': '适配器',
         'admin.watch.checkStatus': '检测状态',
@@ -153,6 +155,7 @@ const source = {
   heartbeat_path: '/user/profile',
   keepalive_enabled: true,
   keepalive_interval_seconds: 300,
+  auto_follow_key_group: true,
   enabled: true,
   has_credential: false,
   has_login_credential: true,
@@ -226,6 +229,25 @@ describe('WatchSourcesView interactive authorization', () => {
     })
     showSuccessMock.mockReset()
     showWarningMock.mockReset()
+  })
+
+  it('defaults and submits the upstream key group auto-follow setting', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      openEdit: (value: typeof source) => void
+      buildInput: () => { auto_follow_key_group?: boolean }
+    }
+
+    vm.openEdit(source)
+    await nextTick()
+    expect(wrapper.text()).toContain('自动跟随 Key 分组变更')
+    expect(vm.buildInput().auto_follow_key_group).toBe(true)
+
+    const autoFollowControl = wrapper.findAll('input[type="checkbox"]').find((control) =>
+      control.element.parentElement?.textContent?.includes('自动跟随 Key 分组变更'))
+    expect(autoFollowControl).toBeTruthy()
+    await autoFollowControl!.setValue(false)
+    expect(vm.buildInput().auto_follow_key_group).toBe(false)
   })
 
   it('submits a normalized bearer credential from the interactive auth dialog', async () => {

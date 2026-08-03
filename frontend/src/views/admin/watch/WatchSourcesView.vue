@@ -200,6 +200,10 @@
           <label class="block"><span class="input-label">{{ t('admin.watch.requestTimeout') }}</span><input v-model.number="form.request_timeout_seconds" class="input" type="number" min="3" max="60" required /></label>
           <label class="block"><span class="input-label">{{ t('admin.watch.keepaliveInterval') }}</span><input v-model.number="form.keepalive_interval_seconds" class="input" type="number" min="30" max="86400" required /></label>
           <label class="mt-7 inline-flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200"><input v-model="form.keepalive_enabled" type="checkbox" class="h-4 w-4 rounded border-gray-300 text-primary-600" />{{ t('admin.watch.keepaliveEnabled') }}</label>
+          <label class="inline-flex items-start gap-2 text-sm text-gray-700 md:col-span-2 dark:text-gray-200">
+            <input v-model="form.auto_follow_key_group" type="checkbox" class="mt-0.5 h-4 w-4 rounded border-gray-300 text-primary-600" />
+            <span><span class="font-medium">{{ t('admin.watch.autoFollowKeyGroup') }}</span><span class="mt-1 block text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.watch.autoFollowKeyGroupHint') }}</span></span>
+          </label>
         </div>
 
         <div class="border-t border-gray-200 pt-5 dark:border-dark-700">
@@ -519,6 +523,7 @@ const form = reactive({
   request_timeout_seconds: 15,
   keepalive_enabled: true,
   keepalive_interval_seconds: 300,
+  auto_follow_key_group: true,
   profile_path: '/user/profile',
   groups_path: '/groups/available',
   rates_path: '/groups/rates',
@@ -800,6 +805,7 @@ function resetForm() {
     request_timeout_seconds: 15,
     keepalive_enabled: true,
     keepalive_interval_seconds: 300,
+    auto_follow_key_group: true,
     ...defaultPathMap.sub2api,
     ...emptyReadMappingForm(),
     enabled: true,
@@ -836,6 +842,7 @@ function openEdit(source: WatchSource) {
     request_timeout_seconds: source.request_timeout_seconds,
     keepalive_enabled: source.keepalive_enabled,
     keepalive_interval_seconds: source.keepalive_interval_seconds,
+    auto_follow_key_group: source.auto_follow_key_group !== false,
     profile_path: source.profile_path || defaultPathMap[source.adapter_type].profile_path,
     groups_path: source.groups_path || defaultPathMap[source.adapter_type].groups_path,
     rates_path: source.rates_path || defaultPathMap[source.adapter_type].rates_path,
@@ -902,6 +909,7 @@ function buildInput(): WatchSourceInput {
     request_timeout_seconds: form.request_timeout_seconds,
     keepalive_enabled: form.keepalive_enabled,
     keepalive_interval_seconds: form.keepalive_interval_seconds,
+    auto_follow_key_group: form.auto_follow_key_group,
     profile_path: form.profile_path,
     groups_path: form.groups_path,
     rates_path: form.rates_path || undefined,

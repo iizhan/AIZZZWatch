@@ -1008,7 +1008,7 @@ export default {
         statusCodesHint: '支持逗号分隔的状态码和范围，例如 502,524,500-599',
         maxSwitches: '最多切换账号次数',
         maxSwitchesHint: '0 表示不切换；2 表示总尝试最多 3 个账号',
-        billingHint: '每次上游尝试都会单独审计。502、524 和已配置的 5xx 失败尝试按本地估算输入 Token 立即结算；401、403、429、413 等认证、限流或请求错误不额外收费。',
+        billingHint: '每次上游尝试都会单独审计，但所有失败尝试均不扣用户余额、订阅额度、API Key 配额或账号额度；只有最终成功请求按真实用量计费。失败尝试的 Token 仅为观测估算。',
         invalidStatusCodes: '状态码格式无效，请使用例如 502,524,500-599',
         invalidMaxSwitches: '最多切换次数必须是 0 到 10 的整数',
         saved: '账号故障转移设置保存成功',

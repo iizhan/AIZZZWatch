@@ -509,7 +509,7 @@ func (h *GatewayHandler) GeminiV1BetaModels(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				responseStarted := c.Writer.Written()
-				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+				settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 					apiKey, account, subscription, service.GatewayFailoverEndpointGemini,
 					body, reqModel, modelName, "", service.QuotaPlatform(c.Request.Context(), apiKey),

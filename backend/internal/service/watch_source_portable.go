@@ -133,6 +133,7 @@ type watchSourcePortableSource struct {
 	RequestTimeoutSeconds    int                         `json:"request_timeout_seconds"`
 	KeepaliveEnabled         bool                        `json:"keepalive_enabled"`
 	KeepaliveIntervalSeconds int                         `json:"keepalive_interval_seconds"`
+	AutoFollowKeyGroup       *bool                       `json:"auto_follow_key_group,omitempty"`
 	ProfilePath              string                      `json:"profile_path,omitempty"`
 	GroupsPath               string                      `json:"groups_path,omitempty"`
 	RatesPath                string                      `json:"rates_path,omitempty"`
@@ -472,7 +473,8 @@ func (s *WatchSourceService) preparePortableMutation(ctx context.Context, portab
 		LoginPath: paths.LoginPath, LoginUsernameHint: portable.LoginUsernameHint,
 		HeartbeatPath: paths.HeartbeatPath, ReadMapping: readMapping,
 		KeepaliveEnabled: portable.KeepaliveEnabled, KeepaliveIntervalSeconds: portable.KeepaliveIntervalSeconds,
-		Enabled: portable.Enabled, UpdatedBy: &actorID,
+		AutoFollowKeyGroup: portableWatchAutoFollowKeyGroup(portable.AutoFollowKeyGroup),
+		Enabled:            portable.Enabled, UpdatedBy: &actorID,
 	}
 	if portable.LoginCredential != nil && strings.TrimSpace(portable.LoginCredential.Username) != "" {
 		source.LoginUsernameHint = maskWatchLoginUsername(portable.LoginCredential.Username)
@@ -527,17 +529,23 @@ func watchSourceToPortableSource(source *WatchSource) watchSourcePortableSource 
 	if source == nil {
 		return watchSourcePortableSource{}
 	}
+	autoFollowKeyGroup := source.AutoFollowKeyGroup
 	return watchSourcePortableSource{
 		Name: source.Name, AdapterType: source.AdapterType, BaseURL: source.BaseURL, APIBaseURL: source.APIBaseURL,
 		RechargeRatio: source.RechargeRatio, LowBalanceThreshold: source.LowBalanceThreshold,
 		PollingIntervalSeconds: source.PollingIntervalSeconds, RequestTimeoutSeconds: source.RequestTimeoutSeconds,
 		KeepaliveEnabled: source.KeepaliveEnabled, KeepaliveIntervalSeconds: source.KeepaliveIntervalSeconds,
-		ProfilePath: source.ProfilePath, GroupsPath: source.GroupsPath, RatesPath: source.RatesPath,
+		AutoFollowKeyGroup: &autoFollowKeyGroup,
+		ProfilePath:        source.ProfilePath, GroupsPath: source.GroupsPath, RatesPath: source.RatesPath,
 		PricingPath: source.PricingPath, KeysPath: source.KeysPath, LoginPath: source.LoginPath,
 		HeartbeatPath: source.HeartbeatPath, ReadMapping: source.ReadMapping, Enabled: source.Enabled,
 		AuthMode: source.AuthMode, LoginUsernameHint: source.LoginUsernameHint,
 		CredentialType: portableWatchCredentialType(source.CredentialType),
 	}
+}
+
+func portableWatchAutoFollowKeyGroup(value *bool) bool {
+	return value == nil || *value
 }
 
 func selectWatchSourcesForExport(sources []*WatchSource, ids []int64) []*WatchSource {

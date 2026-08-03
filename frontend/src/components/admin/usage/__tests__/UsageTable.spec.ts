@@ -68,6 +68,7 @@ const messages: Record<string, string> = {
   'usage.failover.billing.pending_reconciliation': 'Pending reconciliation',
   'usage.failover.billing.settled': 'Settled',
   'usage.failover.billing.standard_usage': 'Standard usage',
+  'usage.failover.billing.not_billable': 'Not billable',
 }
 
 vi.mock('vue-i18n', async () => {
@@ -137,7 +138,7 @@ describe('admin UsageTable tooltip', () => {
     } as DOMRect)
   })
 
-  it('shows a redacted failover billing badge and detail dialog', async () => {
+  it('shows failed attempts as redacted observational records with no charge', async () => {
     const wrapper = mount(UsageTable, {
       props: {
         data: [{ ...baseImageRow, request_id: 'local:req-failover' }],
@@ -147,9 +148,9 @@ describe('admin UsageTable tooltip', () => {
           'local:req-failover': {
             request_id: 'local:req-failover',
             attempt_count: 2,
-            billing_status: 'settled',
+            billing_status: 'standard_usage',
             attempts: [
-              { attempt_no: 1, state: 'failed', billing_status: 'settled', upstream_status_code: 524, duration_ms: 90, input_tokens: 128, output_tokens: 0, reserved_cost: 0.02, settled_cost: 0.02 },
+              { attempt_no: 1, state: 'failed', billing_status: 'not_billable', upstream_status_code: 524, duration_ms: 90, input_tokens: 128, output_tokens: 0, reserved_cost: 0, settled_cost: 0 },
               { attempt_no: 2, state: 'succeeded', billing_status: 'standard_usage', duration_ms: 140, input_tokens: 0, output_tokens: 0, reserved_cost: 0, settled_cost: 0 },
             ],
           },
@@ -168,8 +169,9 @@ describe('admin UsageTable tooltip', () => {
     expect(wrapper.text()).toContain('524')
     expect(wrapper.text()).toContain('128')
     expect(wrapper.text()).toContain('Succeeded')
+    expect(wrapper.text()).toContain('Not billable')
     expect(wrapper.text()).not.toContain('$0.000000')
-    expect(wrapper.text()).toContain('$0.020000')
+    expect(wrapper.text()).not.toContain('$0.020000')
     expect(wrapper.text()).not.toContain('account_id')
   })
 

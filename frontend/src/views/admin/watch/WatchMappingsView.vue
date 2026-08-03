@@ -18,7 +18,7 @@
       </div>
 
       <section class="rounded-lg border border-gray-200 bg-white p-5 dark:border-dark-700 dark:bg-dark-800">
-        <div class="grid gap-4 md:grid-cols-[minmax(240px,1fr)_minmax(200px,260px)_auto_auto] md:items-end">
+        <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-5">
           <label class="block text-sm text-gray-700 dark:text-gray-200">
             {{ t('admin.watch.targetGroup') }}
             <select v-model.number="filters.target_group_id" class="input mt-1 w-full">
@@ -33,13 +33,39 @@
               <option v-for="platform in platformOptions" :key="platform.value" :value="platform.value">{{ platform.label }}</option>
             </select>
           </label>
-          <button class="btn btn-primary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading" @click="applyFilters">
-            {{ loading ? t('common.loading') : t('admin.watch.loadMappings') }}
-          </button>
-          <button class="btn btn-secondary h-10 min-w-[112px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="runScan">
-            <Icon name="search" size="sm" :class="{ 'animate-pulse': scanLoading }" />
-            <span>{{ scanLoading ? t('common.loading') : t('admin.watch.scanMappings') }}</span>
-          </button>
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
+            {{ t('admin.watch.mappingStatusFilter') }}
+            <select v-model="filters.mapping_status" class="input mt-1 w-full">
+              <option value="">{{ t('admin.watch.allMappingStatuses') }}</option>
+              <option value="mapped">{{ t('admin.watch.mappingStatus_mapped') }}</option>
+              <option value="needs_confirmation">{{ t('admin.watch.mappingStatus_pending') }}</option>
+              <option value="unmapped">{{ t('admin.watch.mappingStatus_unmapped') }}</option>
+            </select>
+          </label>
+          <label class="block text-sm text-gray-700 dark:text-gray-200">
+            {{ t('admin.watch.source') }}
+            <select v-model.number="filters.source_id" class="input mt-1 w-full">
+              <option :value="0">{{ t('admin.watch.allSources') }}</option>
+              <option v-for="source in view?.sources || []" :key="source.id" :value="source.id">{{ source.name }}</option>
+            </select>
+          </label>
+          <label class="block text-sm text-gray-700 dark:text-gray-200 sm:col-span-2 xl:col-span-1">
+            {{ t('admin.watch.search') }}
+            <input v-model.trim="filters.search" class="input mt-1 w-full" type="search" :placeholder="t('admin.watch.mappingSearchPlaceholder')" @keyup.enter="applyFilters" />
+          </label>
+          <div class="flex flex-wrap items-end gap-2 sm:col-span-2 xl:col-span-4 2xl:col-span-5">
+            <button class="btn btn-primary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading" @click="applyFilters">
+              <Icon name="filter" size="sm" />
+              <span>{{ loading ? t('common.loading') : t('admin.watch.applyFilters') }}</span>
+            </button>
+            <button class="btn btn-secondary h-10 min-w-[104px] whitespace-nowrap" type="button" :disabled="loading || scanLoading" @click="resetFilters">
+              {{ t('admin.watch.resetFilters') }}
+            </button>
+            <button class="btn btn-secondary h-10 min-w-[112px] whitespace-nowrap" type="button" :disabled="scanLoading" @click="runScan">
+              <Icon name="search" size="sm" :class="{ 'animate-pulse': scanLoading }" />
+              <span>{{ scanLoading ? t('common.loading') : t('admin.watch.scanMappings') }}</span>
+            </button>
+          </div>
         </div>
         <p class="mt-3 text-xs leading-5 text-gray-500 dark:text-gray-400">{{ t('admin.watch.mappingsHint') }}</p>
       </section>
@@ -106,7 +132,7 @@
                   <div v-if="candidate.source_key_external_id" class="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{{ candidate.source_key_external_id }}</div>
                 </td>
                 <td class="px-4 py-3">
-                  <select v-if="candidate.status === 'needs_group'" v-model="scanGroupDrafts[candidate.account_id]" class="input w-full">
+                  <select v-if="candidateNeedsGroupSelection(candidate)" v-model="scanGroupDrafts[candidate.account_id]" class="input w-full">
                     <option value="">{{ t('admin.watch.selectSourceGroup') }}</option>
                     <option v-for="group in candidate.groups || []" :key="group.external_id" :value="group.external_id">
                       {{ group.name }} · {{ formatNumber(group.final_cost) }}
@@ -254,6 +280,7 @@ import {
   saveAccountMapping,
   scanAccountMappings,
   type WatchAccountMappingCandidate,
+  type WatchAccountMappingFilters,
   type WatchAccountMappingRow,
   type WatchAccountMappingsView,
   type WatchAccountMappingScanResult,
@@ -279,7 +306,13 @@ const scanResult = ref<WatchAccountMappingScanResult | null>(null)
 const drafts = reactive<Record<number, { source_id: number; source_key_external_id: string; source_group_external_id: string }>>({})
 const scanSelections = reactive<Record<number, boolean>>({})
 const scanGroupDrafts = reactive<Record<number, string>>({})
-const filters = reactive({ target_group_id: 0, platform: '' })
+const filters = reactive<{ target_group_id: number; platform: string; search: string; mapping_status: '' | NonNullable<WatchAccountMappingFilters['mapping_status']>; source_id: number }>({
+  target_group_id: 0,
+  platform: '',
+  search: '',
+  mapping_status: '',
+  source_id: 0,
+})
 const mappingPagination = reactive({ page: 1, page_size: 20 })
 const scanPagination = reactive({ page: 1, page_size: 20 })
 const mappingPageSizeOptions = [20, 50, 100]
@@ -305,6 +338,16 @@ const visibleScanCandidates = computed(() => {
   const start = (scanPagination.page - 1) * scanPagination.page_size
   return candidates.slice(start, start + scanPagination.page_size)
 })
+
+function activeMappingFilters(): WatchAccountMappingFilters {
+  return {
+    target_group_id: filters.target_group_id || undefined,
+    platform: filters.platform || undefined,
+    search: filters.search || undefined,
+    mapping_status: filters.mapping_status || undefined,
+    source_id: filters.source_id || undefined,
+  }
+}
 
 const selectedConfirmItems = computed(() => {
   const result = scanResult.value
@@ -368,16 +411,14 @@ async function loadMappings(options: { refreshScan?: boolean } = {}) {
   let shouldRefreshScan = false
   try {
     let nextView = await listAccountMappings({
-      target_group_id: filters.target_group_id || undefined,
-      platform: filters.platform || undefined,
+      ...activeMappingFilters(),
       page: mappingPagination.page,
       page_size: mappingPagination.page_size,
     })
     if (nextView.accounts.length === 0 && nextView.total > 0 && mappingPagination.page > 1) {
       mappingPagination.page = Math.max(nextView.pages, 1)
       nextView = await listAccountMappings({
-        target_group_id: filters.target_group_id || undefined,
-        platform: filters.platform || undefined,
+        ...activeMappingFilters(),
         page: mappingPagination.page,
         page_size: mappingPagination.page_size,
       })
@@ -402,6 +443,11 @@ async function applyFilters() {
   mappingPagination.page = 1
   scanPagination.page = 1
   await loadMappings({ refreshScan: true })
+}
+
+async function resetFilters() {
+  Object.assign(filters, { target_group_id: 0, platform: '', search: '', mapping_status: '', source_id: 0 })
+  await applyFilters()
 }
 
 async function handleMappingPageChange(page: number) {
@@ -504,10 +550,7 @@ async function runScan() {
   scanLoading.value = true
   error.value = ''
   try {
-    scanResult.value = await scanAccountMappings({
-      target_group_id: filters.target_group_id || undefined,
-      platform: filters.platform || undefined,
-    })
+    scanResult.value = await scanAccountMappings(activeMappingFilters())
     scanPagination.page = 1
     for (const candidate of scanResult.value.candidates) {
       scanSelections[candidate.account_id] = false
@@ -525,14 +568,19 @@ function canSelectCandidate(candidate: WatchAccountMappingCandidate) {
   if (candidate.target_group_id && !candidate.in_target_group) return false
   if (!candidate.source_id || !candidate.source_key_external_id) return false
   if (candidate.status === 'ready') return Boolean(candidate.source_group_external_id)
-  if (candidate.status === 'needs_group') return Boolean(scanGroupDrafts[candidate.account_id])
+  if (candidate.status === 'needs_group' || candidate.status === 'needs_confirmation') return Boolean(candidate.source_group_external_id || scanGroupDrafts[candidate.account_id])
   return false
+}
+
+function candidateNeedsGroupSelection(candidate: WatchAccountMappingCandidate) {
+  if (candidate.status !== 'needs_group' && candidate.status !== 'needs_confirmation') return false
+  return (candidate.groups?.length || 0) > 1 || (!candidate.source_group_external_id && (candidate.groups?.length || 0) > 0)
 }
 
 function selectReadyCandidates() {
   if (!scanResult.value) return
   for (const candidate of scanResult.value.candidates) {
-    scanSelections[candidate.account_id] = candidate.status === 'ready' && canSelectCandidate(candidate)
+    scanSelections[candidate.account_id] = (candidate.status === 'ready' || candidate.status === 'needs_confirmation') && canSelectCandidate(candidate)
   }
 }
 
@@ -642,12 +690,15 @@ async function clearRow(row: WatchAccountMappingRow) {
 }
 
 function mappingStatusText(row: WatchAccountMappingRow) {
+  if (row.mapping_status === 'needs_confirmation') return t('admin.watch.mappingStatus_needs_confirmation')
+  if (row.mapping_status === 'mapped' && row.mapping?.mapping_method === 'auto') return t('admin.watch.mappingStatus_auto_followed')
   if (row.mapping_status === 'mapped') return t('admin.watch.mappingStatus_mapped')
   if (row.mapping_status === 'auto_match_available') return t('admin.watch.mappingStatus_auto_match_available')
   return t('admin.watch.mappingStatus_unmapped')
 }
 
 function mappingStatusClass(status: string) {
+  if (status === 'needs_confirmation') return 'inline-flex rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-200'
   const base = 'inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium '
   if (status === 'mapped') return base + 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
   if (status === 'auto_match_available') return base + 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
@@ -662,6 +713,7 @@ function scanStatusClass(status: WatchAccountMappingCandidate['status']) {
   const base = 'inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium '
   if (status === 'ready') return base + 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
   if (status === 'mapped') return base + 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+  if (status === 'needs_confirmation') return base + 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
   if (status === 'needs_group') return base + 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
   if (status === 'multiple_match') return base + 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200'
   return base + 'bg-gray-100 text-gray-600 dark:bg-dark-700 dark:text-gray-300'

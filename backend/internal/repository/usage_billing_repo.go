@@ -77,8 +77,8 @@ func (r *usageBillingRepository) UpsertGatewayFailoverAttempt(ctx context.Contex
 		INSERT INTO gateway_failover_attempts (
 			request_id, request_fingerprint, user_id, api_key_id, group_id,
 			account_id, attempt_no, failure_kind, upstream_status_code, state,
-			billing_status, duration_ms, response_started, upstream_request_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NULLIF($14, ''))
+			billing_status, input_tokens, duration_ms, response_started, upstream_request_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, NULLIF($15, ''))
 		ON CONFLICT (request_id, attempt_no) DO UPDATE SET
 			failure_kind = EXCLUDED.failure_kind,
 			upstream_status_code = EXCLUDED.upstream_status_code,
@@ -88,101 +88,15 @@ func (r *usageBillingRepository) UpsertGatewayFailoverAttempt(ctx context.Contex
 					THEN gateway_failover_attempts.billing_status
 				ELSE EXCLUDED.billing_status
 			END,
+			input_tokens = EXCLUDED.input_tokens,
 			duration_ms = EXCLUDED.duration_ms,
 			response_started = EXCLUDED.response_started,
 			upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, gateway_failover_attempts.upstream_request_id),
 			updated_at = NOW()
 	`, attempt.RequestID, attempt.RequestFingerprint, attempt.UserID, attempt.APIKeyID, attempt.GroupID,
 		attempt.AccountID, attempt.AttemptNo, attempt.FailureKind, attempt.UpstreamStatusCode, attempt.State,
-		attempt.BillingStatus, attempt.DurationMS, attempt.ResponseStarted, attempt.UpstreamRequestID)
+		attempt.BillingStatus, attempt.InputTokens, attempt.DurationMS, attempt.ResponseStarted, attempt.UpstreamRequestID)
 	return err
-}
-
-func (r *usageBillingRepository) SettleGatewayFailoverAttempt(
-	ctx context.Context,
-	attempt *service.GatewayFailoverAttempt,
-	billing *service.UsageBillingCommand,
-) (_ *service.UsageBillingApplyResult, err error) {
-	if attempt == nil || billing == nil {
-		return nil, errors.New("gateway failover settlement input is nil")
-	}
-	if r == nil || r.db == nil {
-		return nil, errors.New("usage billing repository db is nil")
-	}
-	attempt.Normalize()
-	billing.Normalize()
-	if attempt.RequestID == "" || attempt.AttemptNo <= 0 || attempt.UserID <= 0 || attempt.APIKeyID <= 0 || billing.RequestID == "" {
-		return nil, errors.New("invalid gateway failover settlement identity")
-	}
-
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	var existingStatus string
-	err = tx.QueryRowContext(ctx, `
-		INSERT INTO gateway_failover_attempts (
-			request_id, request_fingerprint, user_id, api_key_id, group_id,
-			account_id, attempt_no, failure_kind, upstream_status_code, state,
-			billing_status, duration_ms, response_started, upstream_request_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'reserved', $11, $12, NULLIF($13, ''))
-		ON CONFLICT (request_id, attempt_no) DO UPDATE SET
-			failure_kind = EXCLUDED.failure_kind,
-			upstream_status_code = EXCLUDED.upstream_status_code,
-			state = EXCLUDED.state,
-			duration_ms = EXCLUDED.duration_ms,
-			response_started = EXCLUDED.response_started,
-			upstream_request_id = COALESCE(EXCLUDED.upstream_request_id, gateway_failover_attempts.upstream_request_id),
-			updated_at = NOW()
-		RETURNING billing_status
-	`, attempt.RequestID, attempt.RequestFingerprint, attempt.UserID, attempt.APIKeyID, attempt.GroupID,
-		attempt.AccountID, attempt.AttemptNo, attempt.FailureKind, attempt.UpstreamStatusCode, attempt.State,
-		attempt.DurationMS, attempt.ResponseStarted, attempt.UpstreamRequestID).Scan(&existingStatus)
-	if err != nil {
-		return nil, err
-	}
-	if existingStatus == service.GatewayFailoverBillingSettled {
-		if err := tx.Commit(); err != nil {
-			return nil, err
-		}
-		tx = nil
-		return &service.UsageBillingApplyResult{Applied: false}, nil
-	}
-
-	applied, err := r.claimUsageBillingKey(ctx, tx, billing)
-	if err != nil {
-		return nil, err
-	}
-	result := &service.UsageBillingApplyResult{Applied: applied}
-	if applied {
-		if err := r.applyUsageBillingEffects(ctx, tx, billing, result); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE gateway_failover_attempts
-		SET input_tokens = $1,
-			output_tokens = $2,
-			reserved_cost = $3,
-			settled_cost = $3,
-			billing_status = 'settled',
-			updated_at = NOW()
-		WHERE request_id = $4 AND attempt_no = $5
-	`, billing.InputTokens, billing.OutputTokens, billing.BalanceCost+billing.SubscriptionCost, attempt.RequestID, attempt.AttemptNo); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	tx = nil
-	return result, nil
 }
 
 func (r *usageBillingRepository) claimUsageBillingKey(ctx context.Context, tx *sql.Tx, cmd *service.UsageBillingCommand) (bool, error) {

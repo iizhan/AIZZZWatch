@@ -2,39 +2,36 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
-type gatewayFailoverSettlementRepoStub struct {
+type gatewayFailoverAttemptRepoStub struct {
 	attempt *GatewayFailoverAttempt
-	billing *UsageBillingCommand
-	result  *UsageBillingApplyResult
 	err     error
 }
 
-func (s *gatewayFailoverSettlementRepoStub) Apply(context.Context, *UsageBillingCommand) (*UsageBillingApplyResult, error) {
+func (s *gatewayFailoverAttemptRepoStub) Apply(context.Context, *UsageBillingCommand) (*UsageBillingApplyResult, error) {
 	panic("unexpected Apply call")
 }
 
-func (s *gatewayFailoverSettlementRepoStub) ReserveBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+func (s *gatewayFailoverAttemptRepoStub) ReserveBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
 	panic("unexpected ReserveBatchImageBalance call")
 }
 
-func (s *gatewayFailoverSettlementRepoStub) CaptureBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+func (s *gatewayFailoverAttemptRepoStub) CaptureBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
 	panic("unexpected CaptureBatchImageBalance call")
 }
 
-func (s *gatewayFailoverSettlementRepoStub) ReleaseBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
+func (s *gatewayFailoverAttemptRepoStub) ReleaseBatchImageBalance(context.Context, *BatchImageBalanceHoldCommand) (*BatchImageBalanceHoldResult, error) {
 	panic("unexpected ReleaseBatchImageBalance call")
 }
 
-func (s *gatewayFailoverSettlementRepoStub) SettleGatewayFailoverAttempt(_ context.Context, attempt *GatewayFailoverAttempt, billing *UsageBillingCommand) (*UsageBillingApplyResult, error) {
+func (s *gatewayFailoverAttemptRepoStub) UpsertGatewayFailoverAttempt(_ context.Context, attempt *GatewayFailoverAttempt) error {
 	s.attempt = attempt
-	s.billing = billing
-	return s.result, s.err
+	return s.err
 }
 
 func TestEstimateGatewayFailoverInputTokensSupportsTextEndpoints(t *testing.T) {
@@ -68,27 +65,8 @@ func TestEstimateGatewayFailoverInputTokensRejectsUnsupportedEndpoint(t *testing
 	require.ErrorContains(t, err, "not billable")
 }
 
-func TestBuildGatewayFailoverBillingCommandUsesAttemptIdempotencyAndUserQuota(t *testing.T) {
-	apiKey := &APIKey{ID: 22, User: &User{ID: 11}, Quota: 10, RateLimit5h: 5}
-	input := &GatewayFailoverChargeInput{
-		Attempt: &GatewayFailoverAttempt{RequestID: "local:req-1", RequestFingerprint: "payload", AttemptNo: 2},
-		Model:   "gpt-4o", APIKey: apiKey, Account: &Account{ID: 33, Type: AccountTypeAPIKey},
-	}
-
-	first := buildGatewayFailoverBillingCommand(input, 128, 0.025)
-	second := buildGatewayFailoverBillingCommand(input, 128, 0.025)
-
-	require.Equal(t, first.RequestID, second.RequestID)
-	require.Contains(t, first.RequestID, "failover:")
-	require.Equal(t, 128, first.InputTokens)
-	require.Zero(t, first.OutputTokens)
-	require.InDelta(t, 0.025, first.BalanceCost, 0.000001)
-	require.InDelta(t, 0.025, first.APIKeyQuotaCost, 0.000001)
-	require.InDelta(t, 0.025, first.APIKeyRateLimitCost, 0.000001)
-}
-
-func TestChargeGatewayFailoverAttemptSettlesEstimatedInputCost(t *testing.T) {
-	repo := &gatewayFailoverSettlementRepoStub{result: &UsageBillingApplyResult{Applied: true}}
+func TestObserveGatewayFailoverAttemptRecordsEstimateWithoutMonetarySettlement(t *testing.T) {
+	repo := &gatewayFailoverAttemptRepoStub{}
 	apiKey := &APIKey{ID: 22, User: &User{ID: 11}, Quota: 10, RateLimit5h: 5}
 	input := &GatewayFailoverChargeInput{
 		Attempt: &GatewayFailoverAttempt{
@@ -101,19 +79,35 @@ func TestChargeGatewayFailoverAttemptSettlesEstimatedInputCost(t *testing.T) {
 		APIKey: apiKey, Account: &Account{ID: 33, Type: AccountTypeAPIKey}, QuotaPlatform: PlatformOpenAI,
 	}
 
-	result, err := chargeGatewayFailoverAttempt(
-		context.Background(), repo, NewBillingService(&config.Config{}, nil), nil, nil, nil, nil, input,
-	)
+	result, err := recordGatewayFailoverAttemptEstimate(context.Background(), repo, input)
 
 	require.NoError(t, err)
-	require.True(t, result.Applied)
-	require.Equal(t, GatewayFailoverBillingSettled, result.BillingStatus)
+	require.False(t, result.Applied)
+	require.Equal(t, GatewayFailoverBillingNotBillable, result.BillingStatus)
 	require.Positive(t, result.InputTokens)
-	require.Positive(t, result.EstimatedCost)
+	require.Zero(t, result.EstimatedCost)
 	require.Same(t, input.Attempt, repo.attempt)
-	require.Equal(t, result.InputTokens, repo.billing.InputTokens)
-	require.Zero(t, repo.billing.OutputTokens)
-	require.InDelta(t, result.EstimatedCost, repo.billing.BalanceCost, 0.000000001)
-	require.InDelta(t, result.EstimatedCost, repo.billing.APIKeyQuotaCost, 0.000000001)
-	require.InDelta(t, result.EstimatedCost, repo.billing.APIKeyRateLimitCost, 0.000000001)
+	require.Equal(t, result.InputTokens, repo.attempt.InputTokens)
+	require.Equal(t, GatewayFailoverBillingNotBillable, repo.attempt.BillingStatus)
+}
+
+func TestObserveGatewayFailoverAttemptLargeResponsesPayloadNeverSettlesMoney(t *testing.T) {
+	repo := &gatewayFailoverAttemptRepoStub{}
+	payload := `{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"data:image/png;base64,` + strings.Repeat("A", 256*1024) + `"}]}]}`
+	input := &GatewayFailoverChargeInput{
+		Attempt: &GatewayFailoverAttempt{
+			RequestID: "local:req-large-responses", UserID: 11, APIKeyID: 22,
+			AccountID: 33, AttemptNo: 1, State: "failed",
+		},
+		Endpoint: GatewayFailoverEndpointResponses, RequestBody: []byte(payload), Model: "gpt-4o",
+		APIKey: &APIKey{ID: 22, User: &User{ID: 11}}, Account: &Account{ID: 33, Type: AccountTypeAPIKey},
+	}
+
+	result, err := recordGatewayFailoverAttemptEstimate(context.Background(), repo, input)
+
+	require.NoError(t, err)
+	require.False(t, result.Applied)
+	require.Zero(t, result.EstimatedCost)
+	require.Equal(t, GatewayFailoverBillingNotBillable, result.BillingStatus)
+	require.Equal(t, GatewayFailoverBillingNotBillable, repo.attempt.BillingStatus)
 }

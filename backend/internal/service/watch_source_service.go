@@ -27,6 +27,7 @@ type WatchSourceInput struct {
 	RequestTimeoutSeconds    int                     `json:"request_timeout_seconds"`
 	KeepaliveEnabled         *bool                   `json:"keepalive_enabled"`
 	KeepaliveIntervalSeconds int                     `json:"keepalive_interval_seconds"`
+	AutoFollowKeyGroup       *bool                   `json:"auto_follow_key_group"`
 	ProfilePath              string                  `json:"profile_path"`
 	GroupsPath               string                  `json:"groups_path"`
 	RatesPath                string                  `json:"rates_path"`
@@ -399,6 +400,13 @@ func (s *WatchSourceService) prepareMutation(ctx context.Context, input WatchSou
 	if input.KeepaliveEnabled != nil {
 		keepaliveEnabled = *input.KeepaliveEnabled
 	}
+	autoFollowKeyGroup := true
+	if existing != nil {
+		autoFollowKeyGroup = existing.AutoFollowKeyGroup
+	}
+	if input.AutoFollowKeyGroup != nil {
+		autoFollowKeyGroup = *input.AutoFollowKeyGroup
+	}
 	keepaliveInterval := input.KeepaliveIntervalSeconds
 	if keepaliveInterval == 0 {
 		if existing != nil && existing.KeepaliveIntervalSeconds > 0 {
@@ -437,7 +445,8 @@ func (s *WatchSourceService) prepareMutation(ctx context.Context, input WatchSou
 		RatesPath: paths.RatesPath, PricingPath: paths.PricingPath, KeysPath: paths.KeysPath,
 		LoginPath: paths.LoginPath, LoginUsernameHint: existingWatchLoginUsernameHint(existing),
 		HeartbeatPath: paths.HeartbeatPath, ReadMapping: readMapping,
-		KeepaliveEnabled: keepaliveEnabled, KeepaliveIntervalSeconds: keepaliveInterval, Enabled: input.Enabled,
+		KeepaliveEnabled: keepaliveEnabled, KeepaliveIntervalSeconds: keepaliveInterval,
+		AutoFollowKeyGroup: autoFollowKeyGroup, Enabled: input.Enabled,
 		UpdatedBy: &actorID,
 	}
 	credentialType := strings.ToLower(strings.TrimSpace(input.CredentialType))

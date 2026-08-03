@@ -204,7 +204,7 @@ func (h *OpenAIGatewayHandler) Embeddings(c *gin.Context) {
 			var failoverErr *service.UpstreamFailoverError
 			if errors.As(err, &failoverErr) {
 				responseStarted := c.Writer.Size() != writerSizeBeforeForward
-				settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+				settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 					c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 					apiKey, account, subscription, service.GatewayFailoverEndpointEmbeddings,
 					body, reqModel, reqModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),

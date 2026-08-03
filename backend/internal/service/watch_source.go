@@ -67,6 +67,7 @@ type WatchSource struct {
 	ReadMapping              *WatchSourceReadMapping `json:"read_mapping,omitempty"`
 	KeepaliveEnabled         bool                    `json:"keepalive_enabled"`
 	KeepaliveIntervalSeconds int                     `json:"keepalive_interval_seconds"`
+	AutoFollowKeyGroup       bool                    `json:"auto_follow_key_group"`
 	Enabled                  bool                    `json:"enabled"`
 	HasCredential            bool                    `json:"has_credential"`
 	HasLoginCredential       bool                    `json:"has_login_credential"`
@@ -248,19 +249,22 @@ type WatchPriceChange struct {
 }
 
 type WatchAccountUpstreamMapping struct {
-	AccountID             int64     `json:"account_id"`
-	AccountName           string    `json:"account_name,omitempty"`
-	Platform              string    `json:"platform,omitempty"`
-	SourceID              int64     `json:"source_id"`
-	SourceName            string    `json:"source_name,omitempty"`
-	SourceKeyExternalID   string    `json:"source_key_external_id"`
-	SourceKeyLabel        string    `json:"source_key_label,omitempty"`
-	SourceGroupExternalID string    `json:"source_group_external_id,omitempty"`
-	SourceGroupName       string    `json:"source_group_name,omitempty"`
-	MappingMethod         string    `json:"mapping_method"`
-	UpdatedBy             *int64    `json:"updated_by,omitempty"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
+	AccountID                 int64      `json:"account_id"`
+	AccountName               string     `json:"account_name,omitempty"`
+	Platform                  string     `json:"platform,omitempty"`
+	SourceID                  int64      `json:"source_id"`
+	SourceName                string     `json:"source_name,omitempty"`
+	SourceKeyExternalID       string     `json:"source_key_external_id"`
+	SourceKeyLabel            string     `json:"source_key_label,omitempty"`
+	SourceGroupExternalID     string     `json:"source_group_external_id,omitempty"`
+	SourceGroupName           string     `json:"source_group_name,omitempty"`
+	MappingMethod             string     `json:"mapping_method"`
+	GroupBindingState         string     `json:"group_binding_state"`
+	ConfirmedGroupExternalIDs []string   `json:"-"`
+	SourceKeyObservedAt       *time.Time `json:"-"`
+	UpdatedBy                 *int64     `json:"updated_by,omitempty"`
+	CreatedAt                 time.Time  `json:"created_at"`
+	UpdatedAt                 time.Time  `json:"updated_at"`
 }
 
 type WatchAccountMappingInput struct {
@@ -298,9 +302,22 @@ type WatchAccountMappingsView struct {
 	Pages         int                      `json:"pages"`
 }
 
+type WatchAccountMappingListRequest struct {
+	TargetGroupID int64
+	Platform      string
+	Search        string
+	MappingStatus string
+	SourceID      int64
+	Page          int
+	PageSize      int
+}
+
 type WatchAccountMappingScanRequest struct {
 	TargetGroupID int64  `json:"target_group_id,omitempty"`
 	Platform      string `json:"platform,omitempty"`
+	Search        string `json:"search,omitempty"`
+	MappingStatus string `json:"mapping_status,omitempty"`
+	SourceID      int64  `json:"source_id,omitempty"`
 }
 
 type WatchAccountMappingCandidateGroup struct {

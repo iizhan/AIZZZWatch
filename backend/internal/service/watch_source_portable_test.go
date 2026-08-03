@@ -103,7 +103,7 @@ func TestWatchSourcePortableExportPreviewAndApply(t *testing.T) {
 		ID: 1, Name: "QA source", AdapterType: WatchSourceAdapterSub2API,
 		BaseURL: "https://upstream.example", APIBaseURL: "https://upstream.example/api/v1",
 		RechargeRatio: 1, PollingIntervalSeconds: 60, RequestTimeoutSeconds: 15,
-		KeepaliveEnabled: true, KeepaliveIntervalSeconds: 300, Enabled: true,
+		KeepaliveEnabled: true, KeepaliveIntervalSeconds: 300, AutoFollowKeyGroup: true, Enabled: true,
 		AuthMode: WatchSourceAuthModeManual, CredentialType: WatchCredentialBearer,
 		HasCredential: true,
 	}
@@ -145,6 +145,9 @@ func TestWatchSourcePortableExportPreviewAndApply(t *testing.T) {
 	if repo.created.EncryptedSecret == "" || repo.created.Source.Name != "QA source copy" {
 		t.Fatalf("import mutation did not preserve encrypted credential/config: %#v", repo.created)
 	}
+	if !repo.created.Source.AutoFollowKeyGroup {
+		t.Fatal("import mutation did not preserve auto-follow key group setting")
+	}
 }
 
 func TestWatchSourcePortableOverwriteWithoutCredentialsPreservesExistingSecrets(t *testing.T) {
@@ -152,7 +155,7 @@ func TestWatchSourcePortableOverwriteWithoutCredentialsPreservesExistingSecrets(
 		ID: 1, Name: "QA source", AdapterType: WatchSourceAdapterSub2API,
 		BaseURL: "https://upstream.example", APIBaseURL: "https://upstream.example/api/v1",
 		RechargeRatio: 1, PollingIntervalSeconds: 60, RequestTimeoutSeconds: 15,
-		KeepaliveEnabled: true, KeepaliveIntervalSeconds: 300, Enabled: true,
+		KeepaliveEnabled: true, KeepaliveIntervalSeconds: 300, AutoFollowKeyGroup: true, Enabled: true,
 		AuthMode: WatchSourceAuthModeManual, CredentialType: WatchCredentialBearer,
 		HasCredential: true, HasLoginCredential: true,
 	}
@@ -185,6 +188,9 @@ func TestWatchSourcePortableOverwriteWithoutCredentialsPreservesExistingSecrets(
 	}
 	if result.Updated != 1 || repo.updated == nil {
 		t.Fatalf("import result = %#v, updated = %#v", result, repo.updated)
+	}
+	if !repo.updated.Source.AutoFollowKeyGroup {
+		t.Fatal("legacy portable package should default auto-follow key group to enabled")
 	}
 	if repo.updated.ClearCredential || repo.updated.ClearLoginCredential {
 		t.Fatalf("overwrite without credentials should preserve existing secrets: %#v", repo.updated)

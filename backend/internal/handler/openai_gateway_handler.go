@@ -590,7 +590,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					responseStarted := !openAIForwardMayFailover(c, writerSizeBeforeForward, failoverErr)
-					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 						apiKey, account, subscription, service.GatewayFailoverEndpointResponses,
 						body, reqModel, reqModel, gjson.GetBytes(body, "service_tier").String(), service.QuotaPlatform(c.Request.Context(), apiKey),
@@ -1154,7 +1154,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				var failoverErr *service.UpstreamFailoverError
 				if errors.As(err, &failoverErr) {
 					responseStarted := c.Writer.Size() != writerSizeBeforeForward
-					settled, billingErr := settleGatewayFailoverAttemptBeforeReplay(
+					settled, billingErr := recordGatewayFailoverAttemptBeforeReplay(
 						c, h.gatewayService, h.gatewayService, c.Request.Context(), attemptMeta,
 						apiKey, account, subscription, service.GatewayFailoverEndpointMessages,
 						body, reqModel, currentRoutingModel, "", service.QuotaPlatform(c.Request.Context(), apiKey),

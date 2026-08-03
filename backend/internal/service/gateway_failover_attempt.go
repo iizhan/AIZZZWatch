@@ -2,16 +2,13 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/timezone"
 )
 
 const (
@@ -35,6 +32,7 @@ type GatewayFailoverAttempt struct {
 	UpstreamStatusCode *int
 	State              string
 	BillingStatus      string
+	InputTokens        int
 	DurationMS         int
 	ResponseStarted    bool
 	UpstreamRequestID  string
@@ -86,10 +84,6 @@ type GatewayFailoverChargeResult struct {
 	BillingStatus string
 }
 
-type GatewayFailoverAttemptSettlementRepository interface {
-	SettleGatewayFailoverAttempt(ctx context.Context, attempt *GatewayFailoverAttempt, billing *UsageBillingCommand) (*UsageBillingApplyResult, error)
-}
-
 type GatewayFailoverAttemptPublic struct {
 	AttemptNo          int     `json:"attempt_no"`
 	State              string  `json:"state"`
@@ -111,6 +105,65 @@ type GatewayFailoverRequestSummary struct {
 
 type GatewayFailoverAttemptQueryRepository interface {
 	ListGatewayFailoverAttemptsByRequests(ctx context.Context, userID int64, requestIDs []string) ([]GatewayFailoverRequestSummary, error)
+}
+
+type GatewayFailoverRefundFilter struct {
+	StartAt time.Time
+	EndAt   time.Time
+	UserID  int64
+}
+
+func (f GatewayFailoverRefundFilter) Validate() error {
+	if f.StartAt.IsZero() || f.EndAt.IsZero() || !f.StartAt.Before(f.EndAt) {
+		return errors.New("gateway failover refund range is invalid")
+	}
+	if f.EndAt.Sub(f.StartAt) > 31*24*time.Hour {
+		return errors.New("gateway failover refund range cannot exceed 31 days")
+	}
+	if f.UserID < 0 {
+		return errors.New("gateway failover refund user is invalid")
+	}
+	return nil
+}
+
+type GatewayFailoverRefundCandidate struct {
+	AttemptID           int64      `json:"attempt_id"`
+	RefundKey           string     `json:"refund_key"`
+	UserID              int64      `json:"user_id"`
+	RequestID           string     `json:"request_id"`
+	AttemptNo           int        `json:"attempt_no"`
+	UpstreamStatusCode  *int       `json:"upstream_status_code,omitempty"`
+	BillingStatus       string     `json:"billing_status"`
+	CandidateStatus     string     `json:"candidate_status"`
+	OriginalSettledCost float64    `json:"original_settled_cost"`
+	RefundedCost        float64    `json:"refunded_cost"`
+	OutstandingCost     float64    `json:"outstanding_cost"`
+	AttemptedAt         time.Time  `json:"attempted_at"`
+	RefundedAt          *time.Time `json:"refunded_at,omitempty"`
+}
+
+type GatewayFailoverRefundDryRun struct {
+	GeneratedAt     time.Time                        `json:"generated_at"`
+	StartAt         time.Time                        `json:"start_at"`
+	EndAt           time.Time                        `json:"end_at"`
+	UserID          int64                            `json:"user_id,omitempty"`
+	UserCount       int                              `json:"user_count"`
+	RequestCount    int                              `json:"request_count"`
+	AttemptCount    int                              `json:"attempt_count"`
+	CandidateCost   float64                          `json:"candidate_cost"`
+	RefundedCost    float64                          `json:"refunded_cost"`
+	OutstandingCost float64                          `json:"outstanding_cost"`
+	Candidates      []GatewayFailoverRefundCandidate `json:"candidates"`
+}
+
+type GatewayFailoverRefundStageResult struct {
+	StagedCount int                         `json:"staged_count"`
+	DryRun      GatewayFailoverRefundDryRun `json:"dry_run"`
+}
+
+type GatewayFailoverRefundRepository interface {
+	DryRunGatewayFailoverRefunds(ctx context.Context, filter GatewayFailoverRefundFilter) (*GatewayFailoverRefundDryRun, error)
+	StageGatewayFailoverRefundCandidates(ctx context.Context, filter GatewayFailoverRefundFilter) (int, error)
 }
 
 func gatewayFailoverAttemptRepository(repo UsageBillingRepository) GatewayFailoverAttemptRepository {
@@ -139,164 +192,56 @@ func (s *OpenAIGatewayService) RecordGatewayFailoverAttempt(ctx context.Context,
 	return repo.UpsertGatewayFailoverAttempt(ctx, attempt)
 }
 
-func (s *GatewayService) ChargeGatewayFailoverAttempt(ctx context.Context, input *GatewayFailoverChargeInput) (*GatewayFailoverChargeResult, error) {
+func (s *GatewayService) ObserveGatewayFailoverAttempt(ctx context.Context, input *GatewayFailoverChargeInput) (*GatewayFailoverChargeResult, error) {
 	if s == nil {
 		return nil, errors.New("gateway service is nil")
 	}
-	return chargeGatewayFailoverAttempt(ctx, s.usageBillingRepo, s.billingService, s.resolver, s.cfg, s.billingDeps(), s.ResolveUserGroupRateMultiplier, input)
+	return recordGatewayFailoverAttemptEstimate(ctx, s.usageBillingRepo, input)
 }
 
-func (s *OpenAIGatewayService) ChargeGatewayFailoverAttempt(ctx context.Context, input *GatewayFailoverChargeInput) (*GatewayFailoverChargeResult, error) {
+func (s *OpenAIGatewayService) ObserveGatewayFailoverAttempt(ctx context.Context, input *GatewayFailoverChargeInput) (*GatewayFailoverChargeResult, error) {
 	if s == nil {
 		return nil, errors.New("openai gateway service is nil")
 	}
-	return chargeGatewayFailoverAttempt(ctx, s.usageBillingRepo, s.billingService, s.resolver, s.cfg, s.billingDeps(), s.ResolveUserGroupRateMultiplier, input)
+	return recordGatewayFailoverAttemptEstimate(ctx, s.usageBillingRepo, input)
 }
 
-type gatewayFailoverRateResolver func(context.Context, int64, int64, float64) float64
-
-func chargeGatewayFailoverAttempt(
+// recordGatewayFailoverAttemptEstimate keeps an observational token estimate for
+// operators, but deliberately has no access to the monetary billing repository.
+// Failed upstream attempts are never user-billable; only the final successful
+// usage record may apply balance or quota effects.
+func recordGatewayFailoverAttemptEstimate(
 	ctx context.Context,
 	repo UsageBillingRepository,
-	billingService *BillingService,
-	pricingResolver *ModelPricingResolver,
-	cfg *config.Config,
-	deps *billingDeps,
-	resolveRate gatewayFailoverRateResolver,
 	input *GatewayFailoverChargeInput,
 ) (*GatewayFailoverChargeResult, error) {
 	if input == nil || input.Attempt == nil || input.APIKey == nil || input.APIKey.User == nil || input.Account == nil {
 		return nil, errors.New("gateway failover charge input is incomplete")
 	}
-	if cfg != nil && cfg.RunMode == config.RunModeSimple {
-		return nil, errors.New("gateway failover estimated charging is unavailable in simple mode")
-	}
-	settlementRepo, ok := repo.(GatewayFailoverAttemptSettlementRepository)
-	if !ok || settlementRepo == nil {
-		return nil, errors.New("gateway failover settlement repository is unavailable")
-	}
-	if billingService == nil {
-		return nil, errors.New("gateway failover billing service is unavailable")
+	attemptRepo := gatewayFailoverAttemptRepository(repo)
+	if attemptRepo == nil {
+		return nil, errors.New("gateway failover attempt repository is unavailable")
 	}
 
 	inputTokens, err := estimateGatewayFailoverInputTokens(input.Endpoint, input.Model, input.RequestBody)
 	if err != nil {
-		return nil, err
-	}
-	multiplier := 1.0
-	if cfg != nil {
-		multiplier = cfg.Default.RateMultiplier
-	}
-	if input.APIKey.GroupID != nil && input.APIKey.Group != nil && resolveRate != nil {
-		multiplier = resolveRate(ctx, input.APIKey.User.ID, *input.APIKey.GroupID, input.APIKey.Group.RateMultiplier)
-	}
-	multiplier, _ = computePeakAwareMultipliers(input.APIKey, multiplier, timezone.Now())
-
-	billingModel := strings.TrimSpace(input.BillingModel)
-	if billingModel == "" {
-		billingModel = strings.TrimSpace(input.Model)
-	}
-	if billingModel == "" {
-		return nil, errors.New("gateway failover billing model is empty")
-	}
-	tokens := UsageTokens{InputTokens: inputTokens}
-	var cost *CostBreakdown
-	if pricingResolver != nil && input.APIKey.Group != nil {
-		groupID := input.APIKey.Group.ID
-		cost, err = billingService.CalculateCostUnified(CostInput{
-			Ctx:            ctx,
-			Model:          billingModel,
-			GroupID:        &groupID,
-			Tokens:         tokens,
-			RequestCount:   1,
-			RateMultiplier: multiplier,
-			ServiceTier:    strings.TrimSpace(input.ServiceTier),
-			Resolver:       pricingResolver,
-		})
-	} else {
-		cost, err = billingService.CalculateCostWithServiceTier(billingModel, tokens, multiplier, input.ServiceTier)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("estimate gateway failover cost: %w", err)
-	}
-	if cost == nil || cost.ActualCost < 0 {
-		return nil, errors.New("gateway failover estimated cost is invalid")
+		// Audit persistence must not turn an otherwise retryable upstream failure
+		// into a client-visible gateway failure. Keep zero when estimation is not
+		// available for an endpoint or payload shape.
+		inputTokens = 0
 	}
 
-	billing := buildGatewayFailoverBillingCommand(input, inputTokens, cost.ActualCost)
-	applyResult, err := settlementRepo.SettleGatewayFailoverAttempt(ctx, input.Attempt, billing)
-	if err != nil {
+	input.Attempt.InputTokens = inputTokens
+	input.Attempt.BillingStatus = GatewayFailoverBillingNotBillable
+	if err := attemptRepo.UpsertGatewayFailoverAttempt(ctx, input.Attempt); err != nil {
 		return nil, err
-	}
-	if applyResult != nil && applyResult.Applied {
-		finalizeGatewayFailoverCharge(ctx, &postUsageBillingParams{
-			Cost:               &CostBreakdown{TotalCost: cost.TotalCost, ActualCost: cost.ActualCost},
-			User:               input.APIKey.User,
-			APIKey:             input.APIKey,
-			Account:            input.Account,
-			Subscription:       input.Subscription,
-			IsSubscriptionBill: billing.SubscriptionCost > 0,
-			Platform:           input.QuotaPlatform,
-		}, deps, applyResult)
 	}
 	return &GatewayFailoverChargeResult{
-		Applied:       applyResult != nil && applyResult.Applied,
+		Applied:       false,
 		InputTokens:   inputTokens,
-		EstimatedCost: cost.ActualCost,
-		BillingStatus: GatewayFailoverBillingSettled,
+		EstimatedCost: 0,
+		BillingStatus: GatewayFailoverBillingNotBillable,
 	}, nil
-}
-
-func buildGatewayFailoverBillingCommand(input *GatewayFailoverChargeInput, inputTokens int, estimatedCost float64) *UsageBillingCommand {
-	attempt := input.Attempt
-	requestKeySource := fmt.Sprintf("%s|%d", strings.TrimSpace(attempt.RequestID), attempt.AttemptNo)
-	requestKeyHash := sha256.Sum256([]byte(requestKeySource))
-	billing := &UsageBillingCommand{
-		RequestID:          "failover:" + hex.EncodeToString(requestKeyHash[:]),
-		APIKeyID:           input.APIKey.ID,
-		RequestPayloadHash: strings.TrimSpace(attempt.RequestFingerprint),
-		UserID:             input.APIKey.User.ID,
-		AccountID:          input.Account.ID,
-		AccountType:        input.Account.Type,
-		Model:              strings.TrimSpace(input.BillingModel),
-		ServiceTier:        strings.TrimSpace(input.ServiceTier),
-		InputTokens:        inputTokens,
-		OutputTokens:       0,
-	}
-	if billing.Model == "" {
-		billing.Model = strings.TrimSpace(input.Model)
-	}
-	if input.Subscription != nil && input.APIKey.Group != nil && input.APIKey.Group.IsSubscriptionType() {
-		billing.SubscriptionID = &input.Subscription.ID
-		billing.SubscriptionCost = estimatedCost
-		billing.BillingType = BillingTypeSubscription
-	} else {
-		billing.BalanceCost = estimatedCost
-		billing.BillingType = BillingTypeBalance
-	}
-	if input.APIKey.Quota > 0 {
-		billing.APIKeyQuotaCost = estimatedCost
-	}
-	if input.APIKey.HasRateLimits() {
-		billing.APIKeyRateLimitCost = estimatedCost
-	}
-	billing.Normalize()
-	return billing
-}
-
-func finalizeGatewayFailoverCharge(ctx context.Context, p *postUsageBillingParams, deps *billingDeps, result *UsageBillingApplyResult) {
-	if p == nil || p.Cost == nil || p.APIKey == nil || p.User == nil || deps == nil || deps.billingCacheService == nil {
-		return
-	}
-	if p.IsSubscriptionBill && p.APIKey.GroupID != nil {
-		deps.billingCacheService.QueueUpdateSubscriptionUsage(p.User.ID, *p.APIKey.GroupID, p.Cost.ActualCost)
-	} else {
-		syncBalanceCacheAfterDeduction(ctx, p, deps, result)
-	}
-	if p.APIKey.HasRateLimits() {
-		deps.billingCacheService.QueueUpdateAPIKeyRateLimitUsage(p.APIKey.ID, p.Cost.ActualCost)
-	}
-	go notifyBalanceLow(p, deps, result)
 }
 
 func estimateGatewayFailoverInputTokens(endpoint GatewayFailoverEndpoint, model string, body []byte) (int, error) {
