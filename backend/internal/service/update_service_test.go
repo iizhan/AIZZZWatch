@@ -138,9 +138,9 @@ func TestCompareVersionsUsesNumericCoreForCustomBuilds(t *testing.T) {
 		latest  string
 		want    int
 	}{
-		{name: "custom prerelease matches upstream", current: "0.1.170-watch.1", latest: "0.1.170", want: 0},
-		{name: "custom build metadata matches upstream", current: "0.1.170+watch.1", latest: "0.1.170", want: 0},
-		{name: "newer upstream is still detected", current: "0.1.170-watch.1", latest: "0.1.171", want: -1},
+		{name: "custom prerelease matches upstream", current: "0.1.170-watch.2", latest: "0.1.170", want: 0},
+		{name: "custom build metadata matches upstream", current: "0.1.170+watch.2", latest: "0.1.170", want: 0},
+		{name: "newer upstream is still detected", current: "0.1.170-watch.2", latest: "0.1.171", want: -1},
 	}
 
 	for _, tt := range tests {
