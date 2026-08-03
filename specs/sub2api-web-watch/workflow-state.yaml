@@ -42,7 +42,7 @@ residual_risks:
 scenario_loop_runs:
   - id: "loop-sub2api-release-v0.1.170-watch.1-001"
     initiation_source: conversation
-    status: awaiting_user_acceptance
+    status: completed
     iteration: 1
     root_cause: "已验证的官方 v0.1.170 定制分支尚未形成可审计发布资产，也未完成生产蓝绿预检、备份和隔离绿色验证"
     strategy: "以独立定制版本创建发布分支和不可变标签，先验证与备份，再启动不接流量的绿色容器；切流、停蓝、启用故障转移和退款保持独立授权"
@@ -50,9 +50,9 @@ scenario_loop_runs:
       score: 96
       dimensions: {coverage: 94, correctness: 98, verification: 96, maintainability: 96}
       required_checks: [no_blocking_issue, evidence_for_all_confirmed_acceptance, impact_scope_self_check]
-    evidence: ["confirmed-release-preparation-package-v1", "release-branch-3d2571d7d", "frontend-207-files-1430-tests", "backend-four-package-regression", "linux-amd64-image-build", "production-backup-sha256-verified", "blue-8093-green-8094-healthy", "nginx-still-8093", "failover-disabled", "visible-admin-login-and-compliance-gate"]
-    stop_reason: "发布分支、备份、隔离绿色部署和登录验收入口完成；按确认包在切流前停止，等待用户亲自完成合规确认和绿色验收"
-    residual_risk: "远端 v0.1.170-watch.1 标签仍指向 lockfile 修复前提交，需独立授权纠正；绿色尚未接真实流量；严禁直接切流或停止蓝色容器"
+    evidence: ["confirmed-release-preparation-package-v1", "release-branch-3d2571d7d", "tag-v0.1.170-watch.1-peeled-3d2571d7d", "frontend-207-files-1430-tests", "backend-four-package-regression", "linux-amd64-image-build", "production-backup-sha256-verified", "blue-8093-green-8094-healthy", "nginx-still-8093", "failover-disabled", "visible-admin-login-and-compliance-gate", "user-green-acceptance"]
+    stop_reason: "用户完成绿色验收并授权纠正标签；发布分支、标签、镜像身份、备份和隔离绿色部署均已完成，按确认包在切流前停止"
+    residual_risk: "绿色尚未接真实流量；Nginx 切流、停止蓝色、启用故障转移、退款和数据库恢复仍需各自独立授权"
   - id: "loop-sub2api-upgrade-v0.1.170-001"
     initiation_source: conversation
     status: completed
