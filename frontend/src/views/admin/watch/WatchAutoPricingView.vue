@@ -94,14 +94,14 @@
               {{ t('admin.watch.noAccountCostRows') }}
             </div>
             <div v-else class="overflow-x-auto border-y border-gray-200 dark:border-dark-700">
-              <table class="min-w-[1120px] text-left text-sm">
+              <table class="min-w-[1320px] text-left text-sm">
                 <thead class="bg-gray-50 text-xs text-gray-500 dark:bg-dark-800/70 dark:text-gray-400">
                   <tr>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.account') }}</th>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.source') }}</th>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceKey') }}</th>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceGroup') }}</th>
-                    <th class="px-4 py-3 font-medium">{{ t('admin.watch.sourceGroupMultiplier') }}</th>
+                    <th class="px-4 py-3 font-medium">{{ t('admin.watch.pricingEvidence') }}</th>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.rechargeRatio') }}</th>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.finalCost') }}</th>
                     <th class="px-4 py-3 font-medium">{{ t('admin.watch.status') }}</th>
@@ -123,7 +123,16 @@
                       <div class="font-medium text-gray-900 dark:text-white">{{ row.source_group_name || '-' }}</div>
                       <div v-if="row.source_group_external_id" class="mt-1 font-mono text-xs text-gray-500 dark:text-gray-400">{{ row.source_group_external_id }}</div>
                     </td>
-                    <td class="px-4 py-3 font-mono text-gray-700 dark:text-gray-200">{{ formatValue(row.source_group_rate_multiplier) }}</td>
+                    <td class="px-4 py-3">
+                      <div class="flex flex-wrap items-center gap-2">
+                        <span :class="pricingSourceClass(row.pricing_source)">{{ pricingSourceLabel(row.pricing_source) }}</span>
+                        <span v-if="row.evidence_mismatch" class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-100">{{ t('admin.watch.evidenceMismatch') }}</span>
+                      </div>
+                      <div class="mt-1 space-y-0.5 font-mono text-xs text-gray-600 dark:text-gray-300">
+                        <div>{{ t('admin.watch.officialProbeShort') }} {{ formatValue(row.official_probe_multiplier) }} · {{ officialProbeStatusLabel(row.official_probe_status) }}</div>
+                        <div>{{ t('admin.watch.watchFallbackShort') }} {{ formatValue(row.watch_fallback_multiplier ?? row.source_group_rate_multiplier) }}</div>
+                      </div>
+                    </td>
                     <td class="px-4 py-3 font-mono text-gray-700 dark:text-gray-200">{{ formatValue(row.recharge_ratio) }}</td>
                     <td class="px-4 py-3 font-mono font-semibold text-gray-900 dark:text-white">{{ formatValue(row.effective_cost) }}</td>
                     <td class="px-4 py-3"><span :class="accountCostStatusClass(row.healthy)">{{ row.healthy ? t('admin.watch.healthy') : t('admin.watch.ineligible') }}</span></td>
@@ -591,6 +600,26 @@ function accountCostStatusClass(healthy: boolean) {
   return healthy
     ? base + 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
     : base + 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+}
+
+function pricingSourceLabel(source?: string) {
+  if (source === 'official_probe') return t('admin.watch.pricingSourceOfficialProbe')
+  if (source === 'watch_fallback') return t('admin.watch.pricingSourceWatchFallback')
+  return t('admin.watch.pricingSourceUnresolved')
+}
+
+function pricingSourceClass(source?: string) {
+  const base = 'inline-flex rounded-full px-2 py-0.5 text-xs font-medium '
+  if (source === 'official_probe') return base + 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+  if (source === 'watch_fallback') return base + 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-200'
+  return base + 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200'
+}
+
+function officialProbeStatusLabel(status?: string) {
+  if (!status) return '-'
+  const key = `admin.watch.officialProbeStatus_${status}`
+  const label = t(key)
+  return label === key ? status : label
 }
 
 function formatDate(value?: string) {

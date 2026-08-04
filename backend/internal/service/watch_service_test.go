@@ -56,6 +56,7 @@ type watchPreviewSourceRepo struct {
 	reservedAudit    *WatchPriceAudit
 	completedAudit   *WatchPriceAudit
 	savedMapping     *WatchAccountUpstreamMapping
+	anomalyInputs    []WatchRateAnomalyReconcileInput
 	finishCalls      int
 }
 
@@ -133,6 +134,27 @@ func (r *watchPreviewSourceRepo) CompletePriceAudit(ctx context.Context, id int6
 	}
 	r.completedAudit = &audit
 	return &audit, nil
+}
+
+func (r *watchPreviewSourceRepo) ReconcileWatchRateAnomaly(_ context.Context, input WatchRateAnomalyReconcileInput) (*WatchRateAnomaly, error) {
+	r.anomalyInputs = append(r.anomalyInputs, input)
+	return nil, nil
+}
+
+func (r *watchPreviewSourceRepo) ListWatchRateAnomalies(context.Context, WatchRateAnomalyFilter) ([]WatchRateAnomaly, error) {
+	return []WatchRateAnomaly{}, nil
+}
+
+func (r *watchPreviewSourceRepo) PreviewWatchRateCompensation(context.Context, int64, time.Time) (*WatchRateCompensationPreview, error) {
+	return nil, ErrWatchRateAnomalyNotFound
+}
+
+func (r *watchPreviewSourceRepo) ApplyWatchRateCompensation(context.Context, int64, WatchRateCompensationApplyInput, int64, time.Time) (*WatchRateCompensationApplyResult, error) {
+	return nil, ErrWatchRateAnomalyNotFound
+}
+
+func (r *watchPreviewSourceRepo) RecordExternalWatchRateCompensation(context.Context, WatchRateExternalCompensationInput, int64, time.Time) error {
+	return nil
 }
 
 type watchPreviewAccountRepo struct {
@@ -259,7 +281,7 @@ func TestNextWatchPricingProposalMovesTowardTargetWithoutOvershoot(t *testing.T)
 		step    float64
 		want    float64
 	}{
-		{name: "increase by step", current: 0.3, target: 0.51, step: 0.003, want: 0.303},
+		{name: "increase jumps to safety target", current: 0.3, target: 0.51, step: 0.003, want: 0.51},
 		{name: "increase reaches target when gap smaller than step", current: 0.508, target: 0.51, step: 0.003, want: 0.51},
 		{name: "decrease by step", current: 1, target: 0.51, step: 0.003, want: 0.997},
 		{name: "decrease reaches target when gap smaller than step", current: 0.512, target: 0.51, step: 0.003, want: 0.51},
@@ -570,7 +592,7 @@ func TestPreviewPricingFollowsUpstreamCostIncrease(t *testing.T) {
 	}
 }
 
-func TestPreviewPricingAdjustmentStepProposesSingleStepTowardTarget(t *testing.T) {
+func TestPreviewPricingAdjustmentStepRaisesImmediatelyTowardTarget(t *testing.T) {
 	now := time.Now().UTC()
 	future := now.Add(time.Minute)
 	source := &WatchSource{ID: 1, Name: "上游 A", APIBaseURL: "https://api.upstream.example/v1", RechargeRatio: 1, Enabled: true}
@@ -613,8 +635,75 @@ func TestPreviewPricingAdjustmentStepProposesSingleStepTowardTarget(t *testing.T
 	if got, want := *preview.TargetValue, 0.51; got != want {
 		t.Fatalf("TargetValue = %v, want %v", got, want)
 	}
-	if got, want := *preview.ProposedValue, 0.301; got != want {
-		t.Fatalf("ProposedValue = %v, want one step to %v", got, want)
+	if got, want := *preview.ProposedValue, 0.51; got != want {
+		t.Fatalf("ProposedValue = %v, want immediate safety target %v", got, want)
+	}
+}
+
+func TestPreviewPricingPrefersFreshOfficialProbeOverWatchFallback(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	source := &WatchSource{ID: 1, Name: "上游 A", APIBaseURL: "https://api.upstream.example/v1", RechargeRatio: 1, Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{source},
+		snapshots: map[int64]*WatchSourceSnapshot{
+			1: watchTestSourceSnapshot(source, now, future,
+				[]WatchSourceKeyObservation{{ExternalID: "key-a", Label: "A Key", GroupExternalIDs: []string{"g1"}}},
+				[]WatchSourceGroupObservation{{ExternalID: "g1", Name: "Team A", Platform: PlatformOpenAI, RateMultiplier: 0.052, ObservedAt: now}}, nil),
+		},
+		mappings: []WatchAccountUpstreamMapping{{AccountID: 11, SourceID: 1, SourceName: "上游 A", SourceKeyExternalID: "key-a", SourceGroupExternalID: "g1", MappingMethod: "manual"}},
+	}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{{
+		ID: 11, Name: "account", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Extra: map[string]any{UpstreamBillingProbeExtraKey: &UpstreamBillingProbeSnapshot{
+			Status:     UpstreamBillingProbeStatusOK,
+			Data:       map[string]any{"billing_scope": "token", "resolved_rate_multiplier": 0.06, "peak_rate_enabled": false},
+			ReceivedAt: &now, FreshUntil: &future, LastAttemptAt: now, NextProbeAt: future,
+		}},
+	}}}
+	svc := NewWatchService(accountRepo, &watchPreviewGroupRepo{group: &Group{ID: 7, Status: StatusActive, RateMultiplier: 0.052}}, nil, sourceRepo, nil, nil)
+
+	preview, err := svc.PreviewPricing(context.Background(), WatchPricingPreviewRequest{TargetGroupID: 7, Mode: WatchPriceModeGroupMultiplier, AdjustmentStep: 0.003})
+	if err != nil {
+		t.Fatalf("PreviewPricing() error = %v", err)
+	}
+	if preview.Frozen || preview.TargetValue == nil || preview.ProposedValue == nil {
+		t.Fatalf("PreviewPricing() = %#v, want active official-probe preview", preview)
+	}
+	if got, want := *preview.TargetValue, 0.07; got != want {
+		t.Fatalf("TargetValue = %v, want %v", got, want)
+	}
+	if got, want := *preview.ProposedValue, 0.07; got != want {
+		t.Fatalf("ProposedValue = %v, want immediate safety target %v", got, want)
+	}
+	if len(preview.CostRows) != 1 || preview.CostRows[0].PricingSource != "official_probe" || !preview.CostRows[0].EvidenceMismatch {
+		t.Fatalf("CostRows = %#v, want official probe with mismatch audit", preview.CostRows)
+	}
+}
+
+func TestPreviewPricingBlocksDecreaseWhenOfficialProbeIsStale(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+	past := now.Add(-time.Minute)
+	source := &WatchSource{ID: 1, Name: "上游 A", RechargeRatio: 1, Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{source},
+		snapshots: map[int64]*WatchSourceSnapshot{1: watchTestSourceSnapshot(source, now, future,
+			[]WatchSourceKeyObservation{{ExternalID: "key-a", GroupExternalIDs: []string{"g1"}}},
+			[]WatchSourceGroupObservation{{ExternalID: "g1", Name: "Team A", Platform: PlatformOpenAI, RateMultiplier: 0.06, ObservedAt: now}}, nil)},
+		mappings: []WatchAccountUpstreamMapping{{AccountID: 11, SourceID: 1, SourceKeyExternalID: "key-a", SourceGroupExternalID: "g1"}},
+	}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{{ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Extra: map[string]any{
+		UpstreamBillingProbeExtraKey: &UpstreamBillingProbeSnapshot{Status: UpstreamBillingProbeStatusOK, Data: map[string]any{"billing_scope": "token", "resolved_rate_multiplier": 0.08, "peak_rate_enabled": false}, ReceivedAt: &past, FreshUntil: &past},
+	}}}}
+	svc := NewWatchService(accountRepo, &watchPreviewGroupRepo{group: &Group{ID: 7, Status: StatusActive, RateMultiplier: 0.2}}, nil, sourceRepo, nil, nil)
+
+	preview, err := svc.PreviewPricing(context.Background(), WatchPricingPreviewRequest{TargetGroupID: 7, Mode: WatchPriceModeGroupMultiplier, AdjustmentStep: 0.003})
+	if err != nil {
+		t.Fatalf("PreviewPricing() error = %v", err)
+	}
+	if !preview.Frozen || preview.FreezeReason != "official probe unavailable; downward adjustment is blocked" {
+		t.Fatalf("PreviewPricing() = %#v, want stale-probe downward freeze", preview)
 	}
 }
 
@@ -790,14 +879,20 @@ func TestRunPricingRuleAppliesSuggestedGroupMultiplier(t *testing.T) {
 	if result.Preview.TargetValue == nil || *result.Preview.TargetValue != 0.51 {
 		t.Fatalf("TargetValue = %#v, want 0.51", result.Preview.TargetValue)
 	}
-	if got, want := *result.Preview.ProposedValue, 0.303; got != want {
+	if got, want := *result.Preview.ProposedValue, 0.51; got != want {
 		t.Fatalf("ProposedValue = %v, want %v", got, want)
 	}
-	if groupRepo.casCalls != 1 || groupRepo.casWantOld != 0.3 || groupRepo.casWantNew != 0.303 {
-		t.Fatalf("CAS calls=%d old=%v new=%v, want one CAS 0.3→0.303", groupRepo.casCalls, groupRepo.casWantOld, groupRepo.casWantNew)
+	if groupRepo.casCalls != 1 || groupRepo.casWantOld != 0.3 || groupRepo.casWantNew != 0.51 {
+		t.Fatalf("CAS calls=%d old=%v new=%v, want one CAS 0.3→0.51", groupRepo.casCalls, groupRepo.casWantOld, groupRepo.casWantNew)
 	}
 	if sourceRepo.completedAudit == nil || sourceRepo.completedAudit.Action != "applied" {
 		t.Fatalf("completed audit = %#v, want applied audit", sourceRepo.completedAudit)
+	}
+	if len(sourceRepo.anomalyInputs) != 2 {
+		t.Fatalf("anomaly reconciliations = %d, want detected and resolved", len(sourceRepo.anomalyInputs))
+	}
+	if sourceRepo.anomalyInputs[0].CurrentValue != 0.3 || sourceRepo.anomalyInputs[0].TargetValue != 0.51 || sourceRepo.anomalyInputs[1].CurrentValue != 0.51 {
+		t.Fatalf("anomaly reconciliation inputs = %#v, want 0.3→0.51 then resolved at 0.51", sourceRepo.anomalyInputs)
 	}
 }
 

@@ -89,11 +89,81 @@ export interface WatchPricingAccountCostRow {
   source_group_external_id?: string
   source_group_name?: string
   source_group_rate_multiplier?: number
+  official_probe_multiplier?: number
+  watch_fallback_multiplier?: number
   recharge_ratio?: number
   effective_cost?: number
+  pricing_source?: 'official_probe' | 'watch_fallback'
+  official_probe_status?: 'ok' | 'missing' | 'unsupported' | 'failed' | 'stale' | 'invalid' | 'not_applicable'
+  evidence_mismatch?: boolean
+  downward_safe: boolean
   healthy: boolean
   reason?: string
   observed_at?: string
+}
+
+export type WatchRateAnomalyKind = 'underpriced' | 'overpriced'
+export type WatchRateAnomalyStatus = 'open' | 'resolved'
+
+export interface WatchRateAnomaly {
+  id: number
+  pricing_rule_id?: number
+  target_group_id: number
+  group_name: string
+  kind: WatchRateAnomalyKind
+  status: WatchRateAnomalyStatus
+  current_value: number
+  target_value: number
+  highest_upstream_cost: number
+  pricing_source: 'official_probe' | 'watch_fallback' | 'mixed' | 'unresolved'
+  official_probe_count: number
+  watch_fallback_count: number
+  evidence_mismatch_count: number
+  detected_at: string
+  last_observed_at: string
+  resolved_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface WatchRateCompensationRow {
+  user_id: number
+  username: string
+  email: string
+  request_count: number
+  eligible_request_count: number
+  unresolved_request_count: number
+  actual_cost: number
+  expected_cost: number
+  candidate_amount: number
+  eligible: boolean
+  reason?: string
+  already_compensated: boolean
+}
+
+export interface WatchRateCompensationPreview {
+  anomaly: WatchRateAnomaly
+  window_start: string
+  window_end: string
+  user_count: number
+  eligible_count: number
+  request_count: number
+  actual_cost: number
+  expected_cost: number
+  candidate_amount: number
+  unresolved_request_count: number
+  rows: WatchRateCompensationRow[]
+  generated_at: string
+}
+
+export interface WatchRateCompensationApplyResult {
+  anomaly_id: number
+  applied_user_ids: number[]
+  skipped_user_ids: number[]
+  applied_count: number
+  compensated_amount: number
+  applied_at: string
+  replayed: boolean
 }
 
 export interface WatchPricingPreview {
@@ -780,6 +850,28 @@ export async function runPricingRule(id: number): Promise<WatchPricingRuleRunRes
   return data
 }
 
+export async function listRateAnomalies(params: { status?: 'all' | WatchRateAnomalyStatus; limit?: number } = {}): Promise<WatchRateAnomaly[]> {
+  const { data } = await apiClient.get<WatchRateAnomaly[]>('/admin/watch/rate-anomalies', { params })
+  return data
+}
+
+export async function previewRateCompensation(id: number): Promise<WatchRateCompensationPreview> {
+  const { data } = await apiClient.get<WatchRateCompensationPreview>(`/admin/watch/rate-anomalies/${id}/compensation-preview`)
+  return data
+}
+
+export async function applyRateCompensation(id: number, input: {
+  user_ids: number[]
+  confirmed: boolean
+  idempotency_key: string
+  reason: string
+}): Promise<WatchRateCompensationApplyResult> {
+  const { data } = await apiClient.post<WatchRateCompensationApplyResult>(`/admin/watch/rate-anomalies/${id}/compensate`, input, {
+    headers: { 'Idempotency-Key': input.idempotency_key },
+  })
+  return data
+}
+
 export async function listSources(): Promise<WatchSource[]> {
   const { data } = await apiClient.get<WatchSource[]>('/admin/watch/sources')
   return data
@@ -926,6 +1018,9 @@ export const watchAPI = {
   updatePricingRule,
   deletePricingRule,
   runPricingRule,
+  listRateAnomalies,
+  previewRateCompensation,
+  applyRateCompensation,
   listSources,
   getSource,
   createSource,

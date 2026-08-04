@@ -779,7 +779,7 @@ var ProviderSet = wire.NewSet(
 	NewChannelService,
 	NewModelPricingResolver,
 	NewContentModerationService,
-	NewWatchService,
+	ProvideWatchService,
 	NewWatchSourceService,
 	NewAffiliateService,
 	ProvidePaymentConfigService,
@@ -793,6 +793,22 @@ var ProviderSet = wire.NewSet(
 	NewChannelMonitorRequestTemplateService,
 	ProvideUserPlatformQuotaUsageFlusher,
 )
+
+// ProvideWatchService wires the shared balance cache invalidator used after an
+// explicitly confirmed compensation transaction updates a user balance.
+func ProvideWatchService(
+	accounts AdminAccountRepository,
+	groups GroupRepository,
+	channels ChannelRepository,
+	sources WatchSourceRepository,
+	groupService *GroupService,
+	channelService *ChannelService,
+	billingCacheService *BillingCacheService,
+) *WatchService {
+	svc := NewWatchService(accounts, groups, channels, sources, groupService, channelService)
+	svc.SetCompensationCache(billingCacheService)
+	return svc
+}
 
 // ProvideUserPlatformQuotaUsageFlusher 创建并启动 UserPlatformQuotaUsageFlusher。
 func ProvideUserPlatformQuotaUsageFlusher(cfg *config.Config, cache BillingCache, quotaRepo UserPlatformQuotaRepository, tw *TimingWheelService) *UserPlatformQuotaUsageFlusher {

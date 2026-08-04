@@ -120,3 +120,78 @@ func TestListAccountMappingsRejectsInvalidAdvancedFilters(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteWatchRateCompensationErrorRequiresExplicitConfirmation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	writeWatchRateCompensationError(c, service.ErrWatchRateCompensationConfirmationRequired)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	var body struct {
+		Message string `json:"message"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if !strings.Contains(body.Message, "明确确认补偿") {
+		t.Fatalf("message = %q, want explicit confirmation guidance", body.Message)
+	}
+	if body.Reason != "watch_rate_compensation_confirmation_required" {
+		t.Fatalf("reason = %q, want structured confirmation reason", body.Reason)
+	}
+}
+
+func TestWriteWatchRateCompensationErrorMapsIdempotencyConflict(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	writeWatchRateCompensationError(c, service.ErrWatchRateCompensationIdempotencyMismatch)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusConflict)
+	}
+}
+
+func TestWriteWatchRateCompensationErrorRequiresSelectedUser(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	writeWatchRateCompensationError(c, service.ErrWatchRateCompensationSelectionRequired)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	var body struct {
+		Message string `json:"message"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if !strings.Contains(body.Message, "至少选择一位") {
+		t.Fatalf("message = %q, want selected-user guidance", body.Message)
+	}
+	if body.Reason != "watch_rate_compensation_selection_required" {
+		t.Fatalf("reason = %q, want watch_rate_compensation_selection_required", body.Reason)
+	}
+}
+
+func TestListRateAnomaliesRejectsUnboundedLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/v1/admin/watch/rate-anomalies?limit=201", nil)
+
+	(&WatchHandler{watchService: &service.WatchService{}}).ListRateAnomalies(c)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}

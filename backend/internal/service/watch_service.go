@@ -102,8 +102,14 @@ type WatchPricingAccountCostRow struct {
 	SourceGroupExternalID     string     `json:"source_group_external_id,omitempty"`
 	SourceGroupName           string     `json:"source_group_name,omitempty"`
 	SourceGroupRateMultiplier *float64   `json:"source_group_rate_multiplier,omitempty"`
+	OfficialProbeMultiplier   *float64   `json:"official_probe_multiplier,omitempty"`
+	WatchFallbackMultiplier   *float64   `json:"watch_fallback_multiplier,omitempty"`
 	RechargeRatio             float64    `json:"recharge_ratio,omitempty"`
 	EffectiveCost             *float64   `json:"effective_cost,omitempty"`
+	PricingSource             string     `json:"pricing_source,omitempty"`
+	OfficialProbeStatus       string     `json:"official_probe_status,omitempty"`
+	EvidenceMismatch          bool       `json:"evidence_mismatch,omitempty"`
+	DownwardSafe              bool       `json:"downward_safe"`
 	Healthy                   bool       `json:"healthy"`
 	Reason                    string     `json:"reason,omitempty"`
 	ObservedAt                *time.Time `json:"observed_at,omitempty"`
@@ -138,16 +144,23 @@ type WatchPricingRollbackRequest struct {
 }
 
 type WatchService struct {
-	accounts       AdminAccountRepository
-	groups         GroupRepository
-	channels       ChannelRepository
-	sources        WatchSourceRepository
-	groupService   *GroupService
-	channelService *ChannelService
+	accounts          AdminAccountRepository
+	groups            GroupRepository
+	channels          ChannelRepository
+	sources           WatchSourceRepository
+	groupService      *GroupService
+	channelService    *ChannelService
+	compensationCache WatchBalanceCacheInvalidator
 }
 
 func NewWatchService(accounts AdminAccountRepository, groups GroupRepository, channels ChannelRepository, sources WatchSourceRepository, groupService *GroupService, channelService *ChannelService) *WatchService {
 	return &WatchService{accounts: accounts, groups: groups, channels: channels, sources: sources, groupService: groupService, channelService: channelService}
+}
+
+func (s *WatchService) SetCompensationCache(cache WatchBalanceCacheInvalidator) {
+	if s != nil {
+		s.compensationCache = cache
+	}
 }
 
 func (s *WatchService) GetOverview(ctx context.Context) (*WatchOverview, error) {
@@ -264,7 +277,11 @@ func (s *WatchService) PreviewPricing(ctx context.Context, req WatchPricingPrevi
 	}
 	preview.CostRows = costRows
 	var maxCost *float64
+	downwardSafe := true
 	for _, row := range costRows {
+		if !row.DownwardSafe {
+			downwardSafe = false
+		}
 		if row.EffectiveCost == nil {
 			continue
 		}
@@ -308,6 +325,11 @@ func (s *WatchService) PreviewPricing(ctx context.Context, req WatchPricingPrevi
 	}
 	targetValue := roundWatchPrice(*maxCost + 0.01)
 	preview.TargetValue = &targetValue
+	if preview.CurrentValue != nil && *preview.CurrentValue > targetValue && !downwardSafe {
+		preview.Frozen = true
+		preview.FreezeReason = "official probe unavailable; downward adjustment is blocked"
+		return preview, nil
+	}
 	proposed := nextWatchPricingProposal(*preview.CurrentValue, targetValue, req.AdjustmentStep)
 	preview.ProposedValue = &proposed
 	return preview, nil
@@ -1269,6 +1291,9 @@ func (s *WatchService) executePricingRuleRun(ctx context.Context, rule *WatchPri
 		}
 		return s.finishPricingRuleRun(ctx, rule, result, "frozen", code)
 	}
+	if _, auditErr := s.reconcilePricingRuleAnomaly(ctx, rule, preview, *preview.CurrentValue, time.Now().UTC()); auditErr != nil {
+		return s.finishPricingRuleRun(ctx, rule, result, "failed", "anomaly_audit_failed")
+	}
 	if watchValuesEqual(*preview.CurrentValue, *preview.ProposedValue) {
 		return s.finishPricingRuleRun(ctx, rule, result, "skipped", "")
 	}
@@ -1283,6 +1308,11 @@ func (s *WatchService) executePricingRuleRun(ctx context.Context, rule *WatchPri
 	result.Audit = audit
 	switch {
 	case applyErr == nil:
+		if watchValuesEqual(*preview.ProposedValue, *preview.TargetValue) {
+			if _, anomalyErr := s.reconcilePricingRuleAnomaly(ctx, rule, preview, *preview.ProposedValue, time.Now().UTC()); anomalyErr != nil {
+				return s.finishPricingRuleRun(ctx, rule, result, "failed", "anomaly_resolve_failed")
+			}
+		}
 		return s.finishPricingRuleRun(ctx, rule, result, "applied", "")
 	case errors.Is(applyErr, ErrWatchPricingFrozen):
 		return s.finishPricingRuleRun(ctx, rule, result, "frozen", "pricing_frozen")
@@ -1485,11 +1515,9 @@ func nextWatchPricingProposal(current, target, step float64) float64 {
 	}
 	step = roundWatchPrice(step)
 	if current < target {
-		next := roundWatchPrice(current + step)
-		if next > target || watchValuesEqual(next, target) {
-			return target
-		}
-		return next
+		// A price below the verified safety target is an active loss condition.
+		// Raise immediately; the configured step only controls gradual decreases.
+		return target
 	}
 	next := roundWatchPrice(current - step)
 	if next < target || watchValuesEqual(next, target) {
@@ -1595,6 +1623,7 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 	for _, account := range accounts {
 		row := WatchPricingAccountCostRow{
 			AccountID: account.ID, AccountName: account.Name, Platform: account.Platform,
+			DownwardSafe: true,
 		}
 		mapping, mapped := mappingByAccount[account.ID]
 		if !mapped {
@@ -1614,38 +1643,17 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 		row.SourceKeyLabel = mapping.SourceKeyLabel
 		row.SourceGroupExternalID = mapping.SourceGroupExternalID
 		row.SourceGroupName = mapping.SourceGroupName
+		if mapping.GroupBindingState == "needs_confirmation" {
+			row.Reason = "source key group assignment changed; confirmation required"
+			if firstFreezeReason == "" {
+				firstFreezeReason = row.Reason
+			}
+			rows = append(rows, row)
+			continue
+		}
 
-		snapshot, err := loadSnapshot(mapping.SourceID)
-		if err != nil {
-			return nil, "", err
-		}
-		if reason := watchSourceSnapshotFreezeReason(snapshot, now); reason != "" {
-			row.Reason = reason
-			if firstFreezeReason == "" {
-				firstFreezeReason = reason
-			}
-			rows = append(rows, row)
-			continue
-		}
-		key, group, reason := watchResolveMappedSourceGroup(snapshot, mapping)
-		if key != nil && row.SourceKeyLabel == "" {
-			row.SourceKeyLabel = key.Label
-		}
-		if group != nil {
-			row.SourceGroupExternalID = group.ExternalID
-			row.SourceGroupName = group.Name
-			observedAt := group.ObservedAt
-			row.ObservedAt = &observedAt
-		}
-		if reason != "" {
-			row.Reason = reason
-			if firstFreezeReason == "" {
-				firstFreezeReason = reason
-			}
-			rows = append(rows, row)
-			continue
-		}
-		if snapshot.Source == nil || snapshot.Source.RechargeRatio <= 0 || math.IsNaN(snapshot.Source.RechargeRatio) || math.IsInf(snapshot.Source.RechargeRatio, 0) {
+		source := sourceByID[mapping.SourceID]
+		if source == nil || source.RechargeRatio <= 0 || math.IsNaN(source.RechargeRatio) || math.IsInf(source.RechargeRatio, 0) {
 			row.Reason = "source recharge ratio is invalid"
 			if firstFreezeReason == "" {
 				firstFreezeReason = row.Reason
@@ -1653,19 +1661,92 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 			rows = append(rows, row)
 			continue
 		}
-		row.RechargeRatio = snapshot.Source.RechargeRatio
-		effectiveCost, groupRate, observedAt, reason := watchResolveEffectiveAccountCost(snapshot, group.ExternalID, account.Platform, req)
-		if reason != "" {
-			row.Reason = reason
-			if firstFreezeReason == "" {
-				firstFreezeReason = reason
+		row.RechargeRatio = source.RechargeRatio
+
+		probe := watchResolveOfficialProbeEvidence(&account, req, now)
+		row.OfficialProbeStatus = probe.Status
+		row.DownwardSafe = probe.DownwardSafe
+		if probe.Multiplier != nil {
+			value := *probe.Multiplier
+			row.OfficialProbeMultiplier = &value
+		}
+
+		snapshot, err := loadSnapshot(mapping.SourceID)
+		if err != nil {
+			if probe.Multiplier == nil {
+				return nil, "", err
+			}
+			snapshot = nil
+		}
+
+		var fallbackReason string
+		if snapshot != nil {
+			fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
+			if fallbackReason == "" {
+				key, group, reason := watchResolveMappedSourceGroup(snapshot, mapping)
+				fallbackReason = reason
+				if key != nil && row.SourceKeyLabel == "" {
+					row.SourceKeyLabel = key.Label
+				}
+				if group != nil {
+					row.SourceGroupExternalID = group.ExternalID
+					row.SourceGroupName = group.Name
+					observedAt := group.ObservedAt
+					row.ObservedAt = &observedAt
+					if fallbackReason == "" {
+						effectiveCost, groupRate, fallbackObservedAt, reason := watchResolveEffectiveAccountCost(snapshot, group.ExternalID, account.Platform, req)
+						fallbackReason = reason
+						if fallbackReason == "" {
+							row.SourceGroupRateMultiplier = &groupRate
+							row.WatchFallbackMultiplier = &groupRate
+							row.ObservedAt = &fallbackObservedAt
+							if probe.Multiplier == nil {
+								row.EffectiveCost = &effectiveCost
+								row.PricingSource = "watch_fallback"
+							}
+						}
+					}
+				}
+			}
+		} else {
+			fallbackReason = "source snapshot is unavailable"
+		}
+
+		if probe.Multiplier != nil && (strings.TrimSpace(row.SourceKeyExternalID) == "" || strings.TrimSpace(row.SourceGroupExternalID) == "") {
+			probe.Multiplier = nil
+			probe.DownwardSafe = false
+			probe.Reason = "confirmed upstream key and group mapping is required"
+			row.DownwardSafe = false
+			row.OfficialProbeMultiplier = nil
+		}
+
+		if probe.Multiplier != nil {
+			effectiveCost := roundWatchPrice(*probe.Multiplier / source.RechargeRatio)
+			row.EffectiveCost = &effectiveCost
+			row.PricingSource = "official_probe"
+			row.Healthy = true
+			if probe.ObservedAt != nil {
+				observedAt := *probe.ObservedAt
+				row.ObservedAt = &observedAt
+			}
+			if row.WatchFallbackMultiplier != nil {
+				row.EvidenceMismatch = !watchValuesEqual(*probe.Multiplier, *row.WatchFallbackMultiplier)
 			}
 			rows = append(rows, row)
 			continue
 		}
-		row.EffectiveCost = &effectiveCost
-		row.SourceGroupRateMultiplier = &groupRate
-		row.ObservedAt = &observedAt
+
+		if fallbackReason != "" || row.EffectiveCost == nil {
+			row.Reason = fallbackReason
+			if row.Reason == "" {
+				row.Reason = probe.Reason
+			}
+			if firstFreezeReason == "" {
+				firstFreezeReason = row.Reason
+			}
+			rows = append(rows, row)
+			continue
+		}
 		row.Healthy = true
 		rows = append(rows, row)
 	}
@@ -1673,6 +1754,68 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 		return rows, firstFreezeReason, nil
 	}
 	return rows, "", nil
+}
+
+type watchOfficialProbeEvidence struct {
+	Status       string
+	Multiplier   *float64
+	ObservedAt   *time.Time
+	DownwardSafe bool
+	Reason       string
+}
+
+func watchResolveOfficialProbeEvidence(account *Account, req WatchPricingPreviewRequest, now time.Time) watchOfficialProbeEvidence {
+	evidence := watchOfficialProbeEvidence{Status: "not_applicable", DownwardSafe: true}
+	if req.Mode != WatchPriceModeGroupMultiplier {
+		return evidence
+	}
+	snapshot := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if snapshot == nil {
+		evidence.Status = "missing"
+		evidence.DownwardSafe = true
+		evidence.Reason = "official probe is unavailable"
+		return evidence
+	}
+	if snapshot.ReceivedAt != nil {
+		observedAt := snapshot.ReceivedAt.UTC()
+		evidence.ObservedAt = &observedAt
+	}
+	switch snapshot.Status {
+	case UpstreamBillingProbeStatusUnsupported:
+		evidence.Status = UpstreamBillingProbeStatusUnsupported
+		evidence.DownwardSafe = true
+		evidence.Reason = "official probe is unsupported"
+		return evidence
+	case UpstreamBillingProbeStatusFailed:
+		evidence.Status = UpstreamBillingProbeStatusFailed
+		evidence.DownwardSafe = false
+		evidence.Reason = "official probe failed"
+		return evidence
+	case UpstreamBillingProbeStatusOK:
+		if snapshot.FreshUntil == nil || !snapshot.FreshUntil.After(now) {
+			evidence.Status = "stale"
+			evidence.DownwardSafe = false
+			evidence.Reason = "official probe expired"
+			return evidence
+		}
+		value, ok := upstreamBillingRateAt(snapshot.Data, now)
+		if !ok || value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+			evidence.Status = "invalid"
+			evidence.DownwardSafe = false
+			evidence.Reason = "official probe multiplier is invalid"
+			return evidence
+		}
+		value = roundWatchPrice(value)
+		evidence.Status = UpstreamBillingProbeStatusOK
+		evidence.Multiplier = &value
+		evidence.DownwardSafe = true
+		return evidence
+	default:
+		evidence.Status = "invalid"
+		evidence.DownwardSafe = false
+		evidence.Reason = "official probe status is invalid"
+		return evidence
+	}
 }
 
 func (s *WatchService) resolveAutoAccountMapping(ctx context.Context, account Account, sources []*WatchSource, loadSnapshot func(int64) (*WatchSourceSnapshot, error)) (*WatchAccountUpstreamMapping, string, error) {

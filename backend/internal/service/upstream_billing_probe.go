@@ -766,7 +766,35 @@ func (s *UpstreamBillingProbeService) updateSnapshot(
 	if !ok {
 		return ErrUpstreamBillingProbeUnavailable
 	}
-	return writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, rateMultiplier)
+	previous := decodeUpstreamBillingProbeSnapshot(account.Extra)
+	if err := writer.UpdateUpstreamBillingProbeSnapshot(ctx, account, snapshot, rateMultiplier); err != nil {
+		return err
+	}
+	if s.db != nil && watchProbePricingEvidenceChanged(previous, snapshot, s.currentTime()) {
+		if _, err := s.db.ExecContext(ctx, `
+			UPDATE watch_pricing_rules AS r
+			SET next_run_at = LEAST(COALESCE(r.next_run_at, NOW()), NOW()), updated_at = NOW()
+			WHERE r.enabled = TRUE
+			  AND r.mode = 'group_multiplier'
+			  AND EXISTS (
+				SELECT 1
+				FROM account_groups ag
+				WHERE ag.account_id = $1 AND ag.group_id = r.target_group_id
+			  )
+		`, account.ID); err != nil {
+			slog.Warn("upstream_billing_probe_watch_rule_bump_failed", "account_id", account.ID, "error", err)
+		}
+	}
+	return nil
+}
+
+func watchProbePricingEvidenceChanged(previous, current *UpstreamBillingProbeSnapshot, now time.Time) bool {
+	if previous == nil || current == nil || previous.Status != current.Status {
+		return true
+	}
+	previousRate, previousOK := upstreamBillingRateAt(previous.Data, now)
+	currentRate, currentOK := upstreamBillingRateAt(current.Data, now)
+	return previousOK != currentOK || (previousOK && !equalBillingMultiplier(previousRate, currentRate))
 }
 
 func parseUpstreamBillingProbeResponse(body []byte) (map[string]any, error) {

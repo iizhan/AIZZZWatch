@@ -37,6 +37,7 @@ vi.mock('vue-i18n', async (importOriginal) => ({
       if (key === 'admin.watch.reason_adjustment_step_must_be_positive') return '单次调价步长必须大于 0'
       if (key === 'admin.watch.pricingRuleSaved') return '自动调价规则已保存'
       if (key === 'admin.watch.ruleRunCompleted') return `规则运行完成：${params?.status ?? ''}`
+      if (key === 'admin.watch.officialProbeStatus_ok') return '有效'
       return key
     },
   }),
@@ -172,5 +173,49 @@ describe('WatchAutoPricingView rule form adjustment step', () => {
 
     expect(createPricingRuleMock).not.toHaveBeenCalled()
     expect(wrapper.text()).toContain('单次调价步长必须大于 0')
+  })
+
+  it('renders official probe priority, Watch fallback, and evidence mismatch in the cost table', async () => {
+    previewPricingMock.mockResolvedValue({
+      mode: 'group_multiplier',
+      current_value: 0.052,
+      target_value: 0.07,
+      proposed_value: 0.07,
+      frozen: false,
+      cost_rows: [{
+        account_id: 391,
+        account_name: 'probe-account',
+        platform: 'openai',
+        source_id: 9,
+        source_name: 'source-a',
+        source_key_external_id: 'key-1',
+        source_key_label: 'Key A',
+        source_group_external_id: 'group-a',
+        source_group_name: 'Team A',
+        official_probe_multiplier: 0.06,
+        watch_fallback_multiplier: 0.052,
+        recharge_ratio: 1,
+        effective_cost: 0.06,
+        pricing_source: 'official_probe',
+        official_probe_status: 'ok',
+        evidence_mismatch: true,
+        downward_safe: true,
+        healthy: true,
+      }],
+    })
+    const wrapper = await mountView()
+    await wrapper.find<HTMLSelectElement>('select').setValue('1')
+    const previewButton = wrapper.findAll('button').find((button) => button.text() === 'admin.watch.runPreview')
+
+    expect(previewButton).toBeTruthy()
+    await previewButton!.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('probe-account')
+    expect(wrapper.text()).toContain('admin.watch.pricingSourceOfficialProbe')
+    expect(wrapper.text()).toContain('admin.watch.evidenceMismatch')
+    expect(wrapper.text()).toContain('有效')
+    expect(wrapper.text()).toContain('0.06')
+    expect(wrapper.text()).toContain('0.052')
   })
 })

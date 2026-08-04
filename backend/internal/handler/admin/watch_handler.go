@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/response"
@@ -154,6 +155,23 @@ type watchPricingRuleRequest struct {
 	Enabled         bool                        `json:"enabled"`
 	IntervalSeconds int                         `json:"interval_seconds"`
 	AdjustmentStep  float64                     `json:"adjustment_step"`
+}
+
+type watchRateCompensationApplyRequest struct {
+	UserIDs        []int64 `json:"user_ids"`
+	Confirmed      bool    `json:"confirmed"`
+	IdempotencyKey string  `json:"idempotency_key" binding:"required,max=128"`
+	Reason         string  `json:"reason" binding:"required,max=500"`
+}
+
+type watchRateExternalCompensationRequest struct {
+	TargetGroupID  int64   `json:"target_group_id" binding:"required"`
+	UserID         int64   `json:"user_id" binding:"required"`
+	WindowStart    string  `json:"window_start" binding:"required"`
+	WindowEnd      string  `json:"window_end" binding:"required"`
+	Amount         float64 `json:"amount" binding:"required"`
+	IdempotencyKey string  `json:"idempotency_key" binding:"required,max=128"`
+	Reason         string  `json:"reason" binding:"required,max=500"`
 }
 
 func (r watchPricingRuleRequest) serviceInput() service.WatchPricingRuleInput {
@@ -945,6 +963,109 @@ func (h *WatchHandler) RunPricingRule(c *gin.Context) {
 	response.Success(c, result)
 }
 
+func (h *WatchHandler) ListRateAnomalies(c *gin.Context) {
+	if h.watchService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Watch service not available")
+		return
+	}
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if err != nil || limit < 1 || limit > 200 {
+		response.BadRequest(c, "倍率异常查询数量必须在 1 到 200 之间")
+		return
+	}
+	items, err := h.watchService.ListRateAnomalies(c.Request.Context(), service.WatchRateAnomalyFilter{
+		Status: c.DefaultQuery("status", "all"),
+		Limit:  limit,
+	})
+	if err != nil {
+		logWatchRateCompensationFailure(c, err)
+		response.ErrorWithDetails(c, http.StatusServiceUnavailable, "倍率异常记录暂不可用，请稍后重试", "watch_rate_anomaly_unavailable", nil)
+		return
+	}
+	response.Success(c, items)
+}
+
+func (h *WatchHandler) PreviewRateCompensation(c *gin.Context) {
+	if h.watchService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Watch service not available")
+		return
+	}
+	anomalyID, ok := parseWatchSourceID(c)
+	if !ok {
+		return
+	}
+	preview, err := h.watchService.PreviewRateCompensation(c.Request.Context(), anomalyID)
+	if err != nil {
+		writeWatchRateCompensationError(c, err)
+		return
+	}
+	response.Success(c, preview)
+}
+
+func (h *WatchHandler) ApplyRateCompensation(c *gin.Context) {
+	if h.watchService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Watch service not available")
+		return
+	}
+	anomalyID, ok := parseWatchSourceID(c)
+	if !ok {
+		return
+	}
+	var req watchRateCompensationApplyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "补偿确认参数无效")
+		return
+	}
+	if key := strings.TrimSpace(c.GetHeader("Idempotency-Key")); key != "" {
+		req.IdempotencyKey = key
+	}
+	subject, authenticated := middleware2.GetAuthSubjectFromContext(c)
+	if !authenticated || subject.UserID <= 0 {
+		response.Unauthorized(c, "administrator identity unavailable")
+		return
+	}
+	result, err := h.watchService.ApplyRateCompensation(c.Request.Context(), anomalyID, service.WatchRateCompensationApplyInput{
+		UserIDs: req.UserIDs, Confirmed: req.Confirmed, IdempotencyKey: req.IdempotencyKey, Reason: req.Reason,
+	}, subject.UserID)
+	if err != nil {
+		writeWatchRateCompensationError(c, err)
+		return
+	}
+	response.Success(c, result)
+}
+
+func (h *WatchHandler) RecordExternalRateCompensation(c *gin.Context) {
+	if h.watchService == nil {
+		response.Error(c, http.StatusServiceUnavailable, "Watch service not available")
+		return
+	}
+	var req watchRateExternalCompensationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "外部补偿登记参数无效")
+		return
+	}
+	windowStart, startErr := time.Parse(time.RFC3339, req.WindowStart)
+	windowEnd, endErr := time.Parse(time.RFC3339, req.WindowEnd)
+	if startErr != nil || endErr != nil {
+		response.BadRequest(c, "外部补偿时间范围无效")
+		return
+	}
+	subject, authenticated := middleware2.GetAuthSubjectFromContext(c)
+	if !authenticated || subject.UserID <= 0 {
+		response.Unauthorized(c, "administrator identity unavailable")
+		return
+	}
+	err := h.watchService.RecordExternalRateCompensation(c.Request.Context(), service.WatchRateExternalCompensationInput{
+		TargetGroupID: req.TargetGroupID, UserID: req.UserID, WindowStart: windowStart, WindowEnd: windowEnd,
+		Amount: req.Amount, IdempotencyKey: req.IdempotencyKey, Reason: req.Reason,
+	}, subject.UserID)
+	if err != nil {
+		writeWatchRateCompensationError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"recorded": true})
+}
+
 func writeWatchPricingError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrWatchPricingFrozen):
@@ -993,6 +1114,42 @@ func logWatchPricingRuleFailure(c *gin.Context, err error) {
 	}
 	slog.Error("watch pricing rule operation failed",
 		"rule_id", ruleID,
+		"request_id", requestID,
+		"error", logredact.RedactText(err.Error()),
+	)
+}
+
+func writeWatchRateCompensationError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrWatchRateAnomalyNotFound):
+		response.NotFound(c, "倍率异常记录不存在")
+	case errors.Is(err, service.ErrWatchRateCompensationConfirmationRequired):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "请先核对金额并明确确认补偿", "watch_rate_compensation_confirmation_required", nil)
+	case errors.Is(err, service.ErrWatchRateCompensationSelectionRequired):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "请至少选择一位可补偿用户", "watch_rate_compensation_selection_required", nil)
+	case errors.Is(err, service.ErrWatchRateCompensationIdempotencyMismatch):
+		response.ErrorWithDetails(c, http.StatusConflict, "该补偿幂等键已用于其他记录，请刷新后重试", "watch_rate_compensation_idempotency_mismatch", nil)
+	case strings.Contains(err.Error(), "idempotency key"), strings.Contains(err.Error(), "compensation reason"), strings.Contains(err.Error(), "selection exceeds"):
+		response.ErrorWithDetails(c, http.StatusBadRequest, "补偿参数无效，请检查确认项、原因和操作标识", "watch_rate_compensation_invalid", nil)
+	default:
+		logWatchRateCompensationFailure(c, err)
+		response.ErrorWithDetails(c, http.StatusServiceUnavailable, "倍率差额补偿暂未执行，请稍后重试", "watch_rate_compensation_failed", nil)
+	}
+}
+
+func logWatchRateCompensationFailure(c *gin.Context, err error) {
+	if err == nil {
+		return
+	}
+	requestID := ""
+	if c != nil && c.Request != nil {
+		requestID, _ = c.Request.Context().Value(ctxkey.RequestID).(string)
+		if requestID == "" {
+			requestID = c.GetHeader("X-Request-Id")
+		}
+	}
+	slog.Error("watch rate compensation operation failed",
+		"anomaly_id", c.Param("id"),
 		"request_id", requestID,
 		"error", logredact.RedactText(err.Error()),
 	)

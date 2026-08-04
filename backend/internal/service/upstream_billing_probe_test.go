@@ -13,10 +13,37 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUpstreamBillingProbeMultiplierChangeBumpsWatchRules(t *testing.T) {
+	now := time.Now().UTC()
+	previous := &UpstreamBillingProbeSnapshot{
+		Status:     UpstreamBillingProbeStatusOK,
+		Data:       map[string]any{"billing_scope": "token", "resolved_rate_multiplier": 0.052, "effective_rate_multiplier": 0.052, "peak_rate_enabled": false},
+		ReceivedAt: &now, FreshUntil: probeTimePtr(now.Add(time.Hour)),
+	}
+	account := &Account{ID: 17, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Credentials: map[string]any{}, Extra: map[string]any{UpstreamBillingProbeExtraKey: previous}}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	mock.ExpectExec("UPDATE watch_pricing_rules AS r").WithArgs(account.ID).WillReturnResult(sqlmock.NewResult(0, 1))
+	svc := newUpstreamBillingProbeTestService(repo, &upstreamBillingProbeHTTPStub{}, &upstreamBillingProbeSettingRepo{})
+	svc.db = db
+	svc.now = func() time.Time { return now }
+	next := &UpstreamBillingProbeSnapshot{
+		Status:     UpstreamBillingProbeStatusOK,
+		Data:       map[string]any{"billing_scope": "token", "resolved_rate_multiplier": 0.06, "effective_rate_multiplier": 0.06, "peak_rate_enabled": false},
+		ReceivedAt: &now, FreshUntil: probeTimePtr(now.Add(time.Hour)),
+	}
+
+	require.NoError(t, svc.updateSnapshot(context.Background(), account, next, nil))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
 
 type upstreamBillingProbeAccountRepo struct {
 	AccountRepository
