@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/pagination"
@@ -107,6 +108,7 @@ type WatchPricingAccountCostRow struct {
 	RechargeRatio             float64    `json:"recharge_ratio,omitempty"`
 	EffectiveCost             *float64   `json:"effective_cost,omitempty"`
 	PricingSource             string     `json:"pricing_source,omitempty"`
+	EvidenceStatus            string     `json:"evidence_status,omitempty"`
 	OfficialProbeStatus       string     `json:"official_probe_status,omitempty"`
 	EvidenceMismatch          bool       `json:"evidence_mismatch,omitempty"`
 	DownwardSafe              bool       `json:"downward_safe"`
@@ -151,6 +153,29 @@ type WatchService struct {
 	groupService      *GroupService
 	channelService    *ChannelService
 	compensationCache WatchBalanceCacheInvalidator
+	sourceProbe       WatchSourceProbe
+	opsRepo           OpsRepository
+	alertMu           sync.Mutex
+	alertKeys         map[string]time.Time
+}
+
+// WatchSourceProbe is the narrow on-demand probe port used when a cached Watch
+// observation is missing or expired. Keeping this port optional preserves the
+// lightweight service test doubles and avoids coupling pricing to transport.
+type WatchSourceProbe interface {
+	RunCheck(context.Context, int64) (*WatchSourceSnapshot, error)
+}
+
+func (s *WatchService) SetSourceProbe(probe WatchSourceProbe) {
+	if s != nil {
+		s.sourceProbe = probe
+	}
+}
+
+func (s *WatchService) SetOpsRepository(repo OpsRepository) {
+	if s != nil {
+		s.opsRepo = repo
+	}
 }
 
 func NewWatchService(accounts AdminAccountRepository, groups GroupRepository, channels ChannelRepository, sources WatchSourceRepository, groupService *GroupService, channelService *ChannelService) *WatchService {
@@ -1682,6 +1707,18 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 		var fallbackReason string
 		if snapshot != nil {
 			fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
+			if fallbackReason != "" && watchShouldRefreshSnapshot(fallbackReason) && s.sourceProbe != nil {
+				// A stale/missing Watch observation is retried once at the decision
+				// boundary. The connector itself already performs its bounded retry
+				// sequence; this avoids an unbounded pricing-loop retry storm.
+				checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				refreshed, checkErr := s.sourceProbe.RunCheck(checkCtx, mapping.SourceID)
+				cancel()
+				if checkErr == nil && refreshed != nil {
+					snapshot = refreshed
+					fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
+				}
+			}
 			if fallbackReason == "" {
 				key, group, reason := watchResolveMappedSourceGroup(snapshot, mapping)
 				fallbackReason = reason
@@ -1710,6 +1747,37 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 			}
 		} else {
 			fallbackReason = "source snapshot is unavailable"
+			if s.sourceProbe != nil {
+				checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				refreshed, checkErr := s.sourceProbe.RunCheck(checkCtx, mapping.SourceID)
+				cancel()
+				if checkErr == nil && refreshed != nil {
+					snapshot = refreshed
+					fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
+				}
+			}
+			if snapshot != nil && fallbackReason == "" {
+				key, group, reason := watchResolveMappedSourceGroup(snapshot, mapping)
+				fallbackReason = reason
+				if key != nil && row.SourceKeyLabel == "" {
+					row.SourceKeyLabel = key.Label
+				}
+				if group != nil {
+					row.SourceGroupExternalID = group.ExternalID
+					row.SourceGroupName = group.Name
+					effectiveCost, groupRate, observedAt, reason := watchResolveEffectiveAccountCost(snapshot, group.ExternalID, account.Platform, req)
+					fallbackReason = reason
+					if fallbackReason == "" {
+						row.SourceGroupRateMultiplier = &groupRate
+						row.WatchFallbackMultiplier = &groupRate
+						row.ObservedAt = &observedAt
+						if probe.Multiplier == nil {
+							row.EffectiveCost = &effectiveCost
+							row.PricingSource = "watch_fallback"
+						}
+					}
+				}
+			}
 		}
 
 		if probe.Multiplier != nil && (strings.TrimSpace(row.SourceKeyExternalID) == "" || strings.TrimSpace(row.SourceGroupExternalID) == "") {
@@ -1721,9 +1789,30 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 		}
 
 		if probe.Multiplier != nil {
-			effectiveCost := roundWatchPrice(*probe.Multiplier / source.RechargeRatio)
+			selectedMultiplier := *probe.Multiplier
+			row.EvidenceStatus = "official_only"
+			if row.WatchFallbackMultiplier != nil {
+				row.EvidenceStatus = "matched"
+				if !watchValuesEqual(selectedMultiplier, *row.WatchFallbackMultiplier) {
+					row.EvidenceMismatch = true
+					row.EvidenceStatus = "mismatch"
+					if *row.WatchFallbackMultiplier > selectedMultiplier {
+						selectedMultiplier = *row.WatchFallbackMultiplier
+					}
+				}
+			}
+			if row.WatchFallbackMultiplier == nil {
+				s.emitRateEvidenceAlert(ctx, "watch_unavailable", row, &selectedMultiplier, nil)
+			} else if row.EvidenceMismatch {
+				s.emitRateEvidenceAlert(ctx, "mismatch", row, &selectedMultiplier, row.WatchFallbackMultiplier)
+			}
+			effectiveCost := roundWatchPrice(selectedMultiplier / source.RechargeRatio)
 			row.EffectiveCost = &effectiveCost
 			row.PricingSource = "official_probe"
+			if row.EvidenceMismatch {
+				row.PricingSource = "max_evidence"
+				row.Reason = "official and Watch multipliers differ; higher multiplier selected"
+			}
 			row.Healthy = true
 			if probe.ObservedAt != nil {
 				observedAt := *probe.ObservedAt
@@ -1732,14 +1821,19 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 			if row.WatchFallbackMultiplier != nil {
 				row.EvidenceMismatch = !watchValuesEqual(*probe.Multiplier, *row.WatchFallbackMultiplier)
 			}
+			s.clearAccountRateEvidencePause(ctx, account.ID)
 			rows = append(rows, row)
 			continue
 		}
 
 		if fallbackReason != "" || row.EffectiveCost == nil {
+			row.EvidenceStatus = "unavailable"
 			row.Reason = fallbackReason
 			if row.Reason == "" {
 				row.Reason = probe.Reason
+			}
+			if probe.Multiplier == nil && strings.TrimSpace(row.SourceGroupExternalID) != "" {
+				s.pauseAccountForMissingRateEvidence(ctx, account.ID, row, now)
 			}
 			if firstFreezeReason == "" {
 				firstFreezeReason = row.Reason
@@ -1747,6 +1841,9 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 			rows = append(rows, row)
 			continue
 		}
+		row.EvidenceStatus = "watch_only"
+		s.emitRateEvidenceAlert(ctx, "official_unavailable", row, nil, row.WatchFallbackMultiplier)
+		s.clearAccountRateEvidencePause(ctx, account.ID)
 		row.Healthy = true
 		rows = append(rows, row)
 	}
@@ -1762,6 +1859,88 @@ type watchOfficialProbeEvidence struct {
 	ObservedAt   *time.Time
 	DownwardSafe bool
 	Reason       string
+}
+
+const (
+	watchRateEvidencePauseDuration = 10 * time.Minute
+	watchRateEvidencePauseReason   = "watch_rate_evidence_unavailable"
+)
+
+func watchShouldRefreshSnapshot(reason string) bool {
+	switch strings.TrimSpace(reason) {
+	case "", "low_balance", "source is disabled":
+		return false
+	default:
+		return true
+	}
+}
+
+func (s *WatchService) pauseAccountForMissingRateEvidence(ctx context.Context, accountID int64, row WatchPricingAccountCostRow, now time.Time) {
+	if s == nil || s.accounts == nil || accountID <= 0 {
+		return
+	}
+	until := now.Add(watchRateEvidencePauseDuration)
+	_ = s.accounts.SetTempUnschedulable(ctx, accountID, until, watchRateEvidencePauseReason)
+	s.emitRateEvidenceAlert(ctx, "both_unavailable", row, nil, nil)
+}
+
+func (s *WatchService) clearAccountRateEvidencePause(ctx context.Context, accountID int64) {
+	if s == nil || s.accounts == nil || accountID <= 0 {
+		return
+	}
+	if repo, ok := s.accounts.(interface {
+		ClearTempUnschedulableIfReason(context.Context, int64, string) error
+	}); ok {
+		_ = repo.ClearTempUnschedulableIfReason(ctx, accountID, watchRateEvidencePauseReason)
+	}
+}
+
+func (s *WatchService) emitRateEvidenceAlert(ctx context.Context, kind string, row WatchPricingAccountCostRow, official, watch *float64) {
+	if s == nil || s.opsRepo == nil || row.AccountID <= 0 {
+		return
+	}
+	key := fmt.Sprintf("%s:%d:%d:%s:%s:%s", kind, row.AccountID, row.SourceID, row.SourceGroupExternalID, formatWatchAlertValue(official), formatWatchAlertValue(watch))
+	s.alertMu.Lock()
+	if s.alertKeys == nil {
+		s.alertKeys = make(map[string]time.Time)
+	}
+	if firedAt, exists := s.alertKeys[key]; exists && time.Since(firedAt) < 30*time.Minute {
+		s.alertMu.Unlock()
+		return
+	}
+	s.alertKeys[key] = time.Now().UTC()
+	s.alertMu.Unlock()
+
+	title := "Watch 倍率证据告警"
+	description := fmt.Sprintf("账号 %s（%d）上游分组 %s：倍率证据状态 %s。", row.AccountName, row.AccountID, row.SourceGroupName, kind)
+	severity := "warning"
+	if kind == "both_unavailable" {
+		severity = "critical"
+		description += " 官方探测与 Watch 探测均不可用，账号已临时停止调度。"
+	} else if kind == "mismatch" {
+		description += " 已采用两者中的较高倍率进行成本保护。"
+	}
+	now := time.Now().UTC()
+	event := &OpsAlertEvent{
+		Severity: severity, Status: OpsAlertStatusFiring, Title: title, Description: description,
+		MetricValue: official, ThresholdValue: watch,
+		Dimensions: map[string]any{"watch_event": kind, "account_id": row.AccountID, "source_id": row.SourceID, "source_group_external_id": row.SourceGroupExternalID},
+		FiredAt:    now, CreatedAt: now,
+	}
+	if repo, ok := s.opsRepo.(interface {
+		CreateRateEvidenceAlertOnce(context.Context, string, *OpsAlertEvent) (*OpsAlertEvent, bool, error)
+	}); ok {
+		_, _, _ = repo.CreateRateEvidenceAlertOnce(ctx, key, event)
+		return
+	}
+	_, _ = s.opsRepo.CreateAlertEvent(ctx, event)
+}
+
+func formatWatchAlertValue(value *float64) string {
+	if value == nil {
+		return "-"
+	}
+	return strconv.FormatFloat(*value, 'f', 8, 64)
 }
 
 func watchResolveOfficialProbeEvidence(account *Account, req WatchPricingPreviewRequest, now time.Time) watchOfficialProbeEvidence {

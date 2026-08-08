@@ -127,6 +127,7 @@
                       <div class="flex flex-wrap items-center gap-2">
                         <span :class="pricingSourceClass(row.pricing_source)">{{ pricingSourceLabel(row.pricing_source) }}</span>
                         <span v-if="row.evidence_mismatch" class="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-100">{{ t('admin.watch.evidenceMismatch') }}</span>
+                        <span v-if="row.evidence_status" class="text-xs text-gray-500 dark:text-gray-400">{{ evidenceStatusLabel(row.evidence_status) }}</span>
                       </div>
                       <div class="mt-1 space-y-0.5 font-mono text-xs text-gray-600 dark:text-gray-300">
                         <div>{{ t('admin.watch.officialProbeShort') }} {{ formatValue(row.official_probe_multiplier) }} · {{ officialProbeStatusLabel(row.official_probe_status) }}</div>
@@ -605,6 +606,7 @@ function accountCostStatusClass(healthy: boolean) {
 function pricingSourceLabel(source?: string) {
   if (source === 'official_probe') return t('admin.watch.pricingSourceOfficialProbe')
   if (source === 'watch_fallback') return t('admin.watch.pricingSourceWatchFallback')
+  if (source === 'max_evidence') return t('admin.watch.pricingSourceMaxEvidence')
   return t('admin.watch.pricingSourceUnresolved')
 }
 
@@ -612,7 +614,15 @@ function pricingSourceClass(source?: string) {
   const base = 'inline-flex rounded-full px-2 py-0.5 text-xs font-medium '
   if (source === 'official_probe') return base + 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
   if (source === 'watch_fallback') return base + 'bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-gray-200'
+  if (source === 'max_evidence') return base + 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-200'
   return base + 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200'
+}
+
+function evidenceStatusLabel(status?: string) {
+  if (!status) return '-'
+  const key = `admin.watch.evidenceStatus_${status}`
+  const label = t(key)
+  return label === key ? status : label
 }
 
 function officialProbeStatusLabel(status?: string) {

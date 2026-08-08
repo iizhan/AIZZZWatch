@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"math"
+	"strconv"
 	"strings"
 
 	dbent "github.com/Wei-Shaw/sub2api/ent"
@@ -13,6 +15,19 @@ import (
 
 type usageBillingRepository struct {
 	db *sql.DB
+}
+
+const balanceSourceEpsilon = 0.00000001
+
+type balanceSourceLot struct {
+	sourceType                string
+	id                        int64
+	principal, bonus, unknown float64
+}
+
+type batchImageBalanceSourceHold struct {
+	lotID                     int64
+	principal, bonus, unknown float64
 }
 
 func NewUsageBillingRepository(_ *dbent.Client, sqlDB *sql.DB) service.UsageBillingRepository {
@@ -222,6 +237,13 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 		}
 		result.NewBalance = &newBalance
 		result.BalanceOverdrafted = !sufficient
+		balanceBefore, err := unheldBalanceSourceAmount(ctx, tx, cmd.UserID, newBalance+cmd.BalanceCost)
+		if err != nil {
+			return err
+		}
+		if err := allocateUsageBalanceSources(ctx, tx, cmd.UserID, cmd.RequestID, cmd.BalanceCost, balanceBefore); err != nil {
+			return err
+		}
 	}
 
 	if cmd.APIKeyQuotaCost > 0 {
@@ -247,6 +269,132 @@ func (r *usageBillingRepository) applyUsageBillingEffects(ctx context.Context, t
 	}
 
 	return nil
+}
+
+func unheldBalanceSourceAmount(ctx context.Context, tx *sql.Tx, userID int64, availableBalance float64) (float64, error) {
+	var frozenBalance, trackedHolds float64
+	err := tx.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(u.frozen_balance, 0)::double precision,
+			COALESCE((
+				SELECT SUM(h.principal_amount+h.bonus_amount+h.unknown_amount)
+				FROM balance_source_holds h
+				WHERE h.user_id=u.id
+			), 0)::double precision
+		FROM users u
+		WHERE u.id=$1 AND u.deleted_at IS NULL
+	`, userID).Scan(&frozenBalance, &trackedHolds)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, service.ErrUserNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	return math.Max(availableBalance+frozenBalance-trackedHolds, 0), nil
+}
+
+func reconcileBalanceSourceLots(ctx context.Context, tx *sql.Tx, userID int64, balanceBefore float64) ([]balanceSourceLot, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id,source_type,remaining_principal::double precision,remaining_bonus::double precision,remaining_unknown::double precision FROM balance_source_lots WHERE user_id=$1 AND remaining_principal+remaining_bonus+remaining_unknown>0 ORDER BY CASE WHEN source_type IN ('historical_opening','balance_reconciliation_unknown') THEN 0 ELSE 1 END,created_at,id FOR UPDATE`, userID)
+	if err != nil {
+		return nil, err
+	}
+	lots := make([]balanceSourceLot, 0)
+	var ledgerBalance float64
+	for rows.Next() {
+		var lot balanceSourceLot
+		if err := rows.Scan(&lot.id, &lot.sourceType, &lot.principal, &lot.bonus, &lot.unknown); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		lots = append(lots, lot)
+		ledgerBalance += lot.principal + lot.bonus + lot.unknown
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	expectedBalance := math.Max(balanceBefore, 0)
+	if ledgerBalance > expectedBalance+balanceSourceEpsilon {
+		drift := ledgerBalance - expectedBalance
+		for _, component := range []string{"principal", "bonus", "unknown"} {
+			for index := range lots {
+				if drift <= balanceSourceEpsilon {
+					break
+				}
+				var available *float64
+				switch component {
+				case "principal":
+					available = &lots[index].principal
+				case "bonus":
+					available = &lots[index].bonus
+				default:
+					available = &lots[index].unknown
+				}
+				deduct := minFloat64(drift, *available)
+				if deduct <= 0 {
+					continue
+				}
+				*available -= deduct
+				drift -= deduct
+				query := `UPDATE balance_source_lots SET remaining_` + component + `=remaining_` + component + `-$1 WHERE id=$2`
+				if _, err := tx.ExecContext(ctx, query, deduct, lots[index].id); err != nil {
+					return nil, err
+				}
+			}
+		}
+	} else if ledgerBalance+balanceSourceEpsilon < expectedBalance {
+		gap := expectedBalance - ledgerBalance
+		var lotID int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO balance_source_lots (user_id,source_type,principal_amount,bonus_amount,unknown_amount,remaining_principal,remaining_bonus,remaining_unknown) VALUES ($1,'balance_reconciliation_unknown',0,0,$2,0,0,$2) RETURNING id`, userID, gap).Scan(&lotID); err != nil {
+			return nil, err
+		}
+		lots = append([]balanceSourceLot{{id: lotID, sourceType: "balance_reconciliation_unknown", unknown: gap}}, lots...)
+	}
+	return lots, nil
+}
+
+func allocateUsageBalanceSources(ctx context.Context, tx *sql.Tx, userID int64, requestID string, amount, balanceBefore float64) error {
+	lots, err := reconcileBalanceSourceLots(ctx, tx, userID, balanceBefore)
+	if err != nil {
+		return err
+	}
+	remaining := amount
+	for _, lot := range lots {
+		if remaining <= balanceSourceEpsilon {
+			break
+		}
+		principal := minFloat64(remaining, lot.principal)
+		remaining -= principal
+		bonus := minFloat64(remaining, lot.bonus)
+		remaining -= bonus
+		unknown := minFloat64(remaining, lot.unknown)
+		remaining -= unknown
+		if principal+bonus+unknown <= 0 {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`, principal, bonus, unknown, lot.id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (idempotency_key) DO NOTHING`, lot.id, userID, requestID, "usage:"+requestID+":"+strconv.FormatInt(lot.id, 10), principal, bonus, unknown); err != nil {
+			return err
+		}
+	}
+	if remaining > balanceSourceEpsilon {
+		var lotID int64
+		if err := tx.QueryRowContext(ctx, `INSERT INTO balance_source_lots (user_id,source_type,principal_amount,bonus_amount,unknown_amount,remaining_principal,remaining_bonus,remaining_unknown) VALUES ($1,'historical_unknown',0,0,$2,0,0,0) RETURNING id`, userID, remaining).Scan(&lotID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,0,0,$5)`, lotID, userID, requestID, "usage:"+requestID+":unknown", remaining); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func minFloat64(left, right float64) float64 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func incrementUsageBillingSubscription(ctx context.Context, tx *sql.Tx, subscriptionID int64, costUSD float64) error {
@@ -323,6 +471,13 @@ func reserveUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 		RETURNING balance, frozen_balance
 	`, cmd.HoldAmount, cmd.UserID).Scan(&balance, &frozen)
 	if err == nil {
+		balanceBeforeHold, sourceErr := unheldBalanceSourceAmount(ctx, tx, cmd.UserID, balance)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		if sourceErr := reserveBatchImageBalanceSources(ctx, tx, cmd, balanceBeforeHold); sourceErr != nil {
+			return nil, sourceErr
+		}
 		return &service.BatchImageBalanceHoldResult{NewBalance: &balance, FrozenBalance: &frozen}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -355,6 +510,19 @@ func captureUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 		RETURNING balance, frozen_balance
 	`, cmd.HoldAmount, cmd.ActualAmount, cmd.UserID).Scan(&balance, &frozen)
 	if err == nil {
+		tracked, sourceErr := captureBatchImageBalanceSources(ctx, tx, cmd)
+		if sourceErr != nil {
+			return nil, sourceErr
+		}
+		if !tracked && cmd.ActualAmount > balanceSourceEpsilon {
+			balanceBeforeCapture, sourceErr := unheldBalanceSourceAmount(ctx, tx, cmd.UserID, balance+cmd.ActualAmount)
+			if sourceErr != nil {
+				return nil, sourceErr
+			}
+			if sourceErr := allocateUsageBalanceSources(ctx, tx, cmd.UserID, cmd.RequestID, cmd.ActualAmount, balanceBeforeCapture); sourceErr != nil {
+				return nil, sourceErr
+			}
+		}
 		return &service.BatchImageBalanceHoldResult{NewBalance: &balance, FrozenBalance: &frozen}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -392,6 +560,9 @@ func releaseUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 		RETURNING balance, frozen_balance
 	`, cmd.HoldAmount, cmd.UserID).Scan(&balance, &frozen)
 	if err == nil {
+		if sourceErr := releaseBatchImageBalanceSources(ctx, tx, cmd); sourceErr != nil {
+			return nil, sourceErr
+		}
 		return &service.BatchImageBalanceHoldResult{NewBalance: &balance, FrozenBalance: &frozen}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -403,6 +574,128 @@ func releaseUsageBillingBatchImageBalance(ctx context.Context, tx *sql.Tx, cmd *
 		return nil, service.ErrUserNotFound
 	}
 	return nil, errors.New("batch image frozen balance is insufficient")
+}
+
+func reserveBatchImageBalanceSources(ctx context.Context, tx *sql.Tx, cmd *service.BatchImageBalanceHoldCommand, balanceBefore float64) error {
+	if strings.TrimSpace(cmd.BatchID) == "" {
+		return errors.New("batch image balance source hold requires batch id")
+	}
+	lots, err := reconcileBalanceSourceLots(ctx, tx, cmd.UserID, balanceBefore)
+	if err != nil {
+		return err
+	}
+	remaining := cmd.HoldAmount
+	for _, lot := range lots {
+		if remaining <= balanceSourceEpsilon {
+			break
+		}
+		principal := minFloat64(remaining, lot.principal)
+		remaining -= principal
+		bonus := minFloat64(remaining, lot.bonus)
+		remaining -= bonus
+		unknown := minFloat64(remaining, lot.unknown)
+		remaining -= unknown
+		if principal+bonus+unknown <= balanceSourceEpsilon {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`, principal, bonus, unknown, lot.id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO balance_source_holds (lot_id,user_id,batch_id,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6)`, lot.id, cmd.UserID, cmd.BatchID, principal, bonus, unknown); err != nil {
+			return err
+		}
+	}
+	if remaining > balanceSourceEpsilon {
+		return errors.New("batch image balance source hold is incomplete")
+	}
+	return nil
+}
+
+func loadBatchImageBalanceSourceHolds(ctx context.Context, tx *sql.Tx, userID int64, batchID string) ([]batchImageBalanceSourceHold, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT lot_id,principal_amount::double precision,bonus_amount::double precision,unknown_amount::double precision FROM balance_source_holds WHERE user_id=$1 AND batch_id=$2 ORDER BY id FOR UPDATE`, userID, batchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	holds := make([]batchImageBalanceSourceHold, 0)
+	for rows.Next() {
+		var hold batchImageBalanceSourceHold
+		if err := rows.Scan(&hold.lotID, &hold.principal, &hold.bonus, &hold.unknown); err != nil {
+			return nil, err
+		}
+		holds = append(holds, hold)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return holds, nil
+}
+
+func captureBatchImageBalanceSources(ctx context.Context, tx *sql.Tx, cmd *service.BatchImageBalanceHoldCommand) (bool, error) {
+	holds, err := loadBatchImageBalanceSourceHolds(ctx, tx, cmd.UserID, cmd.BatchID)
+	if err != nil || len(holds) == 0 {
+		return false, err
+	}
+	if err := validateBatchImageBalanceSourceHoldAmount(holds, cmd.HoldAmount); err != nil {
+		return true, err
+	}
+	remaining := cmd.ActualAmount
+	for _, hold := range holds {
+		principal := minFloat64(remaining, hold.principal)
+		remaining -= principal
+		bonus := minFloat64(remaining, hold.bonus)
+		remaining -= bonus
+		unknown := minFloat64(remaining, hold.unknown)
+		remaining -= unknown
+		releasePrincipal := hold.principal - principal
+		releaseBonus := hold.bonus - bonus
+		releaseUnknown := hold.unknown - unknown
+		if releasePrincipal+releaseBonus+releaseUnknown > balanceSourceEpsilon {
+			if _, err := tx.ExecContext(ctx, `UPDATE balance_source_lots SET remaining_principal=remaining_principal+$1,remaining_bonus=remaining_bonus+$2,remaining_unknown=remaining_unknown+$3 WHERE id=$4`, releasePrincipal, releaseBonus, releaseUnknown, hold.lotID); err != nil {
+				return true, err
+			}
+		}
+		if principal+bonus+unknown > balanceSourceEpsilon {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7)`, hold.lotID, cmd.UserID, cmd.RequestID, "usage:"+cmd.RequestID+":"+strconv.FormatInt(hold.lotID, 10), principal, bonus, unknown); err != nil {
+				return true, err
+			}
+		}
+	}
+	if remaining > balanceSourceEpsilon {
+		return true, errors.New("batch image balance source capture exceeds tracked hold")
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM balance_source_holds WHERE user_id=$1 AND batch_id=$2`, cmd.UserID, cmd.BatchID); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func releaseBatchImageBalanceSources(ctx context.Context, tx *sql.Tx, cmd *service.BatchImageBalanceHoldCommand) error {
+	holds, err := loadBatchImageBalanceSourceHolds(ctx, tx, cmd.UserID, cmd.BatchID)
+	if err != nil || len(holds) == 0 {
+		return err
+	}
+	if err := validateBatchImageBalanceSourceHoldAmount(holds, cmd.HoldAmount); err != nil {
+		return err
+	}
+	for _, hold := range holds {
+		if _, err := tx.ExecContext(ctx, `UPDATE balance_source_lots SET remaining_principal=remaining_principal+$1,remaining_bonus=remaining_bonus+$2,remaining_unknown=remaining_unknown+$3 WHERE id=$4`, hold.principal, hold.bonus, hold.unknown, hold.lotID); err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `DELETE FROM balance_source_holds WHERE user_id=$1 AND batch_id=$2`, cmd.UserID, cmd.BatchID)
+	return err
+}
+
+func validateBatchImageBalanceSourceHoldAmount(holds []batchImageBalanceSourceHold, expected float64) error {
+	var actual float64
+	for _, hold := range holds {
+		actual += hold.principal + hold.bonus + hold.unknown
+	}
+	if math.Abs(actual-expected) > balanceSourceEpsilon {
+		return errors.New("batch image balance source hold amount does not match frozen balance")
+	}
+	return nil
 }
 
 // batchImageHoldClaimExists 检查 hold request id 是否已在 dedup（或归档）表中被 claim，

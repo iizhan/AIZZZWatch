@@ -41,6 +41,8 @@ const (
 	upstreamBillingProbeMaxBodyBytes           = 64 * 1024
 	upstreamBillingProbeMaxPerCycle            = 20
 	upstreamBillingProbeConcurrency            = 4
+	upstreamBillingProbeMaxAttempts            = 3
+	upstreamBillingProbeRetryDelay             = 250 * time.Millisecond
 	upstreamBillingProbeMaxDelay               = 24 * time.Hour
 	// unsupported 账号的重探间隔倍数：上游不是 sub2api 中转就不会突然长出
 	// /v1/sub2api/billing，按常规 interval 重排只会持续占满每周期
@@ -479,7 +481,7 @@ func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, 
 				return nil, nil
 			}
 		}
-		return s.probeLoadedAccount(ctx, account, intervalMinutes)
+		return s.probeLoadedAccountWithRetry(ctx, account, intervalMinutes)
 	})
 	if err != nil {
 		return nil, err
@@ -492,6 +494,31 @@ func (s *UpstreamBillingProbeService) probeAccountWithMode(ctx context.Context, 
 		return nil, fmt.Errorf("invalid upstream billing probe result")
 	}
 	return snapshot, nil
+}
+
+func (s *UpstreamBillingProbeService) probeLoadedAccountWithRetry(ctx context.Context, account *Account, intervalMinutes int) (*UpstreamBillingProbeSnapshot, error) {
+	var snapshot *UpstreamBillingProbeSnapshot
+	var err error
+	for attempt := 0; attempt < upstreamBillingProbeMaxAttempts; attempt++ {
+		snapshot, err = s.probeLoadedAccount(ctx, account, intervalMinutes)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return snapshot, err
+		}
+		if err == nil && snapshot != nil && (snapshot.Status == UpstreamBillingProbeStatusOK || snapshot.Status == UpstreamBillingProbeStatusUnsupported) {
+			return snapshot, err
+		}
+		if attempt == upstreamBillingProbeMaxAttempts-1 {
+			break
+		}
+		timer := time.NewTimer(upstreamBillingProbeRetryDelay * time.Duration(attempt+1))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return snapshot, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return snapshot, err
 }
 
 // ProbeAccounts performs a bounded manual batch with the same concurrency limit as the runner.
@@ -779,6 +806,9 @@ func (s *UpstreamBillingProbeService) updateSnapshot(
 			  AND EXISTS (
 				SELECT 1
 				FROM account_groups ag
+				JOIN watch_account_upstream_mappings m
+				  ON m.account_id = ag.account_id
+				 AND COALESCE(m.group_binding_state, 'confirmed') = 'confirmed'
 				WHERE ag.account_id = $1 AND ag.group_id = r.target_group_id
 			  )
 		`, account.ID); err != nil {

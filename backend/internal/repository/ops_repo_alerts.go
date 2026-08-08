@@ -591,6 +591,45 @@ RETURNING
 	return scanOpsAlertEvent(row)
 }
 
+// CreateRateEvidenceAlertOnce persists a rate-evidence alert under a stable
+// deduplication key. It is intentionally an optional repository capability so
+// lightweight OpsRepository test doubles remain source-compatible.
+func (r *opsRepository) CreateRateEvidenceAlertOnce(ctx context.Context, dedupKey string, event *service.OpsAlertEvent) (*service.OpsAlertEvent, bool, error) {
+	if r == nil || r.db == nil {
+		return nil, false, fmt.Errorf("nil ops repository")
+	}
+	if strings.TrimSpace(dedupKey) == "" || event == nil {
+		return nil, false, fmt.Errorf("invalid rate evidence alert")
+	}
+	dimensionsArg, err := opsNullJSONMap(event.Dimensions)
+	if err != nil {
+		return nil, false, err
+	}
+	q := `
+INSERT INTO ops_alert_events (
+  rule_id, severity, status, title, description, metric_value,
+  threshold_value, dimensions, fired_at, resolved_at, email_sent,
+  dedup_key, created_at
+) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+ON CONFLICT DO NOTHING
+RETURNING id, COALESCE(rule_id, 0), COALESCE(severity, ''), COALESCE(status, ''),
+  COALESCE(title, ''), COALESCE(description, ''), metric_value, threshold_value,
+  dimensions, fired_at, resolved_at, email_sent, created_at`
+	row := r.db.QueryRowContext(ctx, q,
+		opsNullInt64(&event.RuleID), opsNullString(event.Severity), opsNullString(event.Status),
+		opsNullString(event.Title), opsNullString(event.Description), opsNullFloat64(event.MetricValue),
+		opsNullFloat64(event.ThresholdValue), dimensionsArg, event.FiredAt,
+		opsNullTime(event.ResolvedAt), event.EmailSent, strings.TrimSpace(dedupKey))
+	created, err := scanOpsAlertEvent(row)
+	if err == sql.ErrNoRows {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return created, true, nil
+}
+
 func (r *opsRepository) UpdateAlertEventStatus(ctx context.Context, eventID int64, status string, resolvedAt *time.Time) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("nil ops repository")

@@ -676,8 +676,8 @@ func TestPreviewPricingPrefersFreshOfficialProbeOverWatchFallback(t *testing.T) 
 	if got, want := *preview.ProposedValue, 0.07; got != want {
 		t.Fatalf("ProposedValue = %v, want immediate safety target %v", got, want)
 	}
-	if len(preview.CostRows) != 1 || preview.CostRows[0].PricingSource != "official_probe" || !preview.CostRows[0].EvidenceMismatch {
-		t.Fatalf("CostRows = %#v, want official probe with mismatch audit", preview.CostRows)
+	if len(preview.CostRows) != 1 || preview.CostRows[0].PricingSource != "max_evidence" || !preview.CostRows[0].EvidenceMismatch || preview.CostRows[0].EvidenceStatus != "mismatch" {
+		t.Fatalf("CostRows = %#v, want higher mismatch evidence selected", preview.CostRows)
 	}
 }
 

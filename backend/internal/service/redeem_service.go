@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -464,8 +465,19 @@ func (s *RedeemService) Redeem(ctx context.Context, userID int64, code string) (
 			if err := s.redeemUserRepo.ApplyRedeemBalanceAdjustment(txCtx, userID, amount); err != nil {
 				return nil, fmt.Errorf("update user balance: %w", err)
 			}
-		} else if err := s.userRepo.UpdateBalance(txCtx, userID, amount); err != nil {
-			return nil, fmt.Errorf("update user balance: %w", err)
+		} else {
+			if err := s.userRepo.UpdateBalance(txCtx, userID, amount); err != nil {
+				return nil, fmt.Errorf("update user balance: %w", err)
+			}
+			if attribution, ok := balanceSourceAttributionFromContext(ctx); ok {
+				attributed := attribution.principal + attribution.bonus + attribution.unknown
+				if math.Abs(attributed-amount) > 0.00000001 {
+					return nil, errors.New("balance source attribution does not match redeemed amount")
+				}
+				if err := insertBalanceSourceLot(txCtx, tx, userID, attribution); err != nil {
+					return nil, fmt.Errorf("record balance source attribution: %w", err)
+				}
+			}
 		}
 
 	case RedeemTypeConcurrency:

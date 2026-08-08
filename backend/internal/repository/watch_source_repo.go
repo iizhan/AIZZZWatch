@@ -1219,11 +1219,13 @@ func (r *watchSourceRepository) GetOperationsUsageSummary(ctx context.Context, s
 	var revenue, estimatedCost float64
 	err := r.db.QueryRowContext(ctx, `
 WITH usage_scope AS (
-	SELECT
-		id,
-		account_id,
-		group_id,
-		created_at,
+		SELECT
+			id,
+			request_id,
+			account_id,
+			group_id,
+			billing_type,
+			created_at,
 		actual_cost::DOUBLE PRECISION AS actual_cost,
 		COALESCE(account_stats_cost,total_cost)::DOUBLE PRECISION AS usage_base_cost
 	FROM usage_logs
@@ -1231,10 +1233,12 @@ WITH usage_scope AS (
 ),
 resolved AS (
 	SELECT
-		u.*,
-		h.source_id,
-		h.source_group_external_id,
-		gh.effective_rate_multiplier::DOUBLE PRECISION AS effective_rate_multiplier
+			u.*,
+			h.source_id,
+			h.source_group_external_id,
+			gh.effective_rate_multiplier::DOUBLE PRECISION AS effective_rate_multiplier,
+			CASE WHEN u.billing_type=0 THEN funding.principal_amount ELSE u.actual_cost END AS recognized_revenue,
+			CASE WHEN u.billing_type<>0 THEN TRUE ELSE funding.allocation_count>0 AND funding.unknown_amount=0 END AS revenue_known
 	FROM usage_scope u
 	LEFT JOIN LATERAL (
 		SELECT source_id, source_group_external_id
@@ -1254,14 +1258,22 @@ resolved AS (
 		  AND observed_at <= u.created_at
 		ORDER BY observed_at DESC, id DESC
 		LIMIT 1
-	) gh ON TRUE
-)
-SELECT
-	COUNT(*)::BIGINT,
-		COALESCE(SUM(actual_cost),0)::DOUBLE PRECISION,
-		COALESCE(SUM(CASE WHEN effective_rate_multiplier IS NULL THEN 0 ELSE usage_base_cost*effective_rate_multiplier END),0)::DOUBLE PRECISION,
-		COALESCE(SUM(CASE WHEN effective_rate_multiplier IS NOT NULL AND actual_cost + 0.0000000001 < usage_base_cost*effective_rate_multiplier THEN 1 ELSE 0 END),0)::BIGINT,
-		COALESCE(SUM(CASE WHEN effective_rate_multiplier IS NULL THEN 1 ELSE 0 END),0)::BIGINT,
+		) gh ON TRUE
+		LEFT JOIN LATERAL (
+			SELECT
+				COALESCE(SUM(principal_amount),0)::DOUBLE PRECISION AS principal_amount,
+				COALESCE(SUM(unknown_amount),0)::DOUBLE PRECISION AS unknown_amount,
+				COUNT(*)::BIGINT AS allocation_count
+			FROM balance_source_allocations
+			WHERE request_id=u.request_id
+		) funding ON TRUE
+	)
+	SELECT
+		COUNT(*)::BIGINT,
+			COALESCE(SUM(CASE WHEN revenue_known THEN recognized_revenue ELSE 0 END),0)::DOUBLE PRECISION,
+			COALESCE(SUM(CASE WHEN effective_rate_multiplier IS NULL THEN 0 ELSE usage_base_cost*effective_rate_multiplier END),0)::DOUBLE PRECISION,
+			COALESCE(SUM(CASE WHEN revenue_known AND effective_rate_multiplier IS NOT NULL AND recognized_revenue + 0.0000000001 < usage_base_cost*effective_rate_multiplier THEN 1 ELSE 0 END),0)::BIGINT,
+			COALESCE(SUM(CASE WHEN effective_rate_multiplier IS NULL OR NOT revenue_known THEN 1 ELSE 0 END),0)::BIGINT,
 		COUNT(DISTINCT account_id)::BIGINT,
 		COUNT(DISTINCT group_id)::BIGINT
 	FROM resolved`, start, end).Scan(

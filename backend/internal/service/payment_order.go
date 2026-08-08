@@ -213,6 +213,12 @@ func (s *PaymentService) createOrderInTx(ctx context.Context, req CreateOrderReq
 	if err != nil {
 		return nil, fmt.Errorf("create order: %w", err)
 	}
+	if req.OrderType == payment.OrderTypeBalance {
+		bonusAmount := math.Max(0, orderAmount-limitAmount)
+		if _, err = tx.ExecContext(ctx, `UPDATE payment_orders SET recharge_base_amount=$1,recharge_bonus_amount=$2,credited_amount=$3 WHERE id=$4`, limitAmount, bonusAmount, orderAmount, order.ID); err != nil {
+			return nil, fmt.Errorf("snapshot recharge amounts: %w", err)
+		}
+	}
 	code := fmt.Sprintf("PAY-%d-%d", order.ID, time.Now().UnixNano()%100000)
 	order, err = tx.PaymentOrder.UpdateOneID(order.ID).SetRechargeCode(code).Save(ctx)
 	if err != nil {

@@ -265,6 +265,30 @@ const routes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/public-pricing',
+    name: 'PublicPricing',
+    component: () => import('@/views/user/PublicPricingView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: '公示榜',
+      titleKey: 'recommendations.publicPricingPageTitle',
+      descriptionKey: 'recommendations.publicPricingDescription'
+    }
+  },
+  {
+    path: '/recommendations',
+    name: 'Recommendations',
+    component: () => import('@/views/user/RecommendationsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: false,
+      title: '揭榜悬赏',
+      titleKey: 'recommendations.title',
+      descriptionKey: 'recommendations.description'
+    }
+  },
+  {
     path: '/available-channels',
     name: 'UserAvailableChannels',
     component: () => import('@/views/user/AvailableChannelsView.vue'),
@@ -734,6 +758,18 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/admin/affiliates',
     redirect: '/admin/affiliates/invites'
+  },
+  {
+    path: '/admin/recommendations',
+    name: 'AdminRecommendations',
+    component: () => import('@/views/admin/AdminRecommendationsView.vue'),
+    meta: {
+      requiresAuth: true,
+      requiresAdmin: true,
+      title: '站点推荐审核',
+      titleKey: 'admin.recommendations.title',
+      descriptionKey: 'admin.recommendations.description'
+    }
   },
   {
     path: '/admin/affiliates/invites',

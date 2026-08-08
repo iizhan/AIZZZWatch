@@ -402,7 +402,34 @@ func newPaymentConfigServiceTestClient(t *testing.T) *dbent.Client {
 	drv := entsql.OpenDB(dialect.SQLite, db)
 	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
 	t.Cleanup(func() { _ = client.Close() })
+	ensureBalanceSourceTestSchema(t, db)
 	return client
+}
+
+func ensureBalanceSourceTestSchema(t *testing.T, db *sql.DB) {
+	t.Helper()
+	for _, statement := range []string{
+		`ALTER TABLE payment_orders ADD COLUMN recharge_base_amount DOUBLE PRECISION NULL`,
+		`ALTER TABLE payment_orders ADD COLUMN recharge_bonus_amount DOUBLE PRECISION NULL`,
+		`ALTER TABLE payment_orders ADD COLUMN credited_amount DOUBLE PRECISION NULL`,
+		`CREATE TABLE balance_source_lots (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id INTEGER NOT NULL,
+			source_type TEXT NOT NULL,
+			source_id INTEGER NULL,
+			principal_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+			bonus_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+			unknown_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+			remaining_principal DOUBLE PRECISION NOT NULL DEFAULT 0,
+			remaining_bonus DOUBLE PRECISION NOT NULL DEFAULT 0,
+			remaining_unknown DOUBLE PRECISION NOT NULL DEFAULT 0,
+			UNIQUE(source_type, source_id)
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("create balance source test schema: %v", err)
+		}
+	}
 }
 
 type paymentConfigSettingRepoStub struct {

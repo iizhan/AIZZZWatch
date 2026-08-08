@@ -704,6 +704,80 @@ func TestExecuteBalanceFulfillmentRecoversAfterRedeemWithoutCreditingAgain(t *te
 	require.Equal(t, OrderStatusCompleted, reloaded.Status)
 }
 
+func TestRedeemBalancePersistsSourceAttributionInTheBalanceTransaction(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	user, err := client.User.Create().
+		SetEmail("balance-source@example.com").
+		SetPasswordHash("hash").
+		SetRole(RoleUser).
+		SetStatus(StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+
+	redeemRepo := &redeemRejectRepo{code: RedeemCode{ID: 201, Code: "PAYMENT-SOURCE", Type: RedeemTypeBalance, Value: 12, Status: StatusUnused}}
+	userRepo := &mockUserRepo{
+		getByIDUser: &User{ID: user.ID, Email: user.Email, Status: StatusActive},
+		updateBalanceFn: func(txCtx context.Context, id int64, amount float64) error {
+			tx := dbent.TxFromContext(txCtx)
+			require.NotNil(t, tx)
+			return tx.Client().User.UpdateOneID(id).AddBalance(amount).Exec(txCtx)
+		},
+	}
+	svc := NewRedeemService(redeemRepo, userRepo, nil, nil, nil, client, nil, nil)
+	redeemCtx := withBalanceSourceAttribution(ctx, balanceSourceAttribution{
+		sourceType: "payment_recharge",
+		sourceID:   88,
+		principal:  10,
+		bonus:      2,
+	})
+
+	_, err = svc.Redeem(redeemCtx, user.ID, "PAYMENT-SOURCE")
+	require.NoError(t, err)
+	reloaded, err := client.User.Get(ctx, user.ID)
+	require.NoError(t, err)
+	require.InDelta(t, 12, reloaded.Balance, 0.000001)
+	var principal, bonus float64
+	require.NoError(t, querySingleRow(ctx, client, `SELECT principal_amount,bonus_amount FROM balance_source_lots WHERE source_type='payment_recharge' AND source_id=$1`, []any{int64(88)}, &principal, &bonus))
+	require.InDelta(t, 10, principal, 0.000001)
+	require.InDelta(t, 2, bonus, 0.000001)
+}
+
+func TestRedeemBalanceRollsBackWhenSourceAttributionIsInvalid(t *testing.T) {
+	ctx := context.Background()
+	client := newPaymentConfigServiceTestClient(t)
+	user, err := client.User.Create().
+		SetEmail("balance-source-rollback@example.com").
+		SetPasswordHash("hash").
+		SetRole(RoleUser).
+		SetStatus(StatusActive).
+		Save(ctx)
+	require.NoError(t, err)
+
+	redeemRepo := &redeemRejectRepo{code: RedeemCode{ID: 202, Code: "PAYMENT-ROLLBACK", Type: RedeemTypeBalance, Value: 12, Status: StatusUnused}}
+	userRepo := &mockUserRepo{
+		getByIDUser: &User{ID: user.ID, Email: user.Email, Status: StatusActive},
+		updateBalanceFn: func(txCtx context.Context, id int64, amount float64) error {
+			return dbent.TxFromContext(txCtx).Client().User.UpdateOneID(id).AddBalance(amount).Exec(txCtx)
+		},
+	}
+	svc := NewRedeemService(redeemRepo, userRepo, nil, nil, nil, client, nil, nil)
+	redeemCtx := withBalanceSourceAttribution(ctx, balanceSourceAttribution{
+		sourceType: "payment_recharge",
+		sourceID:   89,
+		principal:  10,
+	})
+
+	_, err = svc.Redeem(redeemCtx, user.ID, "PAYMENT-ROLLBACK")
+	require.Error(t, err)
+	reloaded, reloadErr := client.User.Get(ctx, user.ID)
+	require.NoError(t, reloadErr)
+	require.Zero(t, reloaded.Balance)
+	var count int
+	require.NoError(t, querySingleRow(ctx, client, `SELECT COUNT(*) FROM balance_source_lots WHERE source_type='payment_recharge' AND source_id=$1`, []any{int64(89)}, &count))
+	require.Zero(t, count)
+}
+
 func TestDuplicatePaymentNotificationDoesNotReprocessCompletedBalanceOrder(t *testing.T) {
 	ctx := context.Background()
 	client := newPaymentConfigServiceTestClient(t)

@@ -93,7 +93,8 @@ export interface WatchPricingAccountCostRow {
   watch_fallback_multiplier?: number
   recharge_ratio?: number
   effective_cost?: number
-  pricing_source?: 'official_probe' | 'watch_fallback'
+  pricing_source?: 'official_probe' | 'watch_fallback' | 'max_evidence'
+  evidence_status?: 'matched' | 'mismatch' | 'official_only' | 'watch_only' | 'unavailable'
   official_probe_status?: 'ok' | 'missing' | 'unsupported' | 'failed' | 'stale' | 'invalid' | 'not_applicable'
   evidence_mismatch?: boolean
   downward_safe: boolean
@@ -115,7 +116,7 @@ export interface WatchRateAnomaly {
   current_value: number
   target_value: number
   highest_upstream_cost: number
-  pricing_source: 'official_probe' | 'watch_fallback' | 'mixed' | 'unresolved'
+  pricing_source: 'official_probe' | 'watch_fallback' | 'max_evidence' | 'mixed' | 'unresolved'
   official_probe_count: number
   watch_fallback_count: number
   evidence_mismatch_count: number

@@ -20,7 +20,7 @@ func TestUpsertGatewayFailoverAttemptUsesRequestAndAttemptIdempotency(t *testing
 	mock.ExpectExec(`(?s)INSERT INTO gateway_failover_attempts.*ON CONFLICT \(request_id, attempt_no\) DO UPDATE`).
 		WithArgs("local:req-1", "hash", int64(1), int64(2), nil, int64(3), 1,
 			"http_status", sqlmock.AnyArg(), "failed", service.GatewayFailoverBillingPendingReconciliation,
-			120, false, "upstream-1").
+			0, 120, false, "upstream-1").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	status := 524

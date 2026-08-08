@@ -80,6 +80,105 @@ func TestUsageBillingRepositoryApply_DeduplicatesBalanceBilling(t *testing.T) {
 	require.Equal(t, 1, dedupCount)
 }
 
+func TestUsageBillingRepository_BatchImageHoldPreservesFundingDuringRegularUsage(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := NewUsageBillingRepository(client, integrationDB)
+	user := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("batch-funding-release-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Balance:      10,
+	})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{
+		UserID: user.ID,
+		Key:    "sk-batch-funding-release-" + uuid.NewString(),
+		Name:   "batch-funding-release",
+	})
+	batchID := "imgbatch_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:24]
+	_, err := integrationDB.ExecContext(ctx, `INSERT INTO batch_image_jobs (batch_id,user_id,api_key_id,provider,model,item_count,estimated_cost,hold_amount) VALUES ($1,$2,$3,'gemini_api','gemini-test',1,8,8)`, batchID, user.ID, apiKey.ID)
+	require.NoError(t, err)
+	var lotID int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO balance_source_lots (user_id,source_type,source_id,principal_amount,remaining_principal) VALUES ($1,'test_batch_funding',$2,10,10) RETURNING id`, user.ID, user.ID).Scan(&lotID))
+
+	_, err = repo.ReserveBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
+		RequestID: service.BatchImageHoldRequestID(batchID), APIKeyID: apiKey.ID,
+		UserID: user.ID, BatchID: batchID, HoldAmount: 8,
+	})
+	require.NoError(t, err)
+	_, err = repo.Apply(ctx, &service.UsageBillingCommand{
+		RequestID: uuid.NewString(), APIKeyID: apiKey.ID, UserID: user.ID, BalanceCost: 2,
+	})
+	require.NoError(t, err)
+	_, err = repo.ReleaseBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
+		RequestID: service.BatchImageReleaseRequestID(batchID), APIKeyID: apiKey.ID,
+		UserID: user.ID, BatchID: batchID, HoldAmount: 8,
+	})
+	require.NoError(t, err)
+
+	var balance, frozen, remainingPrincipal, allocatedPrincipal float64
+	var holdCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT balance,frozen_balance FROM users WHERE id=$1`, user.ID).Scan(&balance, &frozen))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT remaining_principal FROM balance_source_lots WHERE id=$1`, lotID).Scan(&remainingPrincipal))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COALESCE(SUM(principal_amount),0) FROM balance_source_allocations WHERE user_id=$1`, user.ID).Scan(&allocatedPrincipal))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM balance_source_holds WHERE user_id=$1`, user.ID).Scan(&holdCount))
+	require.InDelta(t, 8, balance, 0.000001)
+	require.Zero(t, frozen)
+	require.InDelta(t, 8, remainingPrincipal, 0.000001)
+	require.InDelta(t, 2, allocatedPrincipal, 0.000001)
+	require.Zero(t, holdCount)
+}
+
+func TestUsageBillingRepository_BatchImagePartialCaptureUsesHeldFunding(t *testing.T) {
+	ctx := context.Background()
+	client := testEntClient(t)
+	repo := NewUsageBillingRepository(client, integrationDB)
+	user := mustCreateUser(t, client, &service.User{
+		Email:        fmt.Sprintf("batch-funding-capture-%d@example.com", time.Now().UnixNano()),
+		PasswordHash: "hash",
+		Balance:      10,
+	})
+	apiKey := mustCreateApiKey(t, client, &service.APIKey{
+		UserID: user.ID,
+		Key:    "sk-batch-funding-capture-" + uuid.NewString(),
+		Name:   "batch-funding-capture",
+	})
+	batchID := "imgbatch_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:24]
+	_, err := integrationDB.ExecContext(ctx, `INSERT INTO batch_image_jobs (batch_id,user_id,api_key_id,provider,model,item_count,estimated_cost,hold_amount) VALUES ($1,$2,$3,'gemini_api','gemini-test',1,8,8)`, batchID, user.ID, apiKey.ID)
+	require.NoError(t, err)
+	var lotID int64
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `INSERT INTO balance_source_lots (user_id,source_type,source_id,principal_amount,bonus_amount,remaining_principal,remaining_bonus) VALUES ($1,'test_batch_funding',$2,4,6,4,6) RETURNING id`, user.ID, user.ID).Scan(&lotID))
+
+	_, err = repo.ReserveBatchImageBalance(ctx, &service.BatchImageBalanceHoldCommand{
+		RequestID: service.BatchImageHoldRequestID(batchID), APIKeyID: apiKey.ID,
+		UserID: user.ID, BatchID: batchID, HoldAmount: 8,
+	})
+	require.NoError(t, err)
+	capture := &service.BatchImageBalanceHoldCommand{
+		RequestID: service.BatchImageCaptureRequestID(batchID), APIKeyID: apiKey.ID,
+		UserID: user.ID, BatchID: batchID, HoldAmount: 8, ActualAmount: 6,
+	}
+	first, err := repo.CaptureBatchImageBalance(ctx, capture)
+	require.NoError(t, err)
+	require.True(t, first.Applied)
+	second, err := repo.CaptureBatchImageBalance(ctx, capture)
+	require.NoError(t, err)
+	require.False(t, second.Applied)
+
+	var balance, frozen, remainingPrincipal, remainingBonus, allocatedPrincipal, allocatedBonus float64
+	var holdCount int
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT balance,frozen_balance FROM users WHERE id=$1`, user.ID).Scan(&balance, &frozen))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT remaining_principal,remaining_bonus FROM balance_source_lots WHERE id=$1`, lotID).Scan(&remainingPrincipal, &remainingBonus))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COALESCE(SUM(principal_amount),0),COALESCE(SUM(bonus_amount),0) FROM balance_source_allocations WHERE request_id=$1`, capture.RequestID).Scan(&allocatedPrincipal, &allocatedBonus))
+	require.NoError(t, integrationDB.QueryRowContext(ctx, `SELECT COUNT(*) FROM balance_source_holds WHERE user_id=$1`, user.ID).Scan(&holdCount))
+	require.InDelta(t, 4, balance, 0.000001)
+	require.Zero(t, frozen)
+	require.Zero(t, remainingPrincipal)
+	require.InDelta(t, 4, remainingBonus, 0.000001)
+	require.InDelta(t, 4, allocatedPrincipal, 0.000001)
+	require.InDelta(t, 2, allocatedBonus, 0.000001)
+	require.Zero(t, holdCount)
+}
+
 func TestUsageBillingRepositoryUpsertGatewayFailoverAttempt_IsAuditOnlyAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	client := testEntClient(t)

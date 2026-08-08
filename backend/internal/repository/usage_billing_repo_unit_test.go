@@ -5,6 +5,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"regexp"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -20,6 +21,9 @@ const (
 	captureBatchImageHoldSQL    = `(?s)UPDATE users\s+SET balance = balance\s+\+ CASE WHEN \$1 > \$2 THEN \$1 - \$2 ELSE 0 END\s+- CASE WHEN \$2 > \$1 THEN \$2 - \$1 ELSE 0 END,\s+frozen_balance = COALESCE\(frozen_balance, 0\) - \$1,\s+updated_at = NOW\(\)\s+WHERE id = \$3 AND deleted_at IS NULL AND COALESCE\(frozen_balance, 0\) >= \$1\s+RETURNING balance, frozen_balance`
 	releaseBatchImageHoldSQL    = `(?s)UPDATE users\s+SET balance = balance \+ \$1,\s+frozen_balance = COALESCE\(frozen_balance, 0\) - \$1,\s+updated_at = NOW\(\)\s+WHERE id = \$2 AND deleted_at IS NULL AND COALESCE\(frozen_balance, 0\) >= \$1\s+RETURNING balance, frozen_balance`
 	userExistsForBillingSQL     = `(?s)SELECT 1\s+FROM users\s+WHERE id = \$1 AND deleted_at IS NULL`
+	balanceSourceLotsSQL        = `(?s)SELECT id,source_type,remaining_principal::double precision,remaining_bonus::double precision,remaining_unknown::double precision FROM balance_source_lots.*ORDER BY CASE WHEN source_type IN \('historical_opening','balance_reconciliation_unknown'\) THEN 0 ELSE 1 END,created_at,id FOR UPDATE`
+	unheldBalanceSourceSQL      = `(?s)SELECT\s+COALESCE\(u.frozen_balance, 0\)::double precision,.*FROM balance_source_holds h.*WHERE h.user_id=u.id.*FROM users u.*WHERE u.id=\$1 AND u.deleted_at IS NULL`
+	batchImageSourceHoldsSQL    = `(?s)SELECT lot_id,principal_amount::double precision,bonus_amount::double precision,unknown_amount::double precision FROM balance_source_holds WHERE user_id=\$1 AND batch_id=\$2 ORDER BY id FOR UPDATE`
 )
 
 func TestDeductUsageBillingBalance_UsesSufficientBalanceGuard(t *testing.T) {
@@ -84,17 +88,101 @@ func TestApplyUsageBillingEffects_FlagsBalanceOverdraft(t *testing.T) {
 	mock.ExpectQuery(overdraftBalanceDeductSQL).
 		WithArgs(10.0, int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"balance"}).AddRow(-5.0))
+	mock.ExpectQuery(unheldBalanceSourceSQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"frozen_balance", "tracked_holds"}).AddRow(0.0, 0.0))
+	mock.ExpectQuery(balanceSourceLotsSQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "source_type", "remaining_principal", "remaining_bonus", "remaining_unknown"}))
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO balance_source_lots (user_id,source_type,principal_amount,bonus_amount,unknown_amount,remaining_principal,remaining_bonus,remaining_unknown) VALUES ($1,'balance_reconciliation_unknown',0,0,$2,0,0,$2) RETURNING id`)).
+		WithArgs(int64(42), 5.0).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(98)))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`)).
+		WithArgs(0.0, 0.0, 5.0, int64(98)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (idempotency_key) DO NOTHING`)).
+		WithArgs(int64(98), int64(42), "req-overdraft", "usage:req-overdraft:98", 0.0, 0.0, 5.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO balance_source_lots (user_id,source_type,principal_amount,bonus_amount,unknown_amount,remaining_principal,remaining_bonus,remaining_unknown) VALUES ($1,'historical_unknown',0,0,$2,0,0,0) RETURNING id`)).
+		WithArgs(int64(42), 5.0).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(99)))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,0,0,$5)`)).
+		WithArgs(int64(99), int64(42), "req-overdraft", "usage:req-overdraft:unknown", 5.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
 	result := &service.UsageBillingApplyResult{Applied: true}
 	err = (&usageBillingRepository{}).applyUsageBillingEffects(ctx, tx, &service.UsageBillingCommand{
 		UserID:      42,
 		BalanceCost: 10,
+		RequestID:   "req-overdraft",
 	}, result)
 	require.NoError(t, err)
 	require.NotNil(t, result.NewBalance)
 	require.InDelta(t, -5.0, *result.NewBalance, 0.000001)
 	require.True(t, result.BalanceOverdrafted)
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAllocateUsageBalanceSources_UsesPrincipalThenBonusFIFO(t *testing.T) {
+	ctx := context.Background()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	mock.ExpectQuery(balanceSourceLotsSQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "source_type", "remaining_principal", "remaining_bonus", "remaining_unknown"}).
+			AddRow(int64(10), "payment_recharge", 2.0, 3.0, 0.0).
+			AddRow(int64(11), "payment_recharge", 4.0, 1.0, 0.0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`)).
+		WithArgs(2.0, 3.0, 0.0, int64(10)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (idempotency_key) DO NOTHING`)).
+		WithArgs(int64(10), int64(42), "req-fifo", "usage:req-fifo:10", 2.0, 3.0, 0.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`)).
+		WithArgs(2.5, 0.0, 0.0, int64(11)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (idempotency_key) DO NOTHING`)).
+		WithArgs(int64(11), int64(42), "req-fifo", "usage:req-fifo:11", 2.5, 0.0, 0.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, allocateUsageBalanceSources(ctx, tx, 42, "req-fifo", 7.5, 10))
+	require.NoError(t, tx.Commit())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestAllocateUsageBalanceSourcesBackfillsUntrackedBalanceAsUnknown(t *testing.T) {
+	ctx := context.Background()
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	mock.ExpectQuery(balanceSourceLotsSQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "source_type", "remaining_principal", "remaining_bonus", "remaining_unknown"}).
+			AddRow(int64(10), "payment_recharge", 10.0, 0.0, 0.0))
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO balance_source_lots (user_id,source_type,principal_amount,bonus_amount,unknown_amount,remaining_principal,remaining_bonus,remaining_unknown) VALUES ($1,'balance_reconciliation_unknown',0,0,$2,0,0,$2) RETURNING id`)).
+		WithArgs(int64(42), 100.0).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(12)))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`)).
+		WithArgs(0.0, 0.0, 5.0, int64(12)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (idempotency_key) DO NOTHING`)).
+		WithArgs(int64(12), int64(42), "req-unknown", "usage:req-unknown:12", 0.0, 0.0, 5.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, allocateUsageBalanceSources(ctx, tx, 42, "req-unknown", 5, 110))
 	require.NoError(t, tx.Commit())
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -134,9 +222,22 @@ func TestReserveUsageBillingBatchImageBalance_MovesAvailableToFrozen(t *testing.
 	mock.ExpectQuery(reserveBatchImageHoldSQL).
 		WithArgs(2.5, int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"balance", "frozen_balance"}).AddRow(7.5, 2.5))
+	mock.ExpectQuery(unheldBalanceSourceSQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"frozen_balance", "tracked_holds"}).AddRow(2.5, 0.0))
+	mock.ExpectQuery(balanceSourceLotsSQL).
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "source_type", "remaining_principal", "remaining_bonus", "remaining_unknown"}).
+			AddRow(int64(10), "payment_recharge", 10.0, 0.0, 0.0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal-$1,remaining_bonus=remaining_bonus-$2,remaining_unknown=remaining_unknown-$3 WHERE id=$4`)).
+		WithArgs(2.5, 0.0, 0.0, int64(10)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_holds (lot_id,user_id,batch_id,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6)`)).
+		WithArgs(int64(10), int64(42), "imgbatch_reserve", 2.5, 0.0, 0.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
 
-	result, err := reserveUsageBillingBatchImageBalance(ctx, tx, &service.BatchImageBalanceHoldCommand{UserID: 42, HoldAmount: 2.5})
+	result, err := reserveUsageBillingBatchImageBalance(ctx, tx, &service.BatchImageBalanceHoldCommand{UserID: 42, BatchID: "imgbatch_reserve", HoldAmount: 2.5})
 	require.NoError(t, err)
 	require.NotNil(t, result.NewBalance)
 	require.NotNil(t, result.FrozenBalance)
@@ -181,9 +282,22 @@ func TestCaptureUsageBillingBatchImageBalance_ReleasesRemainder(t *testing.T) {
 	mock.ExpectQuery(captureBatchImageHoldSQL).
 		WithArgs(1.0, 0.25, int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"balance", "frozen_balance"}).AddRow(9.75, 0.0))
+	mock.ExpectQuery(batchImageSourceHoldsSQL).
+		WithArgs(int64(42), "imgbatch_capture").
+		WillReturnRows(sqlmock.NewRows([]string{"lot_id", "principal_amount", "bonus_amount", "unknown_amount"}).
+			AddRow(int64(10), 1.0, 0.0, 0.0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal+$1,remaining_bonus=remaining_bonus+$2,remaining_unknown=remaining_unknown+$3 WHERE id=$4`)).
+		WithArgs(0.75, 0.0, 0.0, int64(10)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`INSERT INTO balance_source_allocations (lot_id,user_id,request_id,idempotency_key,principal_amount,bonus_amount,unknown_amount) VALUES ($1,$2,$3,$4,$5,$6,$7)`)).
+		WithArgs(int64(10), int64(42), "batch_image_capture:imgbatch_capture", "usage:batch_image_capture:imgbatch_capture:10", 0.25, 0.0, 0.0).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM balance_source_holds WHERE user_id=$1 AND batch_id=$2`)).
+		WithArgs(int64(42), "imgbatch_capture").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
-	result, err := captureUsageBillingBatchImageBalance(ctx, tx, &service.BatchImageBalanceHoldCommand{UserID: 42, HoldAmount: 1, ActualAmount: 0.25})
+	result, err := captureUsageBillingBatchImageBalance(ctx, tx, &service.BatchImageBalanceHoldCommand{RequestID: "batch_image_capture:imgbatch_capture", UserID: 42, BatchID: "imgbatch_capture", HoldAmount: 1, ActualAmount: 0.25})
 	require.NoError(t, err)
 	require.InDelta(t, 9.75, *result.NewBalance, 0.000001)
 	require.InDelta(t, 0.0, *result.FrozenBalance, 0.000001)
@@ -223,6 +337,16 @@ func TestReleaseUsageBillingBatchImageBalance_ReturnsFrozenToAvailable(t *testin
 	mock.ExpectQuery(releaseBatchImageHoldSQL).
 		WithArgs(1.0, int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{"balance", "frozen_balance"}).AddRow(10.0, 0.0))
+	mock.ExpectQuery(batchImageSourceHoldsSQL).
+		WithArgs(int64(42), "imgbatch_release").
+		WillReturnRows(sqlmock.NewRows([]string{"lot_id", "principal_amount", "bonus_amount", "unknown_amount"}).
+			AddRow(int64(10), 1.0, 0.0, 0.0))
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE balance_source_lots SET remaining_principal=remaining_principal+$1,remaining_bonus=remaining_bonus+$2,remaining_unknown=remaining_unknown+$3 WHERE id=$4`)).
+		WithArgs(1.0, 0.0, 0.0, int64(10)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM balance_source_holds WHERE user_id=$1 AND batch_id=$2`)).
+		WithArgs(int64(42), "imgbatch_release").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	result, err := releaseUsageBillingBatchImageBalance(ctx, tx, &service.BatchImageBalanceHoldCommand{UserID: 42, APIKeyID: 7, BatchID: "imgbatch_release", HoldAmount: 1})

@@ -45,6 +45,25 @@ func TestUpstreamBillingProbeMultiplierChangeBumpsWatchRules(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestUpstreamBillingProbeRetriesTransientErrorsUpToThreeAttempts(t *testing.T) {
+	now := time.Now().UTC()
+	account := &Account{
+		ID: 19, Platform: PlatformOpenAI, Type: AccountTypeAPIKey, Status: StatusActive,
+		Concurrency: 1, Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://upstream.example"},
+		Extra: map[string]any{UpstreamBillingProbeEnabledExtraKey: true},
+	}
+	repo := &upstreamBillingProbeAccountRepo{accounts: map[int64]*Account{account.ID: account}}
+	upstream := &upstreamBillingProbeHTTPStub{errorsBeforeSuccess: 2}
+	svc := newUpstreamBillingProbeTestService(repo, upstream, &upstreamBillingProbeSettingRepo{})
+	svc.now = func() time.Time { return now }
+
+	snapshot, err := svc.ProbeAccount(context.Background(), account.ID)
+	require.NoError(t, err)
+	require.NotNil(t, snapshot)
+	require.Equal(t, UpstreamBillingProbeStatusOK, snapshot.Status)
+	require.Equal(t, int64(3), upstream.calls.Load())
+}
+
 type upstreamBillingProbeAccountRepo struct {
 	AccountRepository
 	mu          sync.Mutex
@@ -181,10 +200,11 @@ type upstreamBillingProbeSettingRepo struct {
 }
 
 type upstreamBillingProbeHTTPStub struct {
-	calls          atomic.Int64
-	active         atomic.Int64
-	maxActive      atomic.Int64
-	beforeResponse func()
+	calls               atomic.Int64
+	active              atomic.Int64
+	maxActive           atomic.Int64
+	errorsBeforeSuccess int
+	beforeResponse      func()
 }
 
 func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
@@ -199,6 +219,10 @@ func (u *upstreamBillingProbeHTTPStub) Do(req *http.Request, proxyURL string, ac
 	}
 	if u.beforeResponse != nil {
 		u.beforeResponse()
+	}
+	if u.errorsBeforeSuccess > 0 {
+		u.errorsBeforeSuccess--
+		return nil, errors.New("transient probe failure")
 	}
 	return &http.Response{
 		StatusCode: http.StatusOK,

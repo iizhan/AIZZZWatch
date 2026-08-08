@@ -76,6 +76,14 @@
                   <span class="text-lg font-bold text-primary-600 dark:text-primary-400">{{ formatSelectedPaymentAmount(totalAmount) }}</span>
                 </div>
                 <div v-if="balanceRechargeMultiplier !== 1" class="flex justify-between" :class="{ 'border-t border-gray-200 pt-2 dark:border-dark-600': feeRate <= 0 }">
+                  <span class="text-gray-500 dark:text-gray-400">{{ t('payment.rechargePrincipal') }}</span>
+                  <span class="text-gray-900 dark:text-white">${{ validAmount.toFixed(2) }}</span>
+                </div>
+                <div v-if="bonusAmount > 0" class="flex justify-between">
+                  <span class="text-gray-500 dark:text-gray-400">{{ t('payment.bonusBalance') }}</span>
+                  <span class="font-medium text-emerald-600 dark:text-emerald-400">+${{ bonusAmount.toFixed(2) }}</span>
+                </div>
+                <div v-if="balanceRechargeMultiplier !== 1" class="flex justify-between">
                   <span class="text-gray-500 dark:text-gray-400">{{ t('payment.creditedBalance') }}</span>
                   <span class="text-gray-900 dark:text-white">${{ creditedAmount.toFixed(2) }}</span>
                 </div>
@@ -525,6 +533,7 @@ const subscriptionUsdToCnyRate = computed(() => {
   return Number.isFinite(rate) && rate > 0 ? rate : 0
 })
 const creditedAmount = computed(() => Math.round((validAmount.value * balanceRechargeMultiplier.value) * 100) / 100)
+const bonusAmount = computed(() => Math.max(0, Math.round((creditedAmount.value - validAmount.value) * 100) / 100))
 
 // Adaptive grid: center single card, 2-col for 2 plans, 3-col for 3+
 const planGridClass = computed(() => {

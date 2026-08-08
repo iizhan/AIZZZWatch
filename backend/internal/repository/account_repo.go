@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -2382,6 +2383,35 @@ func (r *accountRepository) ClearTempUnschedulable(ctx context.Context, id int64
 	}
 	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
+}
+
+// ClearTempUnschedulableIfReason only clears a pause owned by a bounded
+// subsystem. It prevents a recovered Watch evidence check from removing an
+// unrelated rate-limit, overload, or credential cooldown.
+func (r *accountRepository) ClearTempUnschedulableIfReason(ctx context.Context, id int64, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if id <= 0 || reason == "" {
+		return fmt.Errorf("invalid temporary unschedulable recovery request")
+	}
+	result, err := r.sql.ExecContext(ctx, `
+		UPDATE accounts
+		SET temp_unschedulable_until = NULL,
+			temp_unschedulable_reason = NULL,
+			updated_at = NOW()
+		WHERE id = $1 AND temp_unschedulable_reason = $2
+			AND deleted_at IS NULL`, id, reason)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil || affected == 0 {
+		return err
+	}
+	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
+		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue clear Watch evidence pause failed: account=%d err=%v", id, err)
+	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
+	return err
 }
 
 func (r *accountRepository) ClearRateLimit(ctx context.Context, id int64) error {

@@ -809,5 +809,6 @@ func newPaymentOrderLifecycleTestClient(t *testing.T) *dbent.Client {
 	drv := entsql.OpenDB(dialect.SQLite, db)
 	client := enttest.NewClient(t, enttest.WithOptions(dbent.Driver(drv)))
 	t.Cleanup(func() { _ = client.Close() })
+	ensureBalanceSourceTestSchema(t, db)
 	return client
 }

@@ -841,6 +841,7 @@ var ProviderSet = wire.NewSet(
 	ProvideWatchService,
 	NewWatchSourceService,
 	NewAffiliateService,
+	NewRecommendationService,
 	ProvidePaymentConfigService,
 	ProvidePaymentService,
 	ProvidePaymentOrderExpiryService,

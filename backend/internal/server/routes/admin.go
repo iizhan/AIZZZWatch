@@ -117,11 +117,28 @@ func RegisterAdminRoutes(
 		// 邀请返利（专属用户管理）
 		registerAffiliateRoutes(admin, h)
 
+		registerRecommendationRoutes(admin, h)
+
 		// 操作审计日志
 		registerAuditLogRoutes(admin, h, stepUpAuth)
 
 		// Watch 聚合检测与排价预览
 		registerWatchRoutes(admin, h)
+	}
+}
+
+func registerRecommendationRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	if h == nil || h.Admin == nil || h.Admin.Recommendation == nil {
+		return
+	}
+	recommendations := admin.Group("/recommendations")
+	{
+		recommendations.GET("", h.Admin.Recommendation.AdminList)
+		recommendations.POST("/:id/decision", h.Admin.Recommendation.AdminDecide)
+		recommendations.GET("/public-pricing", h.Admin.Recommendation.AdminListPublicPricing)
+		recommendations.PUT("/public-pricing", h.Admin.Recommendation.AdminSavePublicPricing)
+		recommendations.GET("/models", h.Admin.Recommendation.AdminListModels)
+		recommendations.PUT("/models", h.Admin.Recommendation.AdminSaveModel)
 	}
 }
 

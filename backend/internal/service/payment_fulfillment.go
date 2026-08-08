@@ -306,6 +306,25 @@ func (s *PaymentService) acquirePaymentFulfillmentLease(ctx context.Context, o *
 // redeemAction represents the idempotency decision for balance fulfillment.
 type redeemAction int
 
+type balanceSourceAttribution struct {
+	sourceType string
+	sourceID   int64
+	principal  float64
+	bonus      float64
+	unknown    float64
+}
+
+type balanceSourceAttributionContextKey struct{}
+
+func withBalanceSourceAttribution(ctx context.Context, attribution balanceSourceAttribution) context.Context {
+	return context.WithValue(ctx, balanceSourceAttributionContextKey{}, attribution)
+}
+
+func balanceSourceAttributionFromContext(ctx context.Context) (balanceSourceAttribution, bool) {
+	attribution, ok := ctx.Value(balanceSourceAttributionContextKey{}).(balanceSourceAttribution)
+	return attribution, ok
+}
+
 const (
 	// redeemActionCreate: code does not exist — create it, then redeem.
 	redeemActionCreate redeemAction = iota
@@ -337,6 +356,9 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder, l
 		if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
 			return err
 		}
+		if err := s.recordBalanceSourceLot(ctx, o); err != nil {
+			return err
+		}
 		// Code already created and redeemed — just mark completed
 		return s.markCompleted(ctx, o, lease, "RECHARGE_SUCCESS")
 	case redeemActionCreate:
@@ -347,13 +369,66 @@ func (s *PaymentService) doBalance(ctx context.Context, o *dbent.PaymentOrder, l
 	case redeemActionRedeem:
 		// Code exists but unused — skip creation, proceed to redeem
 	}
-	if _, err := s.redeemService.Redeem(ContextSkipRedeemAffiliate(ctx), o.UserID, o.RechargeCode); err != nil {
+	attribution, err := s.loadPaymentBalanceSourceAttribution(ctx, o)
+	if err != nil {
+		return err
+	}
+	redeemCtx := withBalanceSourceAttribution(ContextSkipRedeemAffiliate(ctx), attribution)
+	if _, err := s.redeemService.Redeem(redeemCtx, o.UserID, o.RechargeCode); err != nil {
 		return fmt.Errorf("redeem balance: %w", err)
 	}
 	if err := s.applyAffiliateRebateForOrder(ctx, o); err != nil {
 		return err
 	}
+	if err := s.recordBalanceSourceLot(ctx, o); err != nil {
+		return err
+	}
 	return s.markCompleted(ctx, o, lease, "RECHARGE_SUCCESS")
+}
+
+func (s *PaymentService) recordBalanceSourceLot(ctx context.Context, o *dbent.PaymentOrder) error {
+	if o == nil || o.OrderType != payment.OrderTypeBalance {
+		return nil
+	}
+	attribution, err := s.loadPaymentBalanceSourceAttribution(ctx, o)
+	if err != nil {
+		return err
+	}
+	if err := insertBalanceSourceLot(ctx, s.entClient, o.UserID, attribution); err != nil {
+		return fmt.Errorf("record recharge balance source: %w", err)
+	}
+	return nil
+}
+
+func (s *PaymentService) loadPaymentBalanceSourceAttribution(ctx context.Context, o *dbent.PaymentOrder) (balanceSourceAttribution, error) {
+	if o == nil || o.OrderType != payment.OrderTypeBalance {
+		return balanceSourceAttribution{}, errors.New("balance payment order is required")
+	}
+	var baseAmount, bonusAmount float64
+	var legacySnapshot bool
+	if err := querySingleRow(ctx, s.entClient, `SELECT CAST(COALESCE(recharge_base_amount,amount) AS DOUBLE PRECISION),CAST(COALESCE(recharge_bonus_amount,0) AS DOUBLE PRECISION),recharge_base_amount IS NULL FROM payment_orders WHERE id=$1`, []any{o.ID}, &baseAmount, &bonusAmount, &legacySnapshot); err != nil {
+		return balanceSourceAttribution{}, fmt.Errorf("load recharge source snapshot: %w", err)
+	}
+	sourceType := "payment_recharge"
+	if legacySnapshot {
+		sourceType = "payment_legacy_unknown"
+	}
+	principalAmount, unknownAmount := baseAmount, 0.0
+	if legacySnapshot {
+		principalAmount, unknownAmount = 0, baseAmount
+	}
+	return balanceSourceAttribution{
+		sourceType: sourceType,
+		sourceID:   o.ID,
+		principal:  principalAmount,
+		bonus:      bonusAmount,
+		unknown:    unknownAmount,
+	}, nil
+}
+
+func insertBalanceSourceLot(ctx context.Context, execer sqlExecer, userID int64, attribution balanceSourceAttribution) error {
+	_, err := execer.ExecContext(ctx, `INSERT INTO balance_source_lots (user_id,source_type,source_id,principal_amount,bonus_amount,unknown_amount,remaining_principal,remaining_bonus,remaining_unknown) VALUES ($1,$2,$3,$4,$5,$6,$4,$5,$6) ON CONFLICT DO NOTHING`, userID, attribution.sourceType, attribution.sourceID, attribution.principal, attribution.bonus, attribution.unknown)
+	return err
 }
 
 func (s *PaymentService) markCompleted(ctx context.Context, o *dbent.PaymentOrder, lease *paymentFulfillmentLease, auditAction string) error {
