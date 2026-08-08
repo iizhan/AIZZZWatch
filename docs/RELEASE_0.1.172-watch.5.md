@@ -1,5 +1,9 @@
 # 0.1.172-watch.5 Release Checklist
 
+Release artifact tag: `v0.1.172-watch.5-r1`. The `-r1` suffix records the
+frozen-lockfile metadata correction; application runtime version remains
+`0.1.172-watch.5`.
+
 ## Scope
 
 - Merge upstream Sub2API v0.1.172 security, billing precision, upstream model audit, and gateway stability fixes.
