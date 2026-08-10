@@ -149,6 +149,15 @@ WHERE ns.nspname = 'public'
 	var settingsRegclass sql.NullString
 	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.settings')").Scan(&settingsRegclass))
 	require.True(t, settingsRegclass.Valid, "expected settings table to exist")
+	var channelMonitorMode, hideThroughput string
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT value FROM settings WHERE key = 'channel_monitor_mode'").Scan(&channelMonitorMode))
+	require.Equal(t, "v1", channelMonitorMode, "upgrades must not opt into passive channel monitoring")
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT value FROM settings WHERE key = 'channel_monitor_hide_throughput'").Scan(&hideThroughput))
+	require.Equal(t, "true", hideThroughput, "channel throughput is private by default")
+
+	var videoPriceBackupRegclass sql.NullString
+	require.NoError(t, tx.QueryRowContext(context.Background(), "SELECT to_regclass('public.groups_video_price_backup_220')").Scan(&videoPriceBackupRegclass))
+	require.True(t, videoPriceBackupRegclass.Valid, "expected migration 220 video price backup table to exist")
 
 	// security_secrets table should exist
 	var securitySecretsRegclass sql.NullString

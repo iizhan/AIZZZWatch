@@ -28,6 +28,17 @@ type openAIResponsesFailoverCancelUpstream struct {
 	onFirstDo  func()
 }
 
+type gatewayFailoverEnabledSettingRepo struct {
+	service.SettingRepository
+}
+
+func (gatewayFailoverEnabledSettingRepo) GetValue(_ context.Context, key string) (string, error) {
+	if key == service.SettingKeyGatewayFailoverSettings {
+		return `{"enabled":true,"status_codes":"500-599","max_account_switches":10}`, nil
+	}
+	return "", service.ErrSettingNotFound
+}
+
 func (u *openAIResponsesFailoverCancelUpstream) Do(_ *http.Request, _ string, accountID int64, _ int) (*http.Response, error) {
 	u.mu.Lock()
 	u.accountIDs = append(u.accountIDs, accountID)
@@ -77,6 +88,7 @@ func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUp
 	}
 	accountRepo := openAIImagesFailoverAccountRepo{accounts: accounts}
 	cfg := &config.Config{RunMode: config.RunModeSimple}
+	settingService := service.NewSettingService(gatewayFailoverEnabledSettingRepo{}, cfg)
 	gatewayService := service.NewOpenAIGatewayService(
 		accountRepo,
 		nil,
@@ -98,7 +110,7 @@ func newOpenAIResponsesFailoverTestHandler(t *testing.T, upstream service.HTTPUp
 		nil,
 		nil,
 		nil,
-		nil,
+		settingService,
 		nil,
 	)
 	billingService := service.NewBillingCacheService(nil, nil, nil, nil, nil, nil, cfg, nil)

@@ -39,6 +39,20 @@ type watchPreviewChannelRepo struct {
 	channelID int64
 }
 
+func TestProvideWatchServiceWiresOperationalDependencies(t *testing.T) {
+	sourceProbe := &WatchSourceService{}
+	opsRepo := &opsRepoMock{}
+
+	svc := ProvideWatchService(nil, nil, nil, nil, nil, nil, nil, sourceProbe, opsRepo)
+
+	if svc.sourceProbe != sourceProbe {
+		t.Fatal("expected Watch source probe to be wired")
+	}
+	if svc.opsRepo != opsRepo {
+		t.Fatal("expected Watch operations repository to be wired")
+	}
+}
+
 func (r *watchPreviewChannelRepo) GetChannelIDByGroupID(ctx context.Context, groupID int64) (int64, error) {
 	return r.channelID, nil
 }

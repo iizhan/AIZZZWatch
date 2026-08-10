@@ -519,6 +519,22 @@ func TestSettingService_ParseSettingsDefaultsOpenAIOAuthSchedulingRateMultiplier
 	require.Equal(t, 0.05, svc.parseSettings(map[string]string{SettingKeyOpenAIOAuthSchedulingRateMultiplier: "0.05"}).OpenAIOAuthSchedulingRateMultiplier)
 }
 
+func TestSettingService_GrokCrossClientMappingRequiresExplicitOptIn(t *testing.T) {
+	svc := NewSettingService(&settingUpdateRepoStub{}, &config.Config{})
+
+	require.False(t, svc.parseSettings(map[string]string{}).GrokCrossClientModelMapEnabled)
+	require.False(t, svc.parseSettings(map[string]string{SettingKeyGrokCrossClientModelMapEnabled: "false"}).GrokCrossClientModelMapEnabled)
+	require.True(t, svc.parseSettings(map[string]string{SettingKeyGrokCrossClientModelMapEnabled: "true"}).GrokCrossClientModelMapEnabled)
+}
+
+func TestSettingService_InitializeDefaultSettingsDisablesGrokCrossClientMapping(t *testing.T) {
+	repo := &forwardedIPMigrationRepoStub{values: map[string]string{}}
+	svc := NewSettingService(repo, &config.Config{})
+
+	require.NoError(t, svc.InitializeDefaultSettings(context.Background()))
+	require.Equal(t, "false", repo.values[SettingKeyGrokCrossClientModelMapEnabled])
+}
+
 func TestSettingService_GetAllSettings_OpenAIAdvancedSchedulerEffectiveValuesUseConfig(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Gateway.OpenAIWS.LBTopK = 13
