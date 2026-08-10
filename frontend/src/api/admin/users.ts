@@ -163,25 +163,25 @@ export async function deleteUser(id: number): Promise<{ message: string }> {
   return data
 }
 
-/**
- * Update user balance
- * @param id - User ID
- * @param balance - New balance
- * @param operation - Operation type ('set', 'add', 'subtract')
- * @param notes - Optional notes for the balance adjustment
- * @returns Updated user
- */
+export interface UpdateUserBalanceInput {
+  balance: number
+  operation: 'set' | 'add' | 'subtract'
+  notes?: string
+  bonus_amount?: number
+  idempotencyKey: string
+}
+
+/** Update user balance with an optional bonus for add operations. */
 export async function updateBalance(
   id: number,
-  balance: number,
-  operation: 'set' | 'add' | 'subtract' = 'set',
-  notes?: string
+  input: UpdateUserBalanceInput
 ): Promise<AdminUser> {
-  const { data } = await apiClient.post<AdminUser>(`/admin/users/${id}/balance`, {
-    balance,
-    operation,
-    notes: notes || ''
-  })
+  const { idempotencyKey, ...payload } = input
+  const { data } = await apiClient.post<AdminUser>(
+    `/admin/users/${id}/balance`,
+    { ...payload, notes: payload.notes || '', bonus_amount: payload.bonus_amount || 0 },
+    { headers: { 'Idempotency-Key': idempotencyKey } }
+  )
   return data
 }
 

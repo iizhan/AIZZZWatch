@@ -90,9 +90,10 @@ type UpdateUserRequest struct {
 
 // UpdateBalanceRequest represents balance update request
 type UpdateBalanceRequest struct {
-	Balance   float64 `json:"balance" binding:"required,gt=0"`
-	Operation string  `json:"operation" binding:"required,oneof=set add subtract"`
-	Notes     string  `json:"notes"`
+	Balance     float64 `json:"balance" binding:"required,gt=0"`
+	BonusAmount float64 `json:"bonus_amount"`
+	Operation   string  `json:"operation" binding:"required,oneof=set add subtract"`
+	Notes       string  `json:"notes"`
 }
 
 type BindUserAuthIdentityRequest struct {
@@ -395,6 +396,14 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		response.BadRequest(c, "Invalid request: "+err.Error())
 		return
 	}
+	if req.BonusAmount < 0 {
+		response.ErrorFrom(c, service.ErrAdminRechargeBonusInvalid)
+		return
+	}
+	if req.Operation != "add" && req.BonusAmount != 0 {
+		response.ErrorFrom(c, service.ErrAdminRechargeBonusOperationInvalid)
+		return
+	}
 
 	idempotencyPayload := struct {
 		UserID int64                `json:"user_id"`
@@ -404,7 +413,19 @@ func (h *UserHandler) UpdateBalance(c *gin.Context) {
 		Body:   req,
 	}
 	executeAdminIdempotentJSON(c, "admin.users.balance.update", idempotencyPayload, service.DefaultWriteIdempotencyTTL(), func(ctx context.Context) (any, error) {
-		user, execErr := h.adminService.UpdateUserBalance(ctx, userID, req.Balance, req.Operation, req.Notes)
+		operationKey := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+		operationKeyHash := ""
+		if operationKey != "" {
+			operationKeyHash = service.HashIdempotencyKey(operationKey)
+		}
+		user, execErr := h.adminService.UpdateUserBalance(ctx, userID, service.AdminBalanceUpdateInput{
+			Balance:            req.Balance,
+			BonusAmount:        req.BonusAmount,
+			Operation:          req.Operation,
+			Notes:              req.Notes,
+			ActorAdminID:       getAdminIDFromContext(c),
+			IdempotencyKeyHash: operationKeyHash,
+		})
 		if execErr != nil {
 			return nil, execErr
 		}

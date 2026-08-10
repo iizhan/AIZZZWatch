@@ -188,8 +188,8 @@ func (s *stubAdminService) DeleteUser(ctx context.Context, id int64) error {
 	return nil
 }
 
-func (s *stubAdminService) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*service.User, error) {
-	user := service.User{ID: userID, Balance: balance, Status: service.StatusActive}
+func (s *stubAdminService) UpdateUserBalance(ctx context.Context, userID int64, input service.AdminBalanceUpdateInput) (*service.User, error) {
+	user := service.User{ID: userID, Balance: input.Balance + input.BonusAmount, Status: service.StatusActive}
 	return &user, nil
 }
 

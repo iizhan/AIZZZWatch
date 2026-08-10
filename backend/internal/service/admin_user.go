@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -505,27 +506,72 @@ func (s *adminServiceImpl) BatchUpdateLimits(ctx context.Context, userIDs []int6
 	return affected, nil
 }
 
-func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error) {
+func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, input AdminBalanceUpdateInput) (*User, error) {
+	if math.IsNaN(input.Balance) || math.IsInf(input.Balance, 0) || input.Balance <= 0 {
+		return nil, ErrAdminRechargePrincipalInvalid
+	}
+	if math.IsNaN(input.BonusAmount) || math.IsInf(input.BonusAmount, 0) || input.BonusAmount < 0 {
+		return nil, ErrAdminRechargeBonusInvalid
+	}
+	if input.Operation != "add" && input.BonusAmount != 0 {
+		return nil, ErrAdminRechargeBonusOperationInvalid
+	}
+	input.Balance = math.Round(input.Balance*100000000) / 100000000
+	input.BonusAmount = math.Round(input.BonusAmount*100000000) / 100000000
+	if input.Balance <= 0 {
+		return nil, ErrAdminRechargePrincipalInvalid
+	}
+
 	// 余额调整必须走原子接口：先读后整行写回会把并发的计费扣款覆盖掉。
 	var (
-		change BalanceChange
-		err    error
+		change   BalanceChange
+		replayed bool
+		err      error
 	)
-	switch operation {
+	switch input.Operation {
 	case "set":
-		change, err = s.userRepo.SetBalance(ctx, userID, balance)
+		change, err = s.userRepo.SetBalance(ctx, userID, input.Balance)
 	case "add":
-		change, err = s.userRepo.AdjustBalance(ctx, userID, balance)
+		rechargeRepo := s.adminRechargeRepo
+		if rechargeRepo == nil {
+			rechargeRepo, _ = s.userRepo.(AdminRechargeRepository)
+		}
+		if rechargeRepo == nil {
+			return nil, ErrAdminRechargeUnavailable
+		}
+		code, codeErr := GenerateRedeemCode()
+		if codeErr != nil {
+			return nil, fmt.Errorf("generate administrator recharge audit code: %w", codeErr)
+		}
+		operationKeyHash := strings.TrimSpace(input.IdempotencyKeyHash)
+		if operationKeyHash == "" {
+			// Observe-only deployments may not require an HTTP idempotency key. Use
+			// the unique audit code so those requests remain independent.
+			operationKeyHash = HashIdempotencyKey("admin-recharge-fallback:" + code)
+		}
+		result, rechargeErr := rechargeRepo.ApplyAdminRecharge(ctx, AdminRechargeCommand{
+			UserID:             userID,
+			PrincipalAmount:    input.Balance,
+			BonusAmount:        input.BonusAmount,
+			Notes:              strings.TrimSpace(input.Notes),
+			ActorAdminID:       input.ActorAdminID,
+			IdempotencyKeyHash: operationKeyHash,
+			RedeemCode:         code,
+		})
+		change, replayed, err = result.Balance, result.Replayed, rechargeErr
 	case "subtract":
-		change, err = s.userRepo.AdjustBalance(ctx, userID, -balance)
+		change, err = s.userRepo.AdjustBalance(ctx, userID, -input.Balance)
 	default:
-		return nil, fmt.Errorf("unsupported balance operation: %q", operation)
+		return nil, fmt.Errorf("unsupported balance operation: %q", input.Operation)
 	}
 	if errors.Is(err, ErrBalanceNegative) {
 		return nil, fmt.Errorf("balance cannot be negative, current balance: %.2f, requested operation would result in: %.2f", change.Old, change.New)
 	}
 	if err != nil {
 		return nil, err
+	}
+	if input.Operation == "add" && !replayed {
+		s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, input.Operation, input.Balance)
 	}
 
 	user, err := s.userRepo.GetByID(ctx, userID)
@@ -537,8 +583,6 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 	if s.authCacheInvalidator != nil && balanceDiff != 0 {
 		s.authCacheInvalidator.InvalidateAuthCacheByUserID(ctx, userID)
 	}
-	s.tryAccrueAffiliateRebateForAdminRecharge(ctx, userID, operation, balance)
-
 	if s.billingCacheService != nil {
 		go func() {
 			cacheCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -549,7 +593,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 		}()
 	}
 
-	if balanceDiff != 0 {
+	if balanceDiff != 0 && input.Operation != "add" {
 		code, err := GenerateRedeemCode()
 		if err != nil {
 			logger.LegacyPrintf("service.admin", "failed to generate adjustment redeem code: %v", err)
@@ -562,7 +606,7 @@ func (s *adminServiceImpl) UpdateUserBalance(ctx context.Context, userID int64, 
 			Value:  balanceDiff,
 			Status: StatusUsed,
 			UsedBy: &user.ID,
-			Notes:  notes,
+			Notes:  input.Notes,
 		}
 		now := time.Now()
 		adjustmentRecord.UsedAt = &now

@@ -64,6 +64,16 @@ func TestMigrationsRunner_IsIdempotent_AndSchemaIsUpToDate(t *testing.T) {
 	// redeem_codes: subscription fields
 	requireColumn(t, tx, "redeem_codes", "group_id", "bigint", 0, true)
 	requireColumn(t, tx, "redeem_codes", "validity_days", "integer", 0, false)
+	requireColumn(t, tx, "redeem_codes", "admin_principal_amount", "numeric", 0, true)
+	requireColumn(t, tx, "redeem_codes", "admin_bonus_amount", "numeric", 0, true)
+	requireColumn(t, tx, "redeem_codes", "admin_balance_before", "numeric", 0, true)
+	requireColumn(t, tx, "redeem_codes", "admin_balance_after", "numeric", 0, true)
+	requireColumn(t, tx, "redeem_codes", "admin_actor_id", "bigint", 0, true)
+	requireColumn(t, tx, "redeem_codes", "admin_operation_key_hash", "character varying", 64, true)
+	requireIndex(t, tx, "redeem_codes", "idx_redeem_codes_admin_operation")
+	requireConstraintDefinitionContains(t, tx, "redeem_codes", "redeem_codes_admin_principal_nonnegative", "admin_principal_amount", ">", "0")
+	requireConstraintDefinitionContains(t, tx, "redeem_codes", "redeem_codes_admin_bonus_nonnegative", "admin_bonus_amount", ">=", "0")
+	requireConstraintDefinitionContains(t, tx, "redeem_codes", "redeem_codes_admin_balance_order", "admin_balance_after", ">=", "admin_balance_before")
 
 	// usage_logs: billing_type used by filters/stats
 	requireColumn(t, tx, "usage_logs", "billing_type", "smallint", 0, false)

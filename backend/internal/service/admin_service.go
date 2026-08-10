@@ -18,7 +18,7 @@ type AdminService interface {
 	CreateUser(ctx context.Context, input *CreateUserInput) (*User, error)
 	UpdateUser(ctx context.Context, id int64, input *UpdateUserInput) (*User, error)
 	DeleteUser(ctx context.Context, id int64) error
-	UpdateUserBalance(ctx context.Context, userID int64, balance float64, operation string, notes string) (*User, error)
+	UpdateUserBalance(ctx context.Context, userID int64, input AdminBalanceUpdateInput) (*User, error)
 	BatchUpdateConcurrency(ctx context.Context, userIDs []int64, value int, mode string) (int, error)
 	BatchUpdateLimits(ctx context.Context, userIDs []int64, concurrency, rpmLimit *int) (int, error)
 	GetUserAPIKeys(ctx context.Context, userID int64, page, pageSize int, sortBy, sortOrder string) ([]APIKey, int64, error)
@@ -168,6 +168,41 @@ type UpdateUserInput struct {
 	GroupRates map[int64]*float64
 	// ActorAdminID 执行本次操作的管理员ID(来自JWT)，仅用于权限敏感操作的审计日志。
 	ActorAdminID int64
+}
+
+// AdminBalanceUpdateInput is the normalized administrator balance command.
+// BonusAmount is accepted only for add operations and never contributes to
+// cumulative recharge or affiliate rebate calculations.
+type AdminBalanceUpdateInput struct {
+	Balance            float64
+	BonusAmount        float64
+	Operation          string
+	Notes              string
+	ActorAdminID       int64
+	IdempotencyKeyHash string
+}
+
+type AdminRechargeCommand struct {
+	UserID             int64
+	PrincipalAmount    float64
+	BonusAmount        float64
+	Notes              string
+	ActorAdminID       int64
+	IdempotencyKeyHash string
+	RedeemCode         string
+}
+
+type AdminRechargeResult struct {
+	AdjustmentID int64
+	Balance      BalanceChange
+	Replayed     bool
+}
+
+// AdminRechargeRepository owns the atomic administrator recharge transaction.
+// The user balance, cumulative principal, adjustment audit, and source lot must
+// either all commit or all roll back.
+type AdminRechargeRepository interface {
+	ApplyAdminRecharge(ctx context.Context, command AdminRechargeCommand) (AdminRechargeResult, error)
 }
 
 type AdminBindAuthIdentityInput struct {
@@ -620,9 +655,33 @@ const (
 
 var ErrRPMStatusUnavailable = infraerrors.New(http.StatusNotImplemented, "RPM_STATUS_UNAVAILABLE", "RPM cache not available")
 
+var (
+	ErrAdminRechargePrincipalInvalid = infraerrors.BadRequest(
+		"ADMIN_RECHARGE_PRINCIPAL_INVALID",
+		"recharge principal must be greater than 0",
+	)
+	ErrAdminRechargeBonusInvalid = infraerrors.BadRequest(
+		"ADMIN_RECHARGE_BONUS_INVALID",
+		"recharge bonus must be greater than or equal to 0",
+	)
+	ErrAdminRechargeBonusOperationInvalid = infraerrors.BadRequest(
+		"ADMIN_RECHARGE_BONUS_OPERATION_INVALID",
+		"recharge bonus is only supported for add operations",
+	)
+	ErrAdminRechargeUnavailable = infraerrors.InternalServer(
+		"ADMIN_RECHARGE_UNAVAILABLE",
+		"administrator recharge repository is unavailable",
+	)
+	ErrAdminRechargeIdempotencyConflict = infraerrors.Conflict(
+		"ADMIN_RECHARGE_IDEMPOTENCY_CONFLICT",
+		"administrator recharge idempotency key was reused with different data",
+	)
+)
+
 // adminServiceImpl implements AdminService
 type adminServiceImpl struct {
 	userRepo             UserRepository
+	adminRechargeRepo    AdminRechargeRepository
 	groupRepo            GroupRepository
 	groupDuplicateRepo   GroupDuplicateRepository
 	accountRepo          AccountRepository
@@ -680,8 +739,10 @@ func NewAdminService(
 	compositeRouteRepo CompositeModelRouteRepository,
 	compositeResolver *CompositeRouteResolver,
 ) AdminService {
+	adminRechargeRepo, _ := userRepo.(AdminRechargeRepository)
 	return &adminServiceImpl{
 		userRepo:             userRepo,
+		adminRechargeRepo:    adminRechargeRepo,
 		groupRepo:            groupRepo,
 		groupDuplicateRepo:   groupRepo,
 		accountRepo:          accountRepo,

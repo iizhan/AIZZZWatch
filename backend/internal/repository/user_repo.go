@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -953,6 +954,197 @@ func (r *userRepository) SetBalance(ctx context.Context, id int64, value float64
 		return service.BalanceChange{}, service.ErrUserNotFound
 	}
 	return change, nil
+}
+
+type adminRechargeAudit struct {
+	id        int64
+	userID    int64
+	principal float64
+	bonus     float64
+	notes     string
+	balance   service.BalanceChange
+}
+
+// ApplyAdminRecharge atomically updates the user's spendable balance and
+// cumulative principal, writes the existing admin-balance audit record, and
+// creates the FIFO balance-source lot used by usage billing.
+func (r *userRepository) ApplyAdminRecharge(ctx context.Context, command service.AdminRechargeCommand) (service.AdminRechargeResult, error) {
+	if command.UserID <= 0 {
+		return service.AdminRechargeResult{}, service.ErrUserNotFound
+	}
+	if math.IsNaN(command.PrincipalAmount) || math.IsInf(command.PrincipalAmount, 0) || command.PrincipalAmount <= 0 {
+		return service.AdminRechargeResult{}, service.ErrAdminRechargePrincipalInvalid
+	}
+	if math.IsNaN(command.BonusAmount) || math.IsInf(command.BonusAmount, 0) || command.BonusAmount < 0 {
+		return service.AdminRechargeResult{}, service.ErrAdminRechargeBonusInvalid
+	}
+	if strings.TrimSpace(command.IdempotencyKeyHash) == "" || strings.TrimSpace(command.RedeemCode) == "" {
+		return service.AdminRechargeResult{}, errors.New("administrator recharge requires audit and idempotency identifiers")
+	}
+	creditedAmount := command.PrincipalAmount + command.BonusAmount
+	if math.IsNaN(creditedAmount) || math.IsInf(creditedAmount, 0) {
+		return service.AdminRechargeResult{}, service.ErrAdminRechargePrincipalInvalid
+	}
+
+	tx, err := r.client.Tx(ctx)
+	if err != nil {
+		return service.AdminRechargeResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	txClient := tx.Client()
+
+	lockKey := fmt.Sprintf("admin-recharge:%d:%s", command.ActorAdminID, command.IdempotencyKeyHash)
+	if _, err := txClient.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
+		return service.AdminRechargeResult{}, fmt.Errorf("lock administrator recharge: %w", err)
+	}
+
+	existing, found, err := loadAdminRechargeAudit(ctx, txClient, command.ActorAdminID, command.IdempotencyKeyHash)
+	if err != nil {
+		return service.AdminRechargeResult{}, err
+	}
+	if found {
+		if existing.userID != command.UserID ||
+			math.Abs(existing.principal-command.PrincipalAmount) > 0.00000001 ||
+			math.Abs(existing.bonus-command.BonusAmount) > 0.00000001 ||
+			existing.notes != strings.TrimSpace(command.Notes) {
+			return service.AdminRechargeResult{}, service.ErrAdminRechargeIdempotencyConflict
+		}
+		if err := tx.Commit(); err != nil {
+			return service.AdminRechargeResult{}, err
+		}
+		return service.AdminRechargeResult{
+			AdjustmentID: existing.id,
+			Balance:      existing.balance,
+			Replayed:     true,
+		}, nil
+	}
+
+	const updateUserSQL = `
+		UPDATE users
+		SET balance = balance + $1,
+			total_recharged = total_recharged + $2,
+			updated_at = NOW()
+		WHERE id = $3 AND deleted_at IS NULL
+		RETURNING balance - $1, balance
+	`
+	change, ok, err := scanBalanceChange(ctx, txClient, updateUserSQL, creditedAmount, command.PrincipalAmount, command.UserID)
+	if err != nil {
+		return service.AdminRechargeResult{}, err
+	}
+	if !ok {
+		return service.AdminRechargeResult{}, service.ErrUserNotFound
+	}
+
+	const insertAuditSQL = `
+		INSERT INTO redeem_codes (
+			code, type, value, status, used_by, used_at, notes,
+			admin_principal_amount, admin_bonus_amount,
+			admin_balance_before, admin_balance_after,
+			admin_actor_id, admin_operation_key_hash
+		)
+		VALUES ($1, $2, $3, $4, $5, NOW(), NULLIF($6, ''), $7, $8, $9, $10, $11, $12)
+		RETURNING id
+	`
+	adjustmentID, err := queryInt64(ctx, txClient, insertAuditSQL,
+		command.RedeemCode,
+		service.AdjustmentTypeAdminBalance,
+		creditedAmount,
+		service.StatusUsed,
+		command.UserID,
+		strings.TrimSpace(command.Notes),
+		command.PrincipalAmount,
+		command.BonusAmount,
+		change.Old,
+		change.New,
+		command.ActorAdminID,
+		command.IdempotencyKeyHash,
+	)
+	if err != nil {
+		if constraint, ok := uniqueViolationConstraint(err); ok && constraint == "idx_redeem_codes_admin_operation" {
+			return service.AdminRechargeResult{}, service.ErrAdminRechargeIdempotencyConflict
+		}
+		return service.AdminRechargeResult{}, fmt.Errorf("record administrator recharge audit: %w", err)
+	}
+
+	if _, err := txClient.ExecContext(ctx, `
+		INSERT INTO balance_source_lots (
+			user_id, source_type, source_id,
+			principal_amount, bonus_amount, unknown_amount,
+			remaining_principal, remaining_bonus, remaining_unknown
+		)
+		VALUES ($1, 'admin_recharge', $2, $3, $4, 0, $3, $4, 0)
+	`, command.UserID, adjustmentID, command.PrincipalAmount, command.BonusAmount); err != nil {
+		return service.AdminRechargeResult{}, fmt.Errorf("record administrator recharge balance source: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return service.AdminRechargeResult{}, err
+	}
+	return service.AdminRechargeResult{AdjustmentID: adjustmentID, Balance: change}, nil
+}
+
+func loadAdminRechargeAudit(ctx context.Context, client *dbent.Client, actorAdminID int64, keyHash string) (adminRechargeAudit, bool, error) {
+	rows, err := client.QueryContext(ctx, `
+		SELECT id, used_by,
+			admin_principal_amount::double precision,
+			admin_bonus_amount::double precision,
+			admin_balance_before::double precision,
+			admin_balance_after::double precision,
+			COALESCE(notes, '')
+		FROM redeem_codes
+		WHERE type = $1 AND admin_actor_id = $2 AND admin_operation_key_hash = $3
+		FOR UPDATE
+	`, service.AdjustmentTypeAdminBalance, actorAdminID, keyHash)
+	if err != nil {
+		return adminRechargeAudit{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return adminRechargeAudit{}, false, err
+		}
+		return adminRechargeAudit{}, false, nil
+	}
+	var audit adminRechargeAudit
+	if err := rows.Scan(
+		&audit.id,
+		&audit.userID,
+		&audit.principal,
+		&audit.bonus,
+		&audit.balance.Old,
+		&audit.balance.New,
+		&audit.notes,
+	); err != nil {
+		return adminRechargeAudit{}, false, err
+	}
+	return audit, true, rows.Err()
+}
+
+func queryInt64(ctx context.Context, client *dbent.Client, query string, args ...any) (int64, error) {
+	rows, err := client.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = rows.Close() }()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, err
+		}
+		return 0, sql.ErrNoRows
+	}
+	var value int64
+	if err := rows.Scan(&value); err != nil {
+		return 0, err
+	}
+	return value, rows.Err()
+}
+
+func uniqueViolationConstraint(err error) (string, bool) {
+	var pqErr *pq.Error
+	if !errors.As(err, &pqErr) || pqErr.Code != "23505" {
+		return "", false
+	}
+	return pqErr.Constraint, true
 }
 
 // currentBalance 读取用户当前余额，用户不存在时返回 ErrUserNotFound。
