@@ -229,6 +229,8 @@ type ResponsesRequest struct {
 	ServiceTier        string              `json:"service_tier,omitempty"`
 	PromptCacheKey     string              `json:"prompt_cache_key,omitempty"`
 	PreviousResponseID string              `json:"previous_response_id,omitempty"`
+	ContextManagement  json.RawMessage     `json:"context_management,omitempty"`
+	Truncation         json.RawMessage     `json:"truncation,omitempty"`
 }
 
 // ResponsesReasoning configures reasoning effort in the Responses API.

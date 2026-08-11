@@ -279,7 +279,14 @@ func (r *watchSourceRepository) ClaimDueSources(ctx context.Context, now time.Ti
 	rows, err := r.db.QueryContext(ctx, `
 WITH due AS (
 	SELECT id FROM watch_sources
-	WHERE enabled=TRUE AND (last_check_at IS NULL OR last_check_at + make_interval(secs => polling_interval_seconds) <= $1)
+	WHERE enabled=TRUE AND (
+		last_check_at IS NULL OR
+		last_check_at + make_interval(secs => CASE
+			WHEN LOWER(COALESCE(last_error_code, '')) IN ('unauthorized','credential_missing','credential_invalid','credential_decrypt_failed')
+				THEN GREATEST(polling_interval_seconds, 900)
+			ELSE polling_interval_seconds
+		END) <= $1
+	)
 	ORDER BY last_check_at NULLS FIRST, id
 	FOR UPDATE SKIP LOCKED
 	LIMIT $2

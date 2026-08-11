@@ -52,6 +52,8 @@ type WatchSourceService struct {
 	allowPrivateNetwork bool
 	now                 func() time.Time
 	checks              singleflight.Group
+	dueMu               sync.Mutex
+	dueSources          map[int64]struct{}
 	passwordLogin       func(ctx context.Context, source *WatchSource, email, password string, credential WatchSourceCredential, allowPrivate bool) (WatchSourceCredential, error)
 	interactiveAuthMu   sync.Mutex
 	interactiveAuth     map[string]WatchSourceInteractiveAuthSession
@@ -68,7 +70,7 @@ const (
 )
 
 func NewWatchSourceService(repo WatchSourceRepository, encryptor SecretEncryptor) *WatchSourceService {
-	return &WatchSourceService{repo: repo, encryptor: encryptor, now: time.Now, passwordLogin: loginWatchSourceWithPassword, interactiveAuth: map[string]WatchSourceInteractiveAuthSession{}}
+	return &WatchSourceService{repo: repo, encryptor: encryptor, now: time.Now, passwordLogin: loginWatchSourceWithPassword, interactiveAuth: map[string]WatchSourceInteractiveAuthSession{}, dueSources: map[int64]struct{}{}}
 }
 
 func (s *WatchSourceService) ensureStableEncryptionForCredentialWrite() error {
@@ -381,7 +383,7 @@ func (s *WatchSourceService) prepareMutation(ctx context.Context, input WatchSou
 	}
 	interval := input.PollingIntervalSeconds
 	if interval == 0 {
-		interval = 60
+		interval = 300
 	}
 	if interval < 30 || interval > 3600 {
 		return nil, fmt.Errorf("polling_interval_seconds must be between 30 and 3600")
@@ -944,15 +946,60 @@ func wrapWatchSourceSnapshotError(err error) error {
 }
 
 func (s *WatchSourceService) DueSourceIDs(ctx context.Context, limit int) ([]int64, error) {
-	sources, err := s.repo.ClaimDueSources(ctx, s.now().UTC(), limit)
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	ids := s.takeMarkedDueSourceIDs(limit)
+	if len(ids) == limit {
+		return ids, nil
+	}
+	sources, err := s.repo.ClaimDueSources(ctx, s.now().UTC(), limit-len(ids))
 	if err != nil {
+		for _, id := range ids {
+			_ = s.MarkCheckDue(ctx, id)
+		}
 		return nil, err
 	}
-	ids := make([]int64, 0, len(sources))
+	seen := make(map[int64]struct{}, len(ids)+len(sources))
+	for _, id := range ids {
+		seen[id] = struct{}{}
+	}
 	for _, source := range sources {
+		if _, ok := seen[source.ID]; ok {
+			continue
+		}
 		ids = append(ids, source.ID)
 	}
 	return ids, nil
+}
+
+// MarkCheckDue schedules a background diagnostic without waiting on upstream
+// I/O in pricing preview or rule execution paths.
+func (s *WatchSourceService) MarkCheckDue(_ context.Context, sourceID int64) error {
+	if sourceID <= 0 {
+		return fmt.Errorf("invalid watch source id")
+	}
+	s.dueMu.Lock()
+	defer s.dueMu.Unlock()
+	if s.dueSources == nil {
+		s.dueSources = map[int64]struct{}{}
+	}
+	s.dueSources[sourceID] = struct{}{}
+	return nil
+}
+
+func (s *WatchSourceService) takeMarkedDueSourceIDs(limit int) []int64 {
+	s.dueMu.Lock()
+	defer s.dueMu.Unlock()
+	ids := make([]int64, 0, limit)
+	for id := range s.dueSources {
+		ids = append(ids, id)
+		delete(s.dueSources, id)
+		if len(ids) == limit {
+			break
+		}
+	}
+	return ids
 }
 
 func (s *WatchSourceService) DueKeepaliveSourceIDs(ctx context.Context, limit int) ([]int64, error) {

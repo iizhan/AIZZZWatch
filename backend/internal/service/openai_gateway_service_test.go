@@ -1898,7 +1898,7 @@ func TestOpenAIStreamingResponseFailedAfterOutputSanitizesVerboseResponseForClie
 	require.NotContains(t, body, `"usage"`)
 }
 
-func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputPassesThrough(t *testing.T) {
+func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputReturnsStableClientError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1931,12 +1931,15 @@ func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputPassesThrough(t *
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
 	require.True(t, c.Writer.Written())
-	require.Contains(t, rec.Body.String(), "response.failed")
-	require.Contains(t, rec.Body.String(), `"type":"upstream_error"`)
-	require.Contains(t, rec.Body.String(), "Your input exceeds the context window")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	body := rec.Body.String()
+	require.Equal(t, "invalid_request_error", gjson.Get(body, "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.Get(body, "error.code").String())
+	require.Contains(t, gjson.Get(body, "error.message").String(), "Your input exceeds the context window")
+	require.NotContains(t, body, "response.failed")
 }
 
-func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputAppliesPassthroughRule(t *testing.T) {
+func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputIgnoresPassthroughOverride(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -1979,7 +1982,8 @@ func TestOpenAIStreamingContextWindowResponseFailedBeforeOutputAppliesPassthroug
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	body := rec.Body.String()
-	require.Equal(t, "upstream_error", gjson.Get(body, "error.type").String())
+	require.Equal(t, "invalid_request_error", gjson.Get(body, "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.Get(body, "error.code").String())
 	require.Equal(t, upstreamMessage, gjson.Get(body, "error.message").String())
 	require.NotContains(t, body, "response.failed")
 	require.NotContains(t, body, "Upstream request failed")
@@ -2371,7 +2375,7 @@ func TestOpenAIStreamingPassthroughResponseFailedBeforeOutputReturnsFailover(t *
 	require.Empty(t, rec.Body.String())
 }
 
-func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputAppliesPassthroughRule(t *testing.T) {
+func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputIgnoresPassthroughOverride(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -2412,7 +2416,8 @@ func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputApplie
 	require.True(t, IsResponseCommitted(c))
 	require.Equal(t, http.StatusBadRequest, rec.Code)
 	body := rec.Body.String()
-	require.Equal(t, "upstream_error", gjson.Get(body, "error.type").String())
+	require.Equal(t, "invalid_request_error", gjson.Get(body, "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.Get(body, "error.code").String())
 	require.Equal(t, upstreamMessage, gjson.Get(body, "error.message").String())
 	require.NotContains(t, body, "response.failed")
 	require.NotContains(t, body, "Upstream request failed")
@@ -2423,7 +2428,7 @@ func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputApplie
 	require.NotEmpty(t, opsEvents)
 }
 
-func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputWithoutRulePassesThrough(t *testing.T) {
+func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputReturnsStableClientError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
@@ -2453,10 +2458,12 @@ func TestOpenAIStreamingPassthroughContextWindowResponseFailedBeforeOutputWithou
 	require.Error(t, err)
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr))
+	require.Equal(t, http.StatusBadRequest, rec.Code)
 	body := rec.Body.String()
-	require.Contains(t, body, "event: response.failed")
-	require.Contains(t, body, "context_length_exceeded")
-	require.Contains(t, body, "Your input exceeds the context window")
+	require.Equal(t, "invalid_request_error", gjson.Get(body, "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.Get(body, "error.code").String())
+	require.Contains(t, gjson.Get(body, "error.message").String(), "Your input exceeds the context window")
+	require.NotContains(t, body, "response.failed")
 }
 
 func TestOpenAIStreamingPassthroughResponseFailedAfterOutputSanitizesVerboseResponseForClient(t *testing.T) {

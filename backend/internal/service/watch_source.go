@@ -480,7 +480,7 @@ func HydrateWatchSourceDiagnosticState(source *WatchSource, now time.Time) {
 		now = time.Now().UTC()
 	}
 	if source.PollingIntervalSeconds <= 0 {
-		source.PollingIntervalSeconds = 60
+		source.PollingIntervalSeconds = 300
 	}
 	source.NextCheckAt = nil
 	source.NextCheckInSeconds = 0
@@ -498,7 +498,7 @@ func HydrateWatchSourceDiagnosticState(source *WatchSource, now time.Time) {
 		source.DiagnosticStateReason = "source has not been checked"
 		return
 	}
-	next := source.LastCheckAt.UTC().Add(time.Duration(source.PollingIntervalSeconds) * time.Second)
+	next := source.LastCheckAt.UTC().Add(time.Duration(WatchSourceDiagnosticIntervalSeconds(source.PollingIntervalSeconds, source.LastErrorCode)) * time.Second)
 	source.NextCheckAt = &next
 	if remaining := next.Sub(now); remaining > 0 {
 		source.NextCheckInSeconds = int(math.Ceil(remaining.Seconds()))
@@ -520,6 +520,24 @@ func HydrateWatchSourceDiagnosticState(source *WatchSource, now time.Time) {
 			source.DiagnosticStateReason = "diagnostic is due"
 		}
 	}
+}
+
+const watchSourcePermanentAuthBackoffSeconds = 15 * 60
+
+// WatchSourceDiagnosticIntervalSeconds keeps the scheduler and the visible
+// countdown aligned. Permanent credential/authentication failures are retried
+// less aggressively, while an explicit manual check still runs immediately.
+func WatchSourceDiagnosticIntervalSeconds(configuredSeconds int, errorCode string) int {
+	if configuredSeconds <= 0 {
+		configuredSeconds = 300
+	}
+	switch strings.ToLower(strings.TrimSpace(errorCode)) {
+	case "unauthorized", "credential_missing", "credential_invalid", "credential_decrypt_failed":
+		if configuredSeconds < watchSourcePermanentAuthBackoffSeconds {
+			return watchSourcePermanentAuthBackoffSeconds
+		}
+	}
+	return configuredSeconds
 }
 
 func HydrateWatchSourceKeepaliveState(source *WatchSource, now time.Time) {

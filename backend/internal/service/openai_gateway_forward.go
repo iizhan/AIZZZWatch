@@ -470,7 +470,12 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			}
 		}
 	}
-	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 && gjson.GetBytes(body, "previous_response_id").Exists() {
+	// HTTP Responses supports server-side continuation too. Preserve a valid
+	// response id so the request can continue on the account selected from the
+	// response-to-account binding; only normalize empty/null client values away.
+	if wsDecision.Transport != OpenAIUpstreamTransportResponsesWebsocketV2 &&
+		gjson.GetBytes(body, "previous_response_id").Exists() &&
+		requestView.PreviousResponseID == "" {
 		markPatchDelete("previous_response_id")
 	}
 	if openAIRequestBodyMayContainEmptyBase64InputImage(body) {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -115,7 +116,7 @@ func (r *WatchSourceRunner) scanDiagnostics() {
 		slog.Error("watch_source: list due sources failed", "error", err)
 		return
 	}
-	for _, id := range ids {
+	for index, id := range ids {
 		select {
 		case <-r.ctx.Done():
 			return
@@ -123,6 +124,9 @@ func (r *WatchSourceRunner) scanDiagnostics() {
 			r.wg.Add(1)
 			go r.runOne(id)
 		default:
+			for _, deferredID := range ids[index:] {
+				_ = r.service.MarkCheckDue(r.ctx, deferredID)
+			}
 			slog.Debug("watch_source: worker pool full, defer source", "source_id", id)
 			return
 		}
@@ -141,6 +145,9 @@ func (r *WatchSourceRunner) runOne(id int64) {
 	defer r.wg.Done()
 	defer func() { <-r.sem }()
 	if _, err := r.service.RunCheck(r.ctx, id); err != nil && r.ctx.Err() == nil {
+		if !errors.Is(err, ErrWatchSourceNotFound) {
+			_ = r.service.MarkCheckDue(r.ctx, id)
+		}
 		slog.Warn("watch_source: scheduled check failed", "source_id", id, "error", err)
 	}
 }

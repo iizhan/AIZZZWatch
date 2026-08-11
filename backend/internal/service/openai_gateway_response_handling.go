@@ -453,6 +453,13 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 					})
 				}
 				if !openAIStreamClientOutputStarted(c, clientOutputStarted) {
+					if isOpenAIContextWindowError(failedMessage, dataBytes) {
+						sawFailedEvent = true
+						s.recordOpenAIStreamUpstreamError(c, account, false, upstreamRequestID, "http_error", dataBytes, failedMessage)
+						writeOpenAIContextLengthError(c, resp.Header, failedMessage)
+						streamEarlyErr = fmt.Errorf("upstream response failed: context_length_exceeded")
+						return
+					}
 					if status, errType, errMsg, matched := applyOpenAIStreamFailedErrorPassthroughRule(c, account.Platform, dataBytes, failedMessage); matched {
 						sawFailedEvent = true
 						// 命中透传规则也要记录 ops 上游错误事件（对齐 CC/Messages 与
@@ -1286,6 +1293,10 @@ func (s *OpenAIGatewayService) handleSSEToJSON(resp *http.Response, c *gin.Conte
 		terminalType, terminalPayload, terminalOK := extractOpenAISSETerminalEvent(bodyText)
 		if terminalOK && terminalType == "response.failed" {
 			msg := extractOpenAISSEErrorMessage(terminalPayload)
+			if isOpenAIContextWindowError(msg, terminalPayload) {
+				writeOpenAIContextLengthError(c, resp.Header, msg)
+				return nil, fmt.Errorf("upstream response failed: context_length_exceeded")
+			}
 			if msg == "" {
 				msg = "Upstream compact response failed"
 			}

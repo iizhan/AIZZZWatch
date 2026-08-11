@@ -8,6 +8,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestResponsesRequestPreservesContextManagementAndTruncation(t *testing.T) {
+	input := []byte(`{"model":"gpt-5","input":"hello","context_management":{"edits":[{"type":"compact_20250901"}]},"truncation":"disabled"}`)
+	var request ResponsesRequest
+	if err := json.Unmarshal(input, &request); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatalf("round-trip Unmarshal() error = %v", err)
+	}
+	if _, ok := roundTrip["context_management"]; !ok {
+		t.Fatalf("context_management missing after round trip: %s", encoded)
+	}
+	if got := roundTrip["truncation"]; got != "disabled" {
+		t.Fatalf("truncation = %#v, want disabled", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ChatCompletionsToResponses tests
 // ---------------------------------------------------------------------------

@@ -250,6 +250,18 @@ describe('WatchSourcesView interactive authorization', () => {
     expect(vm.buildInput().auto_follow_key_group).toBe(false)
   })
 
+  it('defaults new sources to a five minute deep diagnostic interval', async () => {
+    const wrapper = await mountView()
+    const vm = wrapper.vm as unknown as {
+      openCreate: () => void
+      buildInput: () => { polling_interval_seconds: number }
+    }
+
+    vm.openCreate()
+    await nextTick()
+    expect(vm.buildInput().polling_interval_seconds).toBe(300)
+  })
+
   it('submits a normalized bearer credential from the interactive auth dialog', async () => {
     const wrapper = await mountView()
 

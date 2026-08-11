@@ -11,6 +11,12 @@
 # No Setup Wizard needed - the system auto-initializes on first run.
 # =============================================================================
 
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   # ===========================================================================
   # Sub2API Application
@@ -19,6 +25,7 @@ services:
     image: weishaw/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
+    logging: *json-logging
     security_opt:
       - no-new-privileges:true
     ulimits:
@@ -206,6 +213,7 @@ services:
     image: postgres:18-alpine
     container_name: sub2api-postgres
     restart: unless-stopped
+    logging: *json-logging
     ulimits:
       nofile:
         soft: 100000
@@ -252,6 +260,7 @@ services:
     image: redis:8-alpine
     container_name: sub2api-redis
     restart: unless-stopped
+    logging: *json-logging
     ulimits:
       nofile:
         soft: 100000

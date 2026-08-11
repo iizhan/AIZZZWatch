@@ -1638,8 +1638,10 @@ func TestOpenAIGatewayService_APIKeyPassthrough_ContextWindow502DoesNotFailover(
 	var failoverErr *UpstreamFailoverError
 	require.False(t, errors.As(err, &failoverErr), "context-window errors are deterministic request failures")
 	require.True(t, c.Writer.Written())
-	require.Equal(t, http.StatusBadGateway, rec.Code)
-	require.Contains(t, rec.Body.String(), "exceeds the context window")
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(rec.Body.Bytes(), "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.GetBytes(rec.Body.Bytes(), "error.code").String())
+	require.Contains(t, gjson.GetBytes(rec.Body.Bytes(), "error.message").String(), "exceeds the context window")
 	require.True(t, body.closed)
 }
 

@@ -209,6 +209,31 @@ func isOpenAIContextWindowError(upstreamMsg string, upstreamBody []byte) bool {
 	return match(string(upstreamBody))
 }
 
+const openAIContextLengthExceededMessage = "Your input exceeds the context window of this model. Compact the conversation or reduce the input and try again."
+
+func writeOpenAIContextLengthError(c *gin.Context, upstreamHeaders http.Header, message string) {
+	if c == nil {
+		return
+	}
+	message = sanitizeUpstreamErrorMessage(strings.TrimSpace(message))
+	if message == "" {
+		message = openAIContextLengthExceededMessage
+	}
+	MarkResponseCommitted(c)
+	if StopOpenAICompactSSEKeepaliveCommitted(c) {
+		writeOpenAICompactSSEFailureMessage(c, http.StatusBadRequest, "context_length_exceeded", message)
+		return
+	}
+	writeOpenAIPassthroughErrorHeaders(c.Writer.Header(), upstreamHeaders)
+	c.JSON(http.StatusBadRequest, gin.H{
+		"error": gin.H{
+			"type":    "invalid_request_error",
+			"code":    "context_length_exceeded",
+			"message": message,
+		},
+	})
+}
+
 func (s *OpenAIGatewayService) shouldFailoverUpstreamError(statusCode int) bool {
 	switch statusCode {
 	case 401, 402, 403, 405, 429, 529:
@@ -398,6 +423,10 @@ func (s *OpenAIGatewayService) handleErrorResponse(
 	}
 	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
 	logOpenAIInstructionsRequiredDebug(ctx, c, account, resp.StatusCode, upstreamMsg, requestBody, body)
+	if isOpenAIContextWindowError(upstreamMsg, body) {
+		writeOpenAIContextLengthError(c, resp.Header, upstreamMsg)
+		return nil, fmt.Errorf("openai context length exceeded")
+	}
 
 	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 		logger.LegacyPrintf("service.openai_gateway",

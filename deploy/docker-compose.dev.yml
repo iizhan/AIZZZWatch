@@ -8,6 +8,12 @@
 #   docker compose -f docker-compose.dev.yml up --build
 # =============================================================================
 
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   sub2api:
     build:
@@ -17,6 +23,7 @@ services:
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-https://registry.npmmirror.com}
     container_name: sub2api-dev
     restart: unless-stopped
+    logging: *json-logging
     security_opt:
       - no-new-privileges:true
     ports:
@@ -97,6 +104,7 @@ services:
     image: postgres:18-alpine
     container_name: sub2api-postgres-dev
     restart: unless-stopped
+    logging: *json-logging
     volumes:
       - ./postgres_data:/var/lib/postgresql/data:Z
     environment:
@@ -118,6 +126,7 @@ services:
     image: redis:8-alpine
     container_name: sub2api-redis-dev
     restart: unless-stopped
+    logging: *json-logging
     volumes:
       - ./redis_data:/data:Z
     # The command is one quoted script for the inner `sh -c`. Compose keeps

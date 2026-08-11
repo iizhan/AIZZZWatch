@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"go.uber.org/zap"
 )
 
 func TestOpenAIHandleStreamingAwareError_JSONEscaping(t *testing.T) {
@@ -835,7 +836,7 @@ func TestOpenAIResponses_RejectsMessageIDAsPreviousResponseID(t *testing.T) {
 	require.Contains(t, w.Body.String(), "previous_response_id must be a response.id")
 }
 
-func TestOpenAIResponses_RejectsHTTPContinuationPreviousResponseID(t *testing.T) {
+func TestOpenAIResponses_AllowsHTTPContinuationPreviousResponseIDPastValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	w := httptest.NewRecorder()
@@ -856,15 +857,51 @@ func TestOpenAIResponses_RejectsHTTPContinuationPreviousResponseID(t *testing.T)
 		Concurrency: 1,
 	})
 
-	h := newOpenAIHandlerForPreviousResponseIDValidation(t, nil)
+	h := newOpenAIHandlerForPreviousResponseIDValidation(t, &concurrencyCacheMock{
+		acquireUserSlotFn: func(context.Context, int64, int, string) (bool, error) {
+			return false, errors.New("test stop after request validation")
+		},
+	})
 	h.Responses(c)
 
-	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Contains(t, w.Body.String(), "Responses WebSocket v2")
-	require.Contains(t, w.Body.String(), "previous_response_id")
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.NotContains(t, w.Body.String(), "Responses WebSocket v2")
+	require.NotContains(t, w.Body.String(), "previous_response_id is only supported")
 }
 
-func TestOpenAIResponses_FunctionCallOutputHTTPGuidanceDoesNotSuggestPreviousResponseReuse(t *testing.T) {
+func TestOpenAIResponses_RejectsUnavailablePreviousResponseBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+
+	released := false
+	selection := &service.AccountSelectionResult{
+		Account:     &service.Account{ID: 42},
+		Acquired:    true,
+		ReleaseFunc: func() { released = true },
+	}
+	h := &OpenAIGatewayHandler{}
+
+	rejected := h.rejectUnavailablePreviousResponseBinding(
+		c,
+		"resp_unavailable",
+		selection,
+		service.OpenAIAccountScheduleDecision{StickyPreviousHit: false},
+		false,
+		zap.NewNop(),
+	)
+
+	require.True(t, rejected)
+	require.True(t, released)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Equal(t, "invalid_request_error", gjson.GetBytes(w.Body.Bytes(), "error.type").String())
+	require.Equal(t, "previous_response_not_available", gjson.GetBytes(w.Body.Bytes(), "error.code").String())
+	require.Contains(t, gjson.GetBytes(w.Body.Bytes(), "error.message").String(), "resend the complete conversation")
+}
+
+func TestOpenAIResponses_FunctionCallOutputHTTPGuidanceExplainsContinuationOptions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	w := httptest.NewRecorder()
@@ -889,8 +926,9 @@ func TestOpenAIResponses_FunctionCallOutputHTTPGuidanceDoesNotSuggestPreviousRes
 	h.Responses(c)
 
 	require.Equal(t, http.StatusBadRequest, w.Code)
-	require.Contains(t, w.Body.String(), "Responses WebSocket v2")
-	require.NotContains(t, w.Body.String(), "reuse previous_response_id")
+	require.Contains(t, w.Body.String(), "function_call_output requires call_id")
+	require.Contains(t, w.Body.String(), "valid previous_response_id")
+	require.NotContains(t, w.Body.String(), "Responses WebSocket v2")
 }
 
 func TestOpenAIResponsesWebSocket_SetsClientTransportWSWhenUpgradeValid(t *testing.T) {

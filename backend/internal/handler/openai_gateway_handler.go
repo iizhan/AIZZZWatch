@@ -357,11 +357,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id must be a response.id (resp_*), not a message id")
 			return
 		}
-		reqLog.Warn("openai.request_validation_failed",
-			zap.String("reason", "previous_response_id_requires_wsv2"),
-		)
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "previous_response_id is only supported on Responses WebSocket v2")
-		return
 	}
 
 	setOpsRequestContext(c, reqModel, reqStream)
@@ -542,6 +537,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Float64("load_skew", scheduleDecision.LoadSkew),
 		)
 		account := selection.Account
+		if h.rejectUnavailablePreviousResponseBinding(c, previousResponseID, selection, scheduleDecision, streamStarted, reqLog) {
+			return
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		setOpsSelectedAccount(c, account.ID, account.Platform)
@@ -1417,7 +1415,7 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 		reqLog.Warn("openai.request_validation_failed",
 			zap.String("reason", "function_call_output_missing_call_id"),
 		)
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2")
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires call_id; provide a valid previous_response_id or complete item_reference context")
 		return false
 	}
 	if validation.HasItemReferenceForAllCallIDs {
@@ -1427,7 +1425,7 @@ func (h *OpenAIGatewayHandler) validateFunctionCallOutputRequest(c *gin.Context,
 	reqLog.Warn("openai.request_validation_failed",
 		zap.String("reason", "function_call_output_missing_item_reference"),
 	)
-	h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires item_reference ids matching each call_id on HTTP requests; continuation via previous_response_id is only supported on Responses WebSocket v2")
+	h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "function_call_output requires item_reference ids matching each call_id when previous_response_id is not provided")
 	return false
 }
 
@@ -2872,6 +2870,36 @@ func (h *OpenAIGatewayHandler) errorResponse(c *gin.Context, status int, errType
 			"message": message,
 		},
 	})
+}
+
+func (h *OpenAIGatewayHandler) rejectUnavailablePreviousResponseBinding(
+	c *gin.Context,
+	previousResponseID string,
+	selection *service.AccountSelectionResult,
+	scheduleDecision service.OpenAIAccountScheduleDecision,
+	streamStarted bool,
+	reqLog *zap.Logger,
+) bool {
+	if strings.TrimSpace(previousResponseID) == "" || scheduleDecision.StickyPreviousHit || selection == nil || selection.Account == nil {
+		return false
+	}
+	if selection.Acquired && selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+	reqLog.Warn("openai.previous_response_binding_unavailable",
+		zap.String("previous_response_id_kind", service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)),
+		zap.Int64("selected_account_id", selection.Account.ID),
+	)
+	h.handleStreamingAwareErrorWithCode(
+		c,
+		http.StatusBadRequest,
+		"invalid_request_error",
+		"previous_response_not_available",
+		"previous_response_id is not available for the selected upstream account; resend the complete conversation without previous_response_id",
+		streamStarted,
+		false,
+	)
+	return true
 }
 
 // openAICompactKeepaliveInterval 复用流式 keepalive 配置作为 compact 下游

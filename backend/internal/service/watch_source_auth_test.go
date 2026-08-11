@@ -112,6 +112,23 @@ func TestWatchSourceCreateRejectsCredentialWhenEncryptionKeyIsEphemeral(t *testi
 	}
 }
 
+func TestWatchSourceCreateDefaultsDeepDiagnosticIntervalToFiveMinutes(t *testing.T) {
+	repo := &watchSourceAuthRepoStub{}
+	svc := NewWatchSourceService(repo, watchSourceAuthTestEncryptor{})
+
+	created, err := svc.Create(context.Background(), WatchSourceInput{
+		Name: "Sub2API upstream", AdapterType: WatchSourceAdapterSub2API,
+		BaseURL: "https://upstream.example", RechargeRatio: 1,
+		RequestTimeoutSeconds: 15, Enabled: true, AuthMode: WatchSourceAuthModeManual,
+	}, 7)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.PollingIntervalSeconds != 300 {
+		t.Fatalf("PollingIntervalSeconds = %d, want 300", created.PollingIntervalSeconds)
+	}
+}
+
 func (r *watchSourceRunCheckRepoStub) GetSource(_ context.Context, id int64) (*WatchSource, error) {
 	return &WatchSource{
 		ID:                     id,

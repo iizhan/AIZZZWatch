@@ -1015,6 +1015,11 @@ goals = true`
   ]
 }
 
+// OpenAI documents a 1,050,000-token total window and a 922,000-token maximum
+// input for these models. OpenCode uses this value to decide when to compact,
+// so advertise the input budget and keep the 128,000 output reserve explicit.
+const openCodeGPT5LongContextInputLimit = 922000
+
 function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: string, pathLabel?: string): FileConfig {
   const provider: Record<string, any> = {
     [platform]: {
@@ -1044,7 +1049,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.6': {
       name: 'GPT-5.6 (Sol)',
       limit: {
-        context: 1050000,
+        context: openCodeGPT5LongContextInputLimit,
         output: 128000
       },
       options: {
@@ -1061,7 +1066,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.6-sol': {
       name: 'GPT-5.6 Sol',
       limit: {
-        context: 1050000,
+        context: openCodeGPT5LongContextInputLimit,
         output: 128000
       },
       options: {
@@ -1078,7 +1083,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.6-terra': {
       name: 'GPT-5.6 Terra',
       limit: {
-        context: 1050000,
+        context: openCodeGPT5LongContextInputLimit,
         output: 128000
       },
       options: {
@@ -1095,7 +1100,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.6-luna': {
       name: 'GPT-5.6 Luna',
       limit: {
-        context: 1050000,
+        context: openCodeGPT5LongContextInputLimit,
         output: 128000
       },
       options: {
@@ -1112,7 +1117,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.5': {
       name: 'GPT-5.5',
       limit: {
-        context: 1050000,
+        context: openCodeGPT5LongContextInputLimit,
         output: 128000
       },
       options: {
@@ -1128,7 +1133,7 @@ function generateOpenCodeConfig(platform: string, baseUrl: string, apiKey: strin
     'gpt-5.4': {
       name: 'GPT-5.4',
       limit: {
-        context: 1050000,
+        context: openCodeGPT5LongContextInputLimit,
         output: 128000
       },
       options: {

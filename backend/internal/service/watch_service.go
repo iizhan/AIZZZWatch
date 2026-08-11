@@ -159,11 +159,14 @@ type WatchService struct {
 	alertKeys         map[string]time.Time
 }
 
-// WatchSourceProbe is the narrow on-demand probe port used when a cached Watch
-// observation is missing or expired. Keeping this port optional preserves the
-// lightweight service test doubles and avoids coupling pricing to transport.
+// WatchSourceProbe is retained as the injected Watch connector. Pricing paths
+// only use its optional due-marker capability and never wait on RunCheck.
 type WatchSourceProbe interface {
 	RunCheck(context.Context, int64) (*WatchSourceSnapshot, error)
+}
+
+type watchSourceDueMarker interface {
+	MarkCheckDue(context.Context, int64) error
 }
 
 func (s *WatchService) SetSourceProbe(probe WatchSourceProbe) {
@@ -1707,17 +1710,8 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 		var fallbackReason string
 		if snapshot != nil {
 			fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
-			if fallbackReason != "" && watchShouldRefreshSnapshot(fallbackReason) && s.sourceProbe != nil {
-				// A stale/missing Watch observation is retried once at the decision
-				// boundary. The connector itself already performs its bounded retry
-				// sequence; this avoids an unbounded pricing-loop retry storm.
-				checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-				refreshed, checkErr := s.sourceProbe.RunCheck(checkCtx, mapping.SourceID)
-				cancel()
-				if checkErr == nil && refreshed != nil {
-					snapshot = refreshed
-					fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
-				}
+			if fallbackReason != "" && watchShouldRefreshSnapshot(fallbackReason) {
+				s.markWatchSourceCheckDue(ctx, mapping.SourceID)
 			}
 			if fallbackReason == "" {
 				key, group, reason := watchResolveMappedSourceGroup(snapshot, mapping)
@@ -1747,15 +1741,7 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 			}
 		} else {
 			fallbackReason = "source snapshot is unavailable"
-			if s.sourceProbe != nil {
-				checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-				refreshed, checkErr := s.sourceProbe.RunCheck(checkCtx, mapping.SourceID)
-				cancel()
-				if checkErr == nil && refreshed != nil {
-					snapshot = refreshed
-					fallbackReason = watchSourceSnapshotFreezeReason(snapshot, now)
-				}
-			}
+			s.markWatchSourceCheckDue(ctx, mapping.SourceID)
 			if snapshot != nil && fallbackReason == "" {
 				key, group, reason := watchResolveMappedSourceGroup(snapshot, mapping)
 				fallbackReason = reason
@@ -1851,6 +1837,14 @@ func (s *WatchService) resolveTargetPricingCostRows(ctx context.Context, req Wat
 		return rows, firstFreezeReason, nil
 	}
 	return rows, "", nil
+}
+
+func (s *WatchService) markWatchSourceCheckDue(ctx context.Context, sourceID int64) {
+	marker, ok := s.sourceProbe.(watchSourceDueMarker)
+	if !ok || marker == nil {
+		return
+	}
+	_ = marker.MarkCheckDue(ctx, sourceID)
 }
 
 type watchOfficialProbeEvidence struct {

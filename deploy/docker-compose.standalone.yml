@@ -10,11 +10,18 @@
 #   3. Access: http://localhost:8080
 # =============================================================================
 
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "${DOCKER_LOG_MAX_SIZE:-20m}"
+    max-file: "${DOCKER_LOG_MAX_FILE:-5}"
+
 services:
   sub2api:
     image: weishaw/sub2api:latest
     container_name: sub2api
     restart: unless-stopped
+    logging: *json-logging
     security_opt:
       - no-new-privileges:true
     ulimits:

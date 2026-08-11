@@ -71,6 +71,23 @@ func TestSaveSourceObservationPersistsFreshDataWhenBalanceIsLow(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestClaimDueSourcesAppliesPermanentAuthBackoff(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	now := time.Now().UTC()
+	mock.ExpectQuery(`GREATEST\(polling_interval_seconds, 900\)`).
+		WithArgs(now, 20).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+
+	repo := &watchSourceRepository{db: db}
+	sources, err := repo.ClaimDueSources(context.Background(), now, 20)
+	require.NoError(t, err)
+	require.Empty(t, sources)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestListPriceChangesUsesBoundedDefaultAndStableOrdering(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	require.NoError(t, err)

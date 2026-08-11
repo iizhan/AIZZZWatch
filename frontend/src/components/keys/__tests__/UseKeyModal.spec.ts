@@ -547,8 +547,12 @@ describe('UseKeyModal', () => {
     const models = parsed.provider.openai.models
     for (const model of ['gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {
       expect(models[model]).toBeDefined()
+      expect(models[model].limit).toEqual({ context: 922000, output: 128000 })
       expect(models[model].variants).toHaveProperty('max')
       expect(models[model].variants).toHaveProperty('xhigh')
+    }
+    for (const model of ['gpt-5.5', 'gpt-5.4']) {
+      expect(models[model].limit).toEqual({ context: 922000, output: 128000 })
     }
     expect(models['gpt-5.6'].name).toBe('GPT-5.6 (Sol)')
   })

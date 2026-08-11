@@ -39,6 +39,21 @@ type watchPreviewChannelRepo struct {
 	channelID int64
 }
 
+type watchDueProbeStub struct {
+	runCalls  int
+	markCalls []int64
+}
+
+func (p *watchDueProbeStub) RunCheck(context.Context, int64) (*WatchSourceSnapshot, error) {
+	p.runCalls++
+	return nil, nil
+}
+
+func (p *watchDueProbeStub) MarkCheckDue(_ context.Context, sourceID int64) error {
+	p.markCalls = append(p.markCalls, sourceID)
+	return nil
+}
+
 func TestProvideWatchServiceWiresOperationalDependencies(t *testing.T) {
 	sourceProbe := &WatchSourceService{}
 	opsRepo := &opsRepoMock{}
@@ -692,6 +707,45 @@ func TestPreviewPricingPrefersFreshOfficialProbeOverWatchFallback(t *testing.T) 
 	}
 	if len(preview.CostRows) != 1 || preview.CostRows[0].PricingSource != "max_evidence" || !preview.CostRows[0].EvidenceMismatch || preview.CostRows[0].EvidenceStatus != "mismatch" {
 		t.Fatalf("CostRows = %#v, want higher mismatch evidence selected", preview.CostRows)
+	}
+}
+
+func TestPreviewPricingMarksExpiredWatchSnapshotDueWithoutBlockingOnProbe(t *testing.T) {
+	now := time.Now().UTC()
+	past := now.Add(-time.Minute)
+	future := now.Add(time.Hour)
+	source := &WatchSource{ID: 1, Name: "上游 A", RechargeRatio: 1, Enabled: true}
+	sourceRepo := &watchPreviewSourceRepo{
+		sources: []*WatchSource{source},
+		snapshots: map[int64]*WatchSourceSnapshot{1: watchTestSourceSnapshot(source, past, past,
+			[]WatchSourceKeyObservation{{ExternalID: "key-a", GroupExternalIDs: []string{"g1"}}},
+			[]WatchSourceGroupObservation{{ExternalID: "g1", Name: "Team A", Platform: PlatformOpenAI, RateMultiplier: 0.06, ObservedAt: past}}, nil)},
+		mappings: []WatchAccountUpstreamMapping{{AccountID: 11, SourceID: 1, SourceKeyExternalID: "key-a", SourceGroupExternalID: "g1"}},
+	}
+	accountRepo := &watchPreviewAccountRepo{accounts: []Account{{
+		ID: 11, Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Extra: map[string]any{UpstreamBillingProbeExtraKey: &UpstreamBillingProbeSnapshot{
+			Status:     UpstreamBillingProbeStatusOK,
+			Data:       map[string]any{"billing_scope": "token", "resolved_rate_multiplier": 0.08, "peak_rate_enabled": false},
+			ReceivedAt: &now, FreshUntil: &future,
+		}},
+	}}}
+	probe := &watchDueProbeStub{}
+	svc := NewWatchService(accountRepo, &watchPreviewGroupRepo{group: &Group{ID: 7, Status: StatusActive, RateMultiplier: 0.08}}, nil, sourceRepo, nil, nil)
+	svc.SetSourceProbe(probe)
+
+	preview, err := svc.PreviewPricing(context.Background(), WatchPricingPreviewRequest{TargetGroupID: 7, Mode: WatchPriceModeGroupMultiplier})
+	if err != nil {
+		t.Fatalf("PreviewPricing() error = %v", err)
+	}
+	if preview == nil || preview.Frozen {
+		t.Fatalf("PreviewPricing() = %#v, want official evidence to remain usable", preview)
+	}
+	if probe.runCalls != 0 {
+		t.Fatalf("RunCheck calls = %d, want no synchronous upstream probe", probe.runCalls)
+	}
+	if len(probe.markCalls) != 1 || probe.markCalls[0] != 1 {
+		t.Fatalf("MarkCheckDue calls = %v, want source 1", probe.markCalls)
 	}
 }
 

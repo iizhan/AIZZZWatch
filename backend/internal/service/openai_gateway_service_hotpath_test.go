@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/gin-gonic/gin"
@@ -719,7 +720,7 @@ func TestOpenAIGatewayService_Forward_CodexBridgeInjectionSetsImageBilling(t *te
 	require.Equal(t, "gpt-image-2", result.BillingModel)
 }
 
-func TestOpenAIGatewayService_Forward_HTTPDeletesPreviousResponseIDWhenPresent(t *testing.T) {
+func TestOpenAIGatewayService_Forward_HTTPNormalizesEmptyPreviousResponseID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{}
 	cfg.Security.URLAllowlist.Enabled = false
@@ -758,6 +759,127 @@ func TestOpenAIGatewayService_Forward_HTTPDeletesPreviousResponseIDWhenPresent(t
 		require.NotNil(t, result)
 		require.False(t, gjson.GetBytes(upstream.lastBody, "previous_response_id").Exists())
 	}
+}
+
+func TestOpenAIGatewayService_Forward_HTTPPreservesPreviousResponseID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_next","usage":{"input_tokens":1,"output_tokens":2}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID: 8, Name: "openai-apikey", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
+		Extra:       map[string]any{"use_responses_api": true},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+	result, err := svc.Forward(
+		context.Background(),
+		c,
+		account,
+		[]byte(`{"model":"gpt-5.6-sol","stream":false,"previous_response_id":"resp_previous","input":"continue"}`),
+	)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, "resp_previous", gjson.GetBytes(upstream.lastBody, "previous_response_id").String())
+}
+
+func TestOpenAIGatewayService_Forward_HTTPPreservesContextManagement(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"id":"resp_context","usage":{"input_tokens":1,"output_tokens":2}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID: 8, Name: "openai-apikey", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
+		Extra:       map[string]any{"use_responses_api": true},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+	body := []byte(`{"model":"gpt-5","stream":false,"context_management":{"edits":[{"type":"compact_20250901"}]},"input":"hi"}`)
+
+	result, err := svc.Forward(context.Background(), c, account, body)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, gjson.GetBytes(upstream.lastBody, "context_management").Exists())
+	require.Equal(t, "compact_20250901", gjson.GetBytes(upstream.lastBody, "context_management.edits.0.type").String())
+}
+
+func TestOpenAIGatewayService_Forward_ContextLengthErrorIsStableBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{}
+	cfg.Security.URLAllowlist.Enabled = false
+	upstream := &httpUpstreamRecorder{resp: &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"maximum context length exceeded"}}`)),
+	}}
+	svc := &OpenAIGatewayService{cfg: cfg, httpUpstream: upstream}
+	account := &Account{
+		ID: 8, Name: "openai-apikey", Platform: PlatformOpenAI, Type: AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{"api_key": "sk-test", "base_url": "https://example.com"},
+		Extra:       map[string]any{"use_responses_api": true},
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	SetOpenAIClientTransport(c, OpenAIClientTransportHTTP)
+
+	_, err := svc.Forward(context.Background(), c, account, []byte(`{"model":"gpt-5","stream":false,"input":"too large"}`))
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.Get(rec.Body.String(), "error.code").String())
+}
+
+func TestOpenAIGatewayService_StreamingContextLengthErrorBeforeOutputIsStableBadRequest(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize}}
+	svc := &OpenAIGatewayService{cfg: cfg}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/openai/v1/responses", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body: io.NopCloser(strings.NewReader(strings.Join([]string{
+			"event: response.failed",
+			`data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"maximum context length exceeded"}}}`,
+			"",
+		}, "\n"))),
+	}
+
+	_, err := svc.handleStreamingResponse(
+		c.Request.Context(),
+		resp,
+		c,
+		&Account{ID: 8, Name: "openai-apikey", Platform: PlatformOpenAI, Type: AccountTypeAPIKey},
+		time.Now(),
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+	)
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	require.Equal(t, "invalid_request_error", gjson.Get(rec.Body.String(), "error.type").String())
+	require.Equal(t, "context_length_exceeded", gjson.Get(rec.Body.String(), "error.code").String())
 }
 
 func TestOpenAIGatewayService_Forward_StripsImageGenerationToolForSparkAPIKey(t *testing.T) {
