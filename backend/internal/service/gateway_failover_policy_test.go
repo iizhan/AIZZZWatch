@@ -184,3 +184,16 @@ func TestGatewayFailoverSettingsReachGeminiCompatAndOpenAIPassthrough(t *testing
 	require.True(t, openAIService.shouldFailoverOpenAIPassthroughResponse(ctx, account, 418, nil))
 	require.False(t, openAIService.shouldFailoverOpenAIPassthroughResponse(ctx, account, 502, nil))
 }
+
+func TestOpenAIPassthroughKeepsOAuthDefaultSeparateFromExplicitFailoverPolicy(t *testing.T) {
+	repo := &gatewayFailoverSettingRepoStub{values: map[string]string{}}
+	settingService := NewSettingService(repo, &config.Config{})
+	require.NoError(t, settingService.SetGatewayFailoverSettings(context.Background(), &GatewayFailoverSettings{
+		Enabled: true, StatusCodes: "502", MaxAccountSwitches: 2,
+	}))
+	openAIService := &OpenAIGatewayService{settingService: settingService}
+	account := &Account{Type: AccountTypeOAuth}
+
+	require.False(t, openAIService.shouldFailoverOpenAIPassthroughResponse(context.Background(), account, 502, nil))
+	require.True(t, openAIService.shouldFailoverOpenAIPassthroughResponse(WithGatewayFailoverPolicy(context.Background()), account, 502, nil))
+}
